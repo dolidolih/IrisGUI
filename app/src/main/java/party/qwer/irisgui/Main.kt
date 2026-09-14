@@ -11,6 +11,9 @@ class Main {
         @JvmStatic
         fun main(args: Array<String>) {
             try {
+                // 데몬 stdout/stderr 전체를 로그 버퍼에 담아 UI 로그 탭에 노출한다.
+                RuntimeLog.captureStdout("데몬")
+
                 // ADB 모드: SharedPreferences 없이 AdbConfig(JSON 파일) 사용
                 val wsEventFlow = MutableSharedFlow<String>(extraBufferCapacity = 64)
 

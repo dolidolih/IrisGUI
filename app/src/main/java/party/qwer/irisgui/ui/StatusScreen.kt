@@ -27,8 +27,8 @@ import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
+import party.qwer.irisgui.AppState
 import party.qwer.irisgui.backend.AdbProcessClient
-import party.qwer.irisgui.backend.DaemonLauncher
 import party.qwer.irisgui.backend.IrisServer
 import party.qwer.irisgui.models.ConfigRequest
 import party.qwer.irisgui.service.IrisService
@@ -53,23 +53,50 @@ fun StatusScreen(permission: PermissionStatus) {
     var endpoint by remember { mutableStateOf(AppConfig.webEndpoint) }
     var dbPoll by remember { mutableLongStateOf(AppConfig.dbPollingRate) }
     var send by remember { mutableLongStateOf(AppConfig.sendRate) }
-    val daemonRunning = remember { mutableStateOf(false) }
+    var running by remember { mutableStateOf(AppState.running) }
+    // ON/OFF 를 탭한 직후 — 백엔드 응답을 기다리는 동안 토글이 되돌아가지 않도록
+    // 표기-only 상태를 유지한다(pending). 백엔드가 실제로 내려간 것이 확인되면 해제된다.
+    var pendingOff by remember { mutableStateOf(false) }
+    var pendingOffAt by remember { mutableLongStateOf(0L) }
 
-    // 모드 전환/진입 시 모드 백엔드 상태 동기화 + 루팅 모드 폴링 갱신
-    if (mode == AppMode.ROOT_ADB) {
-        LaunchedEffect(Unit) {
-            while (true) {
-                AdbProcessClient.queryStatus()?.let { daemonRunning.value = it.server_running }
-                delay(3000)
+    // 백엔드(데몬 / 인프로세스 서버) 생존 여부와 값을 폴링 — 토글 결과를 실제 상태로 확정한다.
+    // (토글 Press 시점의 낙관적 표시가 아니라 데몬/NLS가 실제로 내려간 값을 반영한다.)
+    LaunchedEffect(mode) {
+        while (true) {
+            val reachable: Boolean
+            val alive: Boolean = when (mode) {
+                AppMode.ROOT_ADB -> {
+                    val status = AdbProcessClient.queryStatus()
+                    status?.let {
+                        port = it.bot_http_port
+                        endpoint = it.web_server_endpoint
+                        dbPoll = it.db_polling_rate
+                        send = it.message_send_rate
+                    }
+                    reachable = status != null
+                    status?.server_running == true
+                }
+                AppMode.NON_ROOT -> {
+                    reachable = true
+                    IrisServer.isStarted
+                }
             }
+            // OFF 를 탭한 직후: 백엔드가 실제로 내려간 것이 확인될 때까지 ON으로
+            // 되살아나지 않는다. (무응답이어도 정지 실패로 보이므로 표기는 OFF 유지)
+            if (pendingOff) {
+                if (!alive) pendingOff = false
+                else if (System.currentTimeMillis() - pendingOffAt > 6_000) {
+                    // 백엔드가 내려가지 않은 채 무응답 — 실제 상태로 되돌린다.
+                    pendingOff = false
+                    running = alive
+                    AppState.running = alive
+                }
+            } else {
+                running = alive
+                AppState.running = alive
+            }
+            delay(if (alive) 3000L else 800L)
         }
-    } else {
-        daemonRunning.value = IrisServer.isStarted
-    }
-
-    val running = when (mode) {
-        AppMode.ROOT_ADB -> daemonRunning.value
-        AppMode.NON_ROOT -> IrisServer.isStarted
     }
 
     // 값 변경 팝업 대상
@@ -86,52 +113,60 @@ fun StatusScreen(permission: PermissionStatus) {
                 running = running,
                 needsAttention = permission.needsAttention(mode),
                 onToggle = { on ->
-                    if (mode == AppMode.ROOT_ADB) {
-                        if (on) scope.launch { DaemonLauncher.startDaemon(context) }
-                        else scope.launch { DaemonLauncher.stopDaemon(context) }
-                    } else {
-                        val intent = android.content.Intent(context, IrisService::class.java)
-                            .setAction(if (on) IrisService.ACTION_START_SERVICE else IrisService.ACTION_STOP_SERVICE)
-                        context.startForegroundService(intent)
+                    // 항상 IrisService 경유 — 백엔드(데몬/서버) 기동·정지와 결과 토스트가
+                    // UI와 무관하게 서비스에서 확정된다.
+                    if (!on) {
+                        // OFF 는 기다리지 않고 즉시 표기(정지 확인은 폴링에서 반영)
+                        running = false
+                        AppState.running = false
+                        pendingOff = true
+                        pendingOffAt = System.currentTimeMillis()
                     }
+                    val intent = android.content.Intent(context, IrisService::class.java)
+                        .setAction(if (on) IrisService.ACTION_START_SERVICE else IrisService.ACTION_STOP_SERVICE)
+                    context.startForegroundService(intent)
                 }
             )
         }
         item {
-            ValueGridCard(
-                values = listOf(
-                    GridValue("포트", port.toString(), Icons.Default.Memory) {
-                        editor = ValueEditor("포트", port.toString(), numeric = true) { v ->
-                            val p = v.toIntOrNull() ?: return@ValueEditor false
-                            AppConfig.serverPort = p; port = p
-                            scope.launch { AdbProcessClient.updateConfig("botport", ConfigRequest(port = p)) }
-                            true
-                        }
-                    },
-                    GridValue("엔드포인트", endpoint.ifBlank { "미설정" }, Icons.Default.Cable) {
-                        editor = ValueEditor("엔드포인트", endpoint) { v ->
-                            AppConfig.webEndpoint = v; endpoint = v
-                            scope.launch { AdbProcessClient.updateConfig("endpoint", ConfigRequest(endpoint = v)) }
-                            true
-                        }
-                    },
-                    GridValue("DB 폴링", "${dbPoll}ms", Icons.Default.Timer) {
+            // DB 폴링은 DBObserver(루팅 모드) 전용 항목 — 논루팅 모드에서는 보여주지 않는다.
+            val values = buildList {
+                add(GridValue("포트", port.toString(), Icons.Default.Memory) {
+                    editor = ValueEditor("포트", port.toString(), numeric = true) { v ->
+                        val p = v.toIntOrNull() ?: return@ValueEditor false
+                        AppConfig.serverPort = p; port = p
+                        scope.launch { AdbProcessClient.updateConfig("botport", ConfigRequest(port = p)) }
+                        true
+                    }
+                })
+                add(GridValue("엔드포인트", endpoint.ifBlank { "미설정" }, Icons.Default.Cable) {
+                    editor = ValueEditor("엔드포인트", endpoint) { v ->
+                        AppConfig.webEndpoint = v; endpoint = v
+                        scope.launch { AdbProcessClient.updateConfig("endpoint", ConfigRequest(endpoint = v)) }
+                        true
+                    }
+                })
+                if (mode == AppMode.ROOT_ADB) {
+                    add(GridValue("DB 폴링", "${dbPoll}ms", Icons.Default.Timer) {
                         editor = ValueEditor("DB 폴링 (ms)", dbPoll.toString(), numeric = true) { v ->
                             val r = v.toLongOrNull() ?: return@ValueEditor false
                             AppConfig.dbPollingRate = r; dbPoll = r
                             scope.launch { AdbProcessClient.updateConfig("dbrate", ConfigRequest(rate = r)) }
                             true
                         }
-                    },
-                    GridValue("발송 주기", "${send}ms", Icons.Default.Send) {
-                        editor = ValueEditor("발송 주기 (ms)", send.toString(), numeric = true) { v ->
-                            val r = v.toLongOrNull() ?: return@ValueEditor false
-                            AppConfig.sendRate = r; AppConfig.messageSendRate = r; send = r
-                            scope.launch { AdbProcessClient.updateConfig("sendrate", ConfigRequest(rate = r)) }
-                            true
-                        }
+                    })
+                }
+                add(GridValue("발송 주기", "${send}ms", Icons.Default.Send) {
+                    editor = ValueEditor("발송 주기 (ms)", send.toString(), numeric = true) { v ->
+                        val r = v.toLongOrNull() ?: return@ValueEditor false
+                        AppConfig.sendRate = r; AppConfig.messageSendRate = r; send = r
+                        scope.launch { AdbProcessClient.updateConfig("sendrate", ConfigRequest(rate = r)) }
+                        true
                     }
-                )
+                })
+            }
+            ValueGridCard(
+                values = values
             )
         }
     }
@@ -197,15 +232,11 @@ private fun ValueGridCard(values: List<GridValue>) {
 private fun ModeDropdown() {
     val current = AppModeManager.currentMode
     val options = listOf(AppMode.ROOT_ADB, AppMode.NON_ROOT)
-    val labels = mapOf(
-        AppMode.ROOT_ADB to "루팅(ADB)",
-        AppMode.NON_ROOT to "논루팅(알림)"
-    )
     var expanded by remember { mutableStateOf(false) }
     val dropdownContext = LocalContext.current
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
-            value = labels[current] ?: "",
+            value = modeLabelOf(current),
             onValueChange = {},
             readOnly = true,
             label = { Text("실행 모드") },
@@ -217,11 +248,15 @@ private fun ModeDropdown() {
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { mode ->
                 DropdownMenuItem(
-                    text = { Text(labels[mode] ?: "", fontWeight = if (mode == current) FontWeight.Bold else FontWeight.Normal) },
+                    text = { Text(modeLabelOf(mode), fontWeight = if (mode == current) FontWeight.Bold else FontWeight.Normal) },
                     onClick = {
                         expanded = false
                         AppModeManager.setMode(mode)
                         AppConfig.appMode = mode
+                        if (mode != current) {
+                            // 직전 모드 백엔드 상태가 새 모드 표식에 잠시 남지 않도록 즉시 비운다.
+                            AppState.running = false
+                        }
                         dropdownContext.startForegroundService(
                             android.content.Intent(dropdownContext, IrisService::class.java)
                                 .setAction(IrisService.ACTION_RESTART_SERVICE)

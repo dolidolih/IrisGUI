@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Send
@@ -29,6 +30,7 @@ import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.AppState
+import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.models.NotificationEvent
 
@@ -51,51 +53,58 @@ fun LogsScreen() {
     var testResult by rememberSaveable { mutableStateOf<String?>(null) }
     var rooms by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
-    // ROOT_ADB: daemon 에서 방 목록 폴링. NON_ROOT: 저장 방 사용(동기).
+    // ROOT_ADB: daemon 에서 방 목록 + DB 로그 폴링. NON_ROOT: 저장 방/알림 사용(동기).
+    //
+    // 주의: ROOT_ADB 의 채팅 로그는 app_process(별개 프로세스)의 AppState.lastChatLogs 에 담기므로
+    // UI 프로세스의 AppState.lastChatLogs 는 항상 비어 있다. 반드시 daemon HTTP로 가져와야 한다.
+    val messages = remember { mutableStateListOf<AppState.AppMessage>() }
+    var runtimeLogs by remember { mutableStateOf<List<RuntimeLog.Entry>>(RuntimeLog.snapshot(80)) }
+
     if (mode == AppMode.ROOT_ADB) {
         LaunchedEffect(Unit) {
             while (true) {
                 rooms = AdbProcessClient.fetchRooms().map { it.id to (it.name ?: "") }
-                delay(5000)
+                val status = AdbProcessClient.fetchDashboardStatus()
+                val daemonLogs = AdbProcessClient.queryStatus()?.logs ?: emptyList()
+                messages.clear()
+                messages.addAll(
+                    (status?.lastLogs ?: emptyList()).map { log ->
+                        AppState.AppMessage(
+                            id = log["_id"] ?: (log["created_at"] ?: "").toString(),
+                            roomName = log["room_name"]?.takeIf { it.isNotBlank() } ?: log["chat_id"] ?: "?",
+                            senderName = log["user_name"]?.takeIf { it.isNotBlank() } ?: log["user_id"] ?: "?",
+                            text = log["message"] ?: "",
+                            timeMs = (log["created_at"]?.toLongOrNull() ?: 0L),
+                            isGroup = false
+                        )
+                    }.sortedByDescending { it.timeMs }
+                )
+                runtimeLogs = (RuntimeLog.snapshot(60) + daemonLogs)
+                    .sortedByDescending { it.timeMs }
+                    .take(120)
+                delay(3000)
             }
         }
     } else {
-        LaunchedEffect(AppState.storedRooms.size) {
-            rooms = AppState.storedRooms.map { it.id.ifBlank { it.name } to it.name }
-        }
-    }
-
-    // 수신 메시지: 모드별 소스를 AppMessage 로 정규화
-    val messages = remember { mutableStateListOf<AppState.AppMessage>() }
-    LaunchedEffect(mode, AppState.notificationHistory.size, AppState.lastChatLogs.size) {
-        messages.clear()
-        when (mode) {
-            AppMode.NON_ROOT -> messages.addAll(
-                AppState.notificationHistory.map {
-                    AppState.AppMessage(
-                        id = "${it.timestamp}:${it.roomId.ifBlank { it.room }}",
-                        roomName = it.room,
-                        senderName = it.senderName,
-                        text = it.text,
-                        timeMs = it.timestamp,
-                        isGroup = it.isGroupChat
-                    )
-                }
-            )
-            AppMode.ROOT_ADB -> messages.addAll(
-                AppState.lastChatLogs.map { log ->
-                    val roomName = log["room_name"]?.takeIf { it.isNotBlank() } ?: log["chat_id"] ?: "?"
-                    val sender = log["user_name"]?.takeIf { it.isNotBlank() } ?: log["user_id"] ?: "?"
-                    AppState.AppMessage(
-                        id = log["_id"] ?: (log["created_at"] ?: "").toString(),
-                        roomName = roomName,
-                        senderName = sender,
-                        text = log["message"] ?: "",
-                        timeMs = (log["created_at"]?.toLongOrNull() ?: 0L),
-                        isGroup = false
-                    )
-                }
-            )
+        LaunchedEffect(Unit) {
+            while (true) {
+                rooms = AppState.storedRooms.map { it.id.ifBlank { it.name } to it.name }
+                messages.clear()
+                messages.addAll(
+                    AppState.notificationHistory.map {
+                        AppState.AppMessage(
+                            id = "${it.timestamp}:${it.roomId.ifBlank { it.room }}",
+                            roomName = it.room,
+                            senderName = it.senderName,
+                            text = it.text,
+                            timeMs = it.timestamp,
+                            isGroup = it.isGroupChat
+                        )
+                    }.sortedByDescending { it.timeMs }
+                )
+                runtimeLogs = RuntimeLog.snapshot(100)
+                delay(1500)
+            }
         }
     }
 
@@ -139,6 +148,66 @@ fun LogsScreen() {
                 MessageCard(msg)
             }
         }
+
+        // ── 실행 로그 — 서비스/데몬의 동작 로그 ─────────────
+        item(key = "runtime_header") {
+            SectionHeader(icon = Icons.Default.Info, title = "실행 로그 (${runtimeLogs.size})")
+        }
+        if (runtimeLogs.isEmpty()) {
+            item(key = "runtime_empty") {
+                Text(
+                    "남겨진 로그가 없습니다. 서비스를 켜면 동작 정보가 여기에 기록됩니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.TextSub
+                )
+            }
+        } else {
+            items(runtimeLogs.take(80), key = { "log_${it.timeMs}_${it.source}_${it.message}" }) { entry ->
+                LogCard(entry)
+            }
+        }
+    }
+}
+
+/** 하나의 로그 행 — 레벨 색점 + 시각/소스 + 메시지. */
+@Composable
+private fun LogCard(entry: RuntimeLog.Entry) {
+    val levelColor = when (entry.level) {
+        "ERROR" -> AppColors.ErrorVivid
+        "WARN" -> AppColors.WarningVivid
+        else -> AppColors.TextSub
+    }
+    SurfaceCard(contentPadding = PaddingValues(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .background(levelColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                entry.source,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = levelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                timeLabel(entry.timeMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = AppColors.TextSub
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            entry.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = AppColors.TextMain,
+            maxLines = if (entry.level == "ERROR") 6 else 3,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

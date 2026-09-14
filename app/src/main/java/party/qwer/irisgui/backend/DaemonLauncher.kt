@@ -252,6 +252,20 @@ object DaemonLauncher {
         }
     }
 
+    /**
+     * 데몬이 실제로 내려갈 때까지 대기한다.
+     * 정지 응답은 프로세스가 종료되기 전에 반환되므로, 포트까지 반납되었는지
+     * 확인하지 않으면 직후 같은 포트로 기동해 BindException(포트 사용 중)이 발생한다.
+     */
+    suspend fun waitForDaemonDown(timeoutMs: Long = 4_000): Boolean = withContext(Dispatchers.IO) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (AdbProcessClient.queryStatus() == null) return@withContext true
+            delay(200)
+        }
+        AdbProcessClient.queryStatus() == null
+    }
+
     private fun looksDenied(out: String): Boolean {
         val l = out.lowercase()
         return l.contains("invalid") || l.contains("denied") ||

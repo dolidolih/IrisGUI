@@ -261,6 +261,20 @@ object AdbServer {
                         }
                     }
 
+                    // /search — crypto_database全文 검색 (chat_log_search.searchable_text)
+                    route("/search") {
+                        post {
+                            val req = call.receive<SearchRequest>()
+                            try {
+                                val hits = CryptoDatabaseReader.searchMessages(req.query, req.limit)
+                                    .map { SearchHit(id = it.first, preview = it.second) }
+                                call.respond(SearchResponse(hits = hits))
+                            } catch (e: Exception) {
+                                call.respond(SearchResponse(hits = emptyList(), error = e.message))
+                            }
+                        }
+                    }
+
                     // /decrypt — 메시지 복호화
                     route("/decrypt") {
                         post {
@@ -301,7 +315,8 @@ object AdbServer {
                                 bot_http_port = AdbConfig.serverPort,
                                 web_server_endpoint = AdbConfig.webEndpoint,
                                 db_polling_rate = AdbConfig.dbPollingRate,
-                                message_send_rate = AdbConfig.messageSendRate
+                                message_send_rate = AdbConfig.messageSendRate,
+                                logs = RuntimeLog.snapshot(limit = 60)
                             )
                         )
                     }

@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.SerialName
+import party.qwer.irisgui.RuntimeLog
 
 // ── 공통 모델 ──────────────────────────────────────────
 
@@ -198,10 +199,32 @@ data class AdbProcessStatusResponse(
     val bot_http_port: Int,
     val web_server_endpoint: String,
     val db_polling_rate: Long,
-    val message_send_rate: Long
+    val message_send_rate: Long,
+    /** 데몬 stdout/stderr 로그(최신 선행) — 로그 탭의 "실행 로그"에 병합 표시. */
+    val logs: List<RuntimeLog.Entry> = emptyList()
 )
 
 @Serializable
 data class AdbProcessCommandRequest(
     val command: String  // "stop", "restart"
+)
+
+// ── crypto_database 全文 검색 API ────────────────────────
+
+@Serializable
+data class SearchRequest(
+    val query: String,
+    val limit: Int = 50
+)
+
+@Serializable
+data class SearchHit(
+    val id: Long,
+    val preview: String
+)
+
+@Serializable
+data class SearchResponse(
+    val hits: List<SearchHit>,
+    val error: String? = null
 )
