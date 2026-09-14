@@ -16,12 +16,14 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         setContent {
             MaterialTheme(
-                colorScheme = androidx.compose.material3.darkColorScheme(
+                colorScheme = androidx.compose.material3.lightColorScheme(
                     primary = AppColors.PrimaryAccent,
                     background = AppColors.DarkBg,
                     surface = AppColors.CardBg,
                     onBackground = AppColors.TextMain,
-                    onSurface = AppColors.TextMain
+                    onSurface = AppColors.TextMain,
+                    onSurfaceVariant = AppColors.TextSub,
+                    outline = AppColors.CardBorder
                 )
             ) {
                 Surface(

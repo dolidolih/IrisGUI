@@ -1,5 +1,7 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.BorderStroke
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -117,7 +119,7 @@ fun PermissionStrip(status: PermissionStatus, mode: AppMode, modifier: Modifier 
 
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = AppColors.WarningVivid.copy(alpha = 0.10f))
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -149,8 +151,8 @@ private fun PermissionActionButton(label: String, kind: AppMode) {
                 AppMode.ROOT_ADB -> requestBatteryPermission(context)
             }
         },
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
     ) {
         Text(label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
     }
@@ -171,8 +173,9 @@ fun PermissionCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -208,8 +211,8 @@ fun PermissionCard(
                 if (!isGranted) {
                     Button(
                         onClick = onClick,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
                     ) {
                         Text("설정하기", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                     }

@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -225,7 +226,7 @@ fun AdbDashboardScreen() {
             if (errorMessage != null) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
                 ) {
                     Row(
@@ -252,8 +253,9 @@ private fun ServerStatusCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -264,7 +266,7 @@ private fun ServerStatusCard(
                 Box(
                     modifier = Modifier.size(12.dp)
                         .background(
-                            color = if (status?.server_running == true) Color(0xFF00E676) else Color(0xFFFF5252),
+                            color = if (status?.server_running == true) AppColors.SuccessVivid else AppColors.ErrorVivid,
                             shape = CircleShape
                         ),
                     contentAlignment = Alignment.Center
@@ -344,7 +346,7 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
             Button(
                 onClick = onToggle,
                 modifier = Modifier.weight(1f).height(36.dp),
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AppColors.ErrorVivid,
                     contentColor = Color.White
@@ -362,7 +364,7 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
             Button(
                 onClick = onStart,
                 modifier = Modifier.weight(1f).height(36.dp),
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AppColors.PrimaryAccent,
                     contentColor = Color.White
@@ -379,7 +381,7 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
             Button(
                 onClick = onToggle,
                 modifier = Modifier.height(36.dp),
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AppColors.InputBg,
                     contentColor = AppColors.TextSub
@@ -401,8 +403,9 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
 private fun DbObservingCard(dashboardStatus: DashboardStatusResponse?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -420,7 +423,7 @@ private fun DbObservingCard(dashboardStatus: DashboardStatusResponse?) {
                     Box(
                         modifier = Modifier.size(10.dp)
                             .background(
-                                color = if (dashboardStatus.isObserving) Color(0xFF00E676) else Color(0xFFFF5252),
+                                color = if (dashboardStatus.isObserving) AppColors.SuccessVivid else AppColors.ErrorVivid,
                                 shape = CircleShape
                             ),
                         contentAlignment = Alignment.Center
@@ -455,8 +458,9 @@ private fun DbLogCard(log: Map<String, String?>) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -493,7 +497,7 @@ private fun DbLogCard(log: Map<String, String?>) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Box(
                     modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(AppColors.InputBg)
                         .padding(12.dp)
                 ) {
@@ -514,8 +518,9 @@ private fun DbLogCard(log: Map<String, String?>) {
 private fun RoomCard(room: RoomInfo, onClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             val display = room.name?.takeIf { it.isNotBlank() } ?: "(이름 없음)"
@@ -550,8 +555,9 @@ private fun ReplyTestCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -571,7 +577,7 @@ private fun ReplyTestCard(
                 onValueChange = onMessageChange,
                 label = { Text("메시지") },
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = AppColors.InputBg,
                     unfocusedContainerColor = AppColors.InputBg,
@@ -601,8 +607,8 @@ private fun ReplyTestCard(
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
             ) {
                 Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
@@ -612,7 +618,7 @@ private fun ReplyTestCard(
             if (testResult != null) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
                 ) {
                     Text(

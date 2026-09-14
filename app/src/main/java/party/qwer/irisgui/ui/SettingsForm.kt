@@ -1,5 +1,7 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -55,7 +57,7 @@ fun SettingsField(
         singleLine = singleLine,
         keyboardOptions = keyboardOptions,
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = irisFieldColors()
     )
 }
@@ -71,8 +73,9 @@ fun SettingsCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (leadingIcon != null || trailing != null) {
@@ -100,8 +103,8 @@ fun SettingsCard(
 fun SettingsSaveButton(onClick: () -> Unit, modifier: Modifier = Modifier, text: String = "저장") {
     Button(
         onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         modifier = modifier
     ) {
@@ -153,7 +156,7 @@ fun RoomDropdownField(
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true)
                 .fillMaxWidth(),
-            shape = RoundedCornerShape(10.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = irisFieldColors()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {

@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.BorderStroke
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,8 +46,9 @@ fun ConfigScreen() {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                border = BorderStroke(1.dp, AppColors.CardBorder)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -75,11 +77,11 @@ fun ConfigScreen() {
                             isEnabled = checked
                         },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = AppColors.TextMain,
+                            checkedThumbColor = Color.White,
                             checkedTrackColor = AppColors.PrimaryAccent,
                             uncheckedThumbColor = AppColors.TextSub,
                             uncheckedTrackColor = AppColors.InputBg,
-                            uncheckedBorderColor = Color.Transparent
+                            uncheckedBorderColor = AppColors.CardBorder
                         )
                     )
                 }
@@ -93,8 +95,9 @@ fun ConfigScreen() {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                border = BorderStroke(1.dp, AppColors.CardBorder)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsField(
