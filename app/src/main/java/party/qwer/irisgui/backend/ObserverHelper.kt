@@ -11,7 +11,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.LinkedList
 import java.util.concurrent.Executors
 import kotlin.collections.set
@@ -137,24 +136,6 @@ class ObserverHelper(
                         val chatInfo = db.getChatInfo(chatId, userId)
                         var roomName = chatInfo[0]
                         var senderName = chatInfo[1]
-
-                        if (senderName.isNullOrEmpty()) {
-                            try {
-                                val rawKey = "person_${chatId}:${userId}"
-                                val md = MessageDigest.getInstance("SHA-256")
-                                val hashedId = md.digest(rawKey.toByteArray()).joinToString("") { "%02x".format(it) }
-
-                                val fallbackInfo = NamesDB.getName(hashedId)
-                                if (fallbackInfo != null) {
-                                    senderName = fallbackInfo.first
-                                    if (roomName.isNullOrEmpty()) {
-                                        roomName = fallbackInfo.second
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
 
                         val data = JSONObject(
                             mapOf(

@@ -306,7 +306,6 @@ private fun ServerStatusCard(
 
                 Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     StatusRow("포트", "${status.port}")
-                    StatusRow("알림 폴링", if (status.notification_polling) "✅ 활성" else "❌ 비활성")
                     StatusRow("DB 관찰", if (status.db_observing) "✅ 활성" else "❌ 비활성")
                     StatusRow("봇 ID", if (status.bot_id > 0) status.bot_id.toString() else "미감지")
                     StatusRow("봇 이름", status.bot_name)
