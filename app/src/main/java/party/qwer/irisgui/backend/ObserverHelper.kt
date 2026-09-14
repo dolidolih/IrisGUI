@@ -1,0 +1,282 @@
+package party.qwer.irisgui.backend
+
+import android.database.Cursor
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.IOException
+import java.security.MessageDigest
+import java.util.LinkedList
+import java.util.concurrent.Executors
+import kotlin.collections.set
+import party.qwer.irisgui.AppConfig
+import party.qwer.irisgui.AppState
+
+class ObserverHelper(
+    private val db: KakaoDB, private val wsBroadcastFlow: SharedFlow<String>
+) {
+    private var lastLogId: Long = 0
+    private val lastDecryptedLogs = LinkedList<Map<String, String?>>()
+    private val httpRequestExecutor = Executors.newFixedThreadPool(8)
+    private val okHttpClient = OkHttpClient()
+
+    fun checkChange(db: KakaoDB) {
+        if (lastLogId == 0L) {
+            lastLogId = getLastLogIdFromDB()
+            println("Initial lastLogId: $lastLogId")
+            return
+        }
+
+        val newLogCount = getNewLogCountFromDB()
+
+        if (newLogCount > 0) {
+            println("Detected $newLogCount new log(s). Processing...")
+
+            db.connection.rawQuery(
+                "SELECT * FROM chat_logs WHERE _id > ? ORDER BY _id ASC",
+                arrayOf(lastLogId.toString())
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val columnNames = cursor.columnNames
+                    val currentLogId = cursor.getLong(columnNames.indexOf("_id"))
+
+                    if (currentLogId > lastLogId) {
+                        val v = JSONObject(cursor.getString(columnNames.indexOf("v")))
+                        val enc = v.getInt("enc")
+                        val origin = v.getString("origin")
+
+                        if (origin == "SYNCMSG" || origin == "MCHATLOGS") {
+                            lastLogId = currentLogId
+                            continue
+                        }
+
+                        val chatId = cursor.getLong(columnNames.indexOf("chat_id"))
+                        val userId = cursor.getLong(columnNames.indexOf("user_id"))
+
+                        var message = cursor.getString(columnNames.indexOf("message"))
+                        var attachment = cursor.getString(columnNames.indexOf("attachment"))
+                        val messageType = cursor.getString(columnNames.indexOf("type"))
+
+                        val threadId: String? = if (columnNames.indexOf("thread_id") != -1) {
+                            cursor.getString(columnNames.indexOf("thread_id"))
+                        } else {
+                            null
+                        }
+
+                        var supplement = "{}"
+                        try {
+                            supplement = cursor.getString(columnNames.indexOf("supplement"))
+                            if(supplement.isNotEmpty() && supplement != "{}")
+                                supplement = KakaoDecrypt.decrypt(enc, supplement, userId)
+                        } catch(_: Exception) {}
+
+                        try {
+                            if (message.isNotEmpty() && message != "{}") message =
+                                KakaoDecrypt.decrypt(enc, message, userId)
+                        } catch (e: Exception) {
+                            println("failed to decrypt message: $e")
+                        }
+
+                        try {
+                            if ((message.contains("선물") && messageType == "71") or (attachment == null)) {
+                                attachment = "{}"
+                            } else if (attachment.isNotEmpty() && attachment != "{}") {
+                                attachment =
+                                    KakaoDecrypt.decrypt(enc, attachment, userId)
+                            }
+                        } catch (e: Exception) {
+                            println("failed to decrypt attachment: $e")
+                        }
+
+                        storeDecryptedLog(cursor, message)
+
+                        lastLogId = currentLogId
+
+                        val raw = mutableMapOf<String, String?>()
+                        val advancedPlainSerialized = mutableMapOf<String, MutableMap<String, Any?>?>()
+
+                        for ((idx, columnName) in columnNames.withIndex()) {
+                            if (columnName == "message") {
+                                raw[columnName] = message
+                            } else if (columnName == "attachment") {
+                                raw[columnName] = attachment
+                                advancedPlainSerialized[columnName] = getStringJsonToMap(attachment)
+                                advancedPlainSerialized[columnName]!!["src_isThread"] = false
+                            } else if (columnName == "supplement") {
+                                raw["supplement"] = supplement
+                                advancedPlainSerialized[columnName] = getStringJsonToMap(supplement)
+                            } else {
+                                raw[columnName] = cursor.getString(idx)
+                            }
+                        }
+
+                        if (
+                            (threadId == null || threadId.isEmpty()) &&
+                            advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "") != ""
+                            &&
+                            advancedPlainSerialized["attachment"]!!.getOrDefault("src_logId", "") == ""
+                            &&
+                            messageType == "1"
+                        ) {
+                            advancedPlainSerialized["attachment"]!!["src_logId"] =
+                                advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "")
+                            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+                        } else if(threadId != null && messageType == "1") {
+                            advancedPlainSerialized["attachment"]!!["src_logId"] = threadId.toLong()
+                            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+                        }
+
+                        raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
+
+                        val chatInfo = db.getChatInfo(chatId, userId)
+                        var roomName = chatInfo[0]
+                        var senderName = chatInfo[1]
+
+                        if (senderName.isNullOrEmpty()) {
+                            try {
+                                val rawKey = "person_${chatId}:${userId}"
+                                val md = MessageDigest.getInstance("SHA-256")
+                                val hashedId = md.digest(rawKey.toByteArray()).joinToString("") { "%02x".format(it) }
+
+                                val fallbackInfo = NamesDB.getName(hashedId)
+                                if (fallbackInfo != null) {
+                                    senderName = fallbackInfo.first
+                                    if (roomName.isNullOrEmpty()) {
+                                        roomName = fallbackInfo.second
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+
+                        val data = JSONObject(
+                            mapOf(
+                                "msg" to message,
+                                "room" to roomName,
+                                "sender" to senderName,
+                                "json" to raw
+                            )
+                        ).toString()
+
+                        runBlocking {
+                            (wsBroadcastFlow as kotlinx.coroutines.flow.MutableSharedFlow<String>).emit(data)
+                        }
+
+                        if (AppConfig.webEndpoint.isNotEmpty()) {
+                            httpRequestExecutor.execute {
+                                sendPostRequest(data)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun getLastLogIdFromDB(): Long {
+        val lastLog = db.logToDict(0)
+        return lastLog["_id"]?.toLongOrNull() ?: 0
+    }
+
+    private fun getStringJsonToMap(data: String?): MutableMap<String, Any?> {
+        if(data == null) return HashMap()
+        val object_ = JSONObject(data)
+        val map: MutableMap<String, Any?> = HashMap()
+
+        val keys: MutableIterator<String> = object_.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value: Any? = object_.get(key)
+            map[key] = value
+        }
+
+        return map
+    }
+
+    private fun getNewLogCountFromDB(): Int {
+        val res = db.executeQuery(
+            "select count(*) as cnt from chat_logs where _id > ?", arrayOf(lastLogId.toString())
+        )
+        return res[0]["cnt"]?.toIntOrNull() ?: 0
+    }
+
+    @Synchronized
+    private fun storeDecryptedLog(cursor: Cursor, decryptedMessage: String?) {
+        val logEntry: MutableMap<String, String?> = HashMap()
+        logEntry["_id"] = cursor.getString(cursor.getColumnIndexOrThrow("_id"))
+        logEntry["chat_id"] = cursor.getString(cursor.getColumnIndexOrThrow("chat_id"))
+        logEntry["user_id"] = cursor.getString(cursor.getColumnIndexOrThrow("user_id"))
+        logEntry["message"] = decryptedMessage
+        logEntry["created_at"] = cursor.getString(cursor.getColumnIndexOrThrow("created_at"))
+
+        // 방이름/발신자명 해석 — 대시보드에서 id 대신 이름을 보여주기 위함
+        try {
+            val cId = logEntry["chat_id"]?.toLongOrNull()
+            val uId = logEntry["user_id"]?.toLongOrNull()
+            if (cId != null && uId != null) {
+                val info = db.getChatInfo(cId, uId)
+                logEntry["room_name"] = info[0]
+                logEntry["user_name"] = info[1]
+            }
+        } catch (e: Exception) {
+            // 이름 해석 실패 시 id로 폴백(아래 UI에서 처리)
+        }
+
+        lastDecryptedLogs.addFirst(logEntry)
+        if (lastDecryptedLogs.size > MAX_LOGS_STORED) {
+            lastDecryptedLogs.removeLast()
+        }
+
+        // AppState에도 동기화 — UI 스레드에서 읽을 수 있도록 불변 복사본 전달
+        val snapshot = lastDecryptedLogs.toList()
+        AppState.lastChatLogs.clear()
+        AppState.lastChatLogs.addAll(snapshot)
+    }
+
+    private fun sendPostRequest(jsonData: String) {
+        val url = AppConfig.webEndpoint
+        println("Sending HTTP POST request to: $url")
+        println("JSON Data being sent: $jsonData")
+
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val requestBody = jsonData.toRequestBody(mediaType)
+
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .build()
+
+        try {
+            okHttpClient.newCall(request).execute().use { response ->
+                val responseCode = response.code
+                println("HTTP Response Code: $responseCode")
+
+                if (response.isSuccessful) {
+                    val responseBody = response.body?.string()
+                    println("HTTP Response Body: $responseBody")
+                } else {
+                    System.err.println("HTTP Error Response: $responseCode - ${response.message}")
+                }
+            }
+        } catch (e: IOException) {
+            System.err.println("Error sending POST request: " + e.message)
+        }
+    }
+
+    /** @Synchronized on property without backing field → getter로 분리 */
+    @Synchronized
+    fun getLastChatLogs(): List<Map<String, String?>> = lastDecryptedLogs.toList()
+
+    companion object {
+        private const val MAX_LOGS_STORED = 50
+    }
+}

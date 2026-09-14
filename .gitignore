@@ -1,0 +1,26 @@
+# Build / IDE
+*.iml
+.gradle/
+build/
+app/build/
+.kotlin/
+local.properties
+.idea/
+.DS_Store
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Dot-directories (not source)
+.claude/
+.research/
+.openhands/
+
+# Not source distribution
+docs/
+Reference_project/
+qa/
+AGENTS.md
+
+# Packages
+*.apk
