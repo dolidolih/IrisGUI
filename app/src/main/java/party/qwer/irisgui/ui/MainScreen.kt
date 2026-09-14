@@ -81,12 +81,12 @@ fun MainScreen() {
     val scope = rememberCoroutineScope()
 
     val tabs = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf("상태", "설정", "도구")
-        AppMode.NON_ROOT -> listOf("대시보드", "히스토리", "설정")
+        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구")
+        AppMode.NON_ROOT -> listOf("상태", "로그")
     }
     val icons = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.Settings, Icons.Default.Storage)
-        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Settings)
+        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage)
+        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History)
     }
 
     val modeLabel = when (currentMode) {
@@ -172,17 +172,10 @@ fun MainScreen() {
         containerColor = AppColors.DarkBg
     ) { paddingValues ->
         Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            when (currentMode) {
-                AppMode.ROOT_ADB -> when (selectedTabIndex) {
-                    0 -> AdbDashboardScreen()
-                    1 -> AdbConfigScreen()
-                    else -> ToolsScreen()
-                }
-                AppMode.NON_ROOT -> when (selectedTabIndex) {
-                    0 -> NonRootDashboardScreen(permission, currentMode)
-                    1 -> HistoryScreen()
-                    else -> ConfigScreen()
-                }
+            when (selectedTabIndex) {
+                0 -> StatusScreen(permission)
+                1 -> LogsScreen()
+                else -> ToolsScreen()
             }
         }
     }

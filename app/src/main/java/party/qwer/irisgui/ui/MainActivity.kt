@@ -9,6 +9,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.AppTypography
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,7 +25,8 @@ class MainActivity : ComponentActivity() {
                     onSurface = AppColors.TextMain,
                     onSurfaceVariant = AppColors.TextSub,
                     outline = AppColors.CardBorder
-                )
+                ),
+                typography = AppTypography.app
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
