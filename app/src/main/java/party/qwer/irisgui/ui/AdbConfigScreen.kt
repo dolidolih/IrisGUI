@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -50,7 +51,7 @@ fun AdbConfigScreen() {
     var editSendRate by remember { mutableStateOf("") }
     var editPort by remember { mutableStateOf(AppConfig.serverPort.toString()) }
     var editEndpoint by remember { mutableStateOf("") }
-    val elementShape = RoundedCornerShape(12.dp)
+    val elementShape = RoundedCornerShape(16.dp)
     val seamlessTextFieldColors = TextFieldDefaults.colors(
         focusedContainerColor = AppColors.InputBg,
         unfocusedContainerColor = AppColors.InputBg,
@@ -104,8 +105,9 @@ fun AdbConfigScreen() {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                border = BorderStroke(1.dp, AppColors.CardBorder)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("현재 설정", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
@@ -229,7 +231,7 @@ fun AdbConfigScreen() {
             if (saveMessage != null) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
                 ) {
                     Row(
@@ -257,8 +259,8 @@ fun AdbConfigScreen() {
                     loadConfig()
                 },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
@@ -277,8 +279,9 @@ private fun ConfigEditField(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
@@ -287,15 +290,15 @@ private fun ConfigEditField(
                     value = value,
                     onValueChange = onValueChange,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(12.dp),
                     singleLine = true,
                     colors = irisFieldColors()
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
                     onClick = onSave,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text("저장", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
@@ -314,8 +317,9 @@ private fun ConfigEditFieldNumeric(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
@@ -324,7 +328,7 @@ private fun ConfigEditFieldNumeric(
                     value = value,
                     onValueChange = onValueChange,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(12.dp),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     colors = irisFieldColors()
@@ -332,8 +336,8 @@ private fun ConfigEditFieldNumeric(
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
                     onClick = onSave,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text("저장", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))

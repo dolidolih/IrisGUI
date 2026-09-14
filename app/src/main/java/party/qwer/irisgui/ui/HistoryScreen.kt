@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,8 +42,9 @@ fun HistoryScreen() {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                    border = BorderStroke(1.dp, AppColors.CardBorder)
                 ) {
                     Column(modifier = Modifier.padding(vertical = 8.dp)) {
                         AppState.storedRooms.forEach { room: StoredRoom ->
@@ -82,8 +84,9 @@ fun HistoryScreen() {
                         .fillMaxWidth()
                         .animateContentSize()
                         .clickable { expanded = !expanded },
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                    border = BorderStroke(1.dp, AppColors.CardBorder)
                 ) {
                     Column(modifier = Modifier.padding(20.dp)) {
                         Text("ID: ${log["_id"] ?: "?"}", fontWeight = FontWeight.Bold, color = AppColors.TextMain)
@@ -94,7 +97,7 @@ fun HistoryScreen() {
                         }
                         if (expanded) {
                             Spacer(modifier = Modifier.height(12.dp))
-                            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(AppColors.InputBg).padding(16.dp)) {
+                            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(AppColors.InputBg).padding(16.dp)) {
                                 Text(
                                     text = log.entries.joinToString("\n") { "${it.key}: ${it.value}" },
                                     style = MaterialTheme.typography.bodySmall,
@@ -123,8 +126,9 @@ fun HistoryScreen() {
                     .fillMaxWidth()
                     .animateContentSize()
                     .clickable { expanded = !expanded },
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                border = BorderStroke(1.dp, AppColors.CardBorder)
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -153,7 +157,7 @@ fun HistoryScreen() {
 
                     if (expanded) {
                         Spacer(modifier = Modifier.height(16.dp))
-                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(AppColors.InputBg).padding(16.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(AppColors.InputBg).padding(16.dp)) {
                             Text(
                                 text = event.rawDump,
                                 style = MaterialTheme.typography.bodySmall,

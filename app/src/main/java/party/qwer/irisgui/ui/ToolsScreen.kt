@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -52,8 +53,9 @@ fun ToolsScreen() {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                border = BorderStroke(1.dp, AppColors.CardBorder)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -70,7 +72,7 @@ fun ToolsScreen() {
                         value = queryText,
                         onValueChange = { queryText = it },
                         modifier = Modifier.fillMaxWidth().height(110.dp),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(12.dp),
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = AppColors.InputBg,
@@ -95,9 +97,9 @@ fun ToolsScreen() {
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(44.dp),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(12.dp),
                         enabled = !isQuerying && queryText.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
+                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
                     ) {
                         if (isQuerying) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -119,7 +121,7 @@ fun ToolsScreen() {
         items(quickQueries) { (label, sql) ->
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { queryText = sql },
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
             ) {
                 Row(
@@ -148,7 +150,7 @@ fun ToolsScreen() {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
                 ) {
                     Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -187,8 +189,9 @@ internal fun QueryResultCard(row: Map<String, String?>) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+        border = BorderStroke(1.dp, AppColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             row.entries.firstOrNull()?.let { (key, value) ->
@@ -206,7 +209,7 @@ internal fun QueryResultCard(row: Map<String, String?>) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(AppColors.InputBg, RoundedCornerShape(8.dp))
+                        .background(AppColors.InputBg, RoundedCornerShape(12.dp))
                         .padding(8.dp)
                 ) {
                     Text(
