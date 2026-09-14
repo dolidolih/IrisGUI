@@ -50,12 +50,6 @@ fun AdbConfigScreen() {
     var editSendRate by remember { mutableStateOf("") }
     var editPort by remember { mutableStateOf(AppConfig.serverPort.toString()) }
     var editEndpoint by remember { mutableStateOf("") }
-
-    // 모드 선택
-    var modeSelection by remember { mutableStateOf(AppConfig.appMode?.name ?: "ROOT_ADB") }
-    var modeDropdownExpanded by remember { mutableStateOf(false) }
-    var modeApplyResult by remember { mutableStateOf<String?>(null) }
-    val modeOptions = listOf("ROOT_ADB", "NON_ROOT")
     val elementShape = RoundedCornerShape(12.dp)
     val seamlessTextFieldColors = TextFieldDefaults.colors(
         focusedContainerColor = AppColors.InputBg,
@@ -84,11 +78,6 @@ fun AdbConfigScreen() {
             }
             isLoading = false
         }
-    }
-
-    fun modeLabel(name: String): String = when (name) {
-        "ROOT_ADB" -> "루팅 (ADB)"
-        else -> "논루팅 (NLS)"
     }
 
     // 초기 로드
@@ -136,114 +125,6 @@ fun AdbConfigScreen() {
             }
         }
 
-        // ── 모드 선택 ─────────────────────────────────
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
-            ) {
-                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("실행 모드", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                    Text("이 앱의 동작 모드를 선택합니다. 변경 후 [적용] 버튼을 누르세요.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-                    ExposedDropdownMenuBox(
-                        expanded = modeDropdownExpanded,
-                        onExpandedChange = { modeDropdownExpanded = it },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = modeLabel(modeSelection),
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("모드 선택") },
-                            trailingIcon = { TrailingIcon(expanded = modeDropdownExpanded) },
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                            shape = elementShape,
-                            singleLine = true,
-                            colors = seamlessTextFieldColors
-                        )
-                        ExposedDropdownMenu(
-                            expanded = modeDropdownExpanded,
-                            onDismissRequest = { modeDropdownExpanded = false },
-                            modifier = Modifier.background(AppColors.CardBg)
-                        ) {
-                            modeOptions.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(modeLabel(option), color = AppColors.TextMain) },
-                                    onClick = {
-                                        modeSelection = option
-                                        modeDropdownExpanded = false
-                                        modeApplyResult = null
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // 모드 설명
-                    when (modeSelection) {
-                        "ROOT_ADB" -> Text("루팅된 ADB 환경에서 adb shell로 프로세스를 실행합니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-                        else -> Text("NLS(Notification Listener Service) 기반 논루팅(알림) 모드입니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-                    }
-
-                    // 적용 버튼
-                    Button(
-                        onClick = {
-                            val newMode = AppMode.valueOf(modeSelection)
-                            AppConfig.appMode = newMode
-                            AppModeManager.setMode(newMode)
-
-                            // 모드 변경 시 인앱 서비스를 정지한다(이전 모드 잔존 방지).
-                            context.startForegroundService(
-                                Intent(context, IrisService::class.java).apply {
-                                    action = IrisService.ACTION_STOP_SERVICE
-                                }
-                            )
-
-                            when (modeSelection) {
-                                "ROOT_ADB" -> {
-                                    modeApplyResult = "ADB 모드가 선택되었습니다. 아래 가이드를 따라주세요."
-                                }
-                                else -> {
-                                    modeApplyResult = "논루팅(알림) 모드로 설정되었습니다."
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = elementShape,
-                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("적용", fontWeight = FontWeight.Bold)
-                    }
-
-                    // 모드 적용 결과
-                    if (modeApplyResult != null) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    if (modeApplyResult!!.contains("실패")) Icons.Default.Warning else Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (modeApplyResult!!.contains("실패")) AppColors.ErrorVivid else AppColors.PrimaryAccent,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(modeApplyResult!!, style = MaterialTheme.typography.bodySmall, color = AppColors.TextMain)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // ── 설정 편집 ─────────────────────────────────
         item {
             Text("설정 편집", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.PrimaryAccent)
@@ -279,7 +160,7 @@ fun AdbConfigScreen() {
                         scope.launch {
                             // 실행 중인 app_process에도 best-effort로 반영(다음 재시작 시 적용)
                             AdbProcessClient.updateConfig("botport", ConfigRequest(port = port))
-                            saveMessage = "✅ 포트 저장 완료 — [가이드]의 시작 명령을 다시 복사해 app_process를 재시작하세요"
+                            saveMessage = "✅ 포트 저장 완료 — 데몬을 재시작하면 새 포트가 적용됩니다"
                         }
                     } else {
                         saveMessage = "❌ 유효한 포트 번호(1-65535)를 입력하세요"
@@ -408,12 +289,7 @@ private fun ConfigEditField(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AppColors.PrimaryAccent,
-                        unfocusedBorderColor = AppColors.TextSub.copy(alpha = 0.3f),
-                        focusedTextColor = AppColors.TextMain,
-                        unfocusedTextColor = AppColors.TextMain
-                    )
+                    colors = irisFieldColors()
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
@@ -451,12 +327,7 @@ private fun ConfigEditFieldNumeric(
                     shape = RoundedCornerShape(8.dp),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AppColors.PrimaryAccent,
-                        unfocusedBorderColor = AppColors.TextSub.copy(alpha = 0.3f),
-                        focusedTextColor = AppColors.TextMain,
-                        unfocusedTextColor = AppColors.TextMain
-                    )
+                    colors = irisFieldColors()
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
