@@ -6,7 +6,7 @@ import android.os.Bundle
 /**
  * KakaoNotificationParser — 카카오톡 알림 번들을 채팅 필드(발신자/본문/방/그룹 여부)로 변환한다.
  *
- * NLS(논루팅)와 NotificationPoller(루팅)가 동일 소스를 사용하므로 파싱 규칙은 여기 하나뿐이다.
+ * NLS(논루팅) 전용 소스 — 파싱 규칙은 여기 하나뿐이다.
  * 사용하는 API는 전부 공개 API이며 reflection/hidden API/정규식 파서는 쓰지 않는다:
  *
  *  | API                                              | 레벨 |

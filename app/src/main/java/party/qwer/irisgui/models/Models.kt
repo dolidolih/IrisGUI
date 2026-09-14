@@ -192,7 +192,6 @@ data class AotResponse(
 data class AdbProcessStatusResponse(
     val server_running: Boolean,
     val port: Int,
-    val notification_polling: Boolean,
     val db_observing: Boolean,
     val bot_id: Long,
     val bot_name: String,

@@ -1,7 +1,5 @@
 package party.qwer.irisgui.backend
 
-import android.os.IBinder
-import android.service.notification.StatusBarNotification
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
@@ -31,13 +29,11 @@ import kotlinx.serialization.json.*
 import party.qwer.irisgui.*
 import party.qwer.irisgui.models.*
 import java.io.File
-import kotlin.concurrent.thread
 
 /**
  * ADB 루팅 모드 전용 HTTP 서버.
  * app_process 환경에서는 Android Context가 없으므로, Replier를 직접 호출하는轻量版 서버.
- * 원본 Iris(IrisServer.kt)와 동일한 엔드포인트를 제공하며, NotificationPoller를 통해
- * NLS 없이 알림을 감지한다.
+ * 원본 Iris(IrisServer.kt)와 동일한 엔드포인트를 제공하며, 채팅 이벤트는 DBObserver가 전송한다.
  */
 object AdbServer {
     @Volatile
@@ -52,9 +48,6 @@ object AdbServer {
 
     /** KakaoDB 싱글톤 — 매 쿼리마다 생성하지 않음 */
     private var kakaoDb: KakaoDB? = null
-
-    /** NotificationPoller — NLS 없이 알림 감지 */
-    private var notificationPoller: NotificationPoller? = null
 
     /** AdbServer 전용 CoroutineScope — handleTextReply에서 재사용 (P7 누수 방지) */
     private val serverScope = CoroutineScope(Dispatchers.IO)
@@ -113,11 +106,6 @@ object AdbServer {
             // 2. KakaoDB 싱글톤 초기화
             kakaoDb = KakaoDB()
             println("AdbServer: KakaoDB initialized, botId = ${kakaoDb!!.botUserId}")
-
-            // 3. NotificationPoller 시작 (NLS 없이 알림 감지)
-            notificationPoller = NotificationPoller(wsBroadcastFlow, kakaoDb)
-            notificationPoller?.startPolling()
-            println("AdbServer: NotificationPoller started")
 
             val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -302,13 +290,11 @@ object AdbServer {
 
                     // ── P21: 프로세스 상태/제어 (Android 앱 ↔ app_process 통신) ──
                     get("/process-status") {
-                        // AdbServer가 실행 중인지, NotificationPoller가 폴링 중인지,
-                        // DB 관찰 중인지 등 전체 상태 반환
+                        // AdbServer가 실행 중인지, DB 관찰 중인지 등 전체 상태 반환
                         call.respond(
                             AdbProcessStatusResponse(
                                 server_running = _isRunning,
                                 port = AdbConfig.serverPort,
-                                notification_polling = notificationPoller?.isPolling ?: false,
                                 db_observing = AppState.isObserving,
                                 bot_id = AdbConfig.botId,
                                 bot_name = AdbConfig.botName,
@@ -404,8 +390,6 @@ object AdbServer {
     fun stopServer() {
         // serverScope 정지 — handleTextReply/handleImageReply 코루틴 정리
         serverScope.cancel()
-        notificationPoller?.stopPolling()
-        notificationPoller = null
         kakaoDb?.closeConnection()
         kakaoDb = null
         engineRef?.let {
@@ -418,222 +402,5 @@ object AdbServer {
         }
         engineRef = null
         _isRunning = false
-    }
-}
-
-/**
- * NotificationPoller — ADB 모드에서 NLS 없이 알림 감지
- * 원본 Iris의 NotificationPoller와 동일한 로직.
- * Hidden API를 통해 StatusBarNotification을 직접 폴링한다.
- */
-class NotificationPoller(
-    private val wsBroadcastFlow: MutableSharedFlow<String>,
-    private val kakaoDb: KakaoDB?
-) {
-    @Volatile
-    private var isRunning = false
-    private val cachedSenderIds = mutableSetOf<String>()
-    private val processedNotifications = mutableMapOf<String, Long>()
-
-    fun startPolling() {
-        if (isRunning) return
-        isRunning = true
-        thread(name = "NotificationPoller", start = true) {
-            while (isRunning) {
-                try {
-                    pollNotifications()
-                } catch (e: Exception) {
-                    System.err.println("NotificationPoller error: ${e.message}")
-                }
-                Thread.sleep(3000)
-            }
-            println("NotificationPoller: Thread exited.")
-        }
-    }
-
-    /** P15: 스레드 정지 — isRunning 플래그를 false로 설정하여 while 루프 종료 */
-    fun stopPolling() {
-        isRunning = false
-    }
-
-    /** P21: 폴링 상태 확인 — /process-status에서 사용 */
-    val isPolling: Boolean
-        get() = isRunning
-
-    private fun pollNotifications() {
-        val sbns = getActiveNotifications()
-
-        val currentActiveKeys = mutableSetOf<String>()
-
-        for (sbn in sbns) {
-            if (sbn.packageName != "com.kakao.talk") continue
-
-            val key = sbn.key
-            val postTime = sbn.postTime
-            currentActiveKeys.add(key)
-
-            val lastProcessedTime = processedNotifications[key]
-
-            if (lastProcessedTime == postTime) {
-                continue
-            }
-
-            // shared parser (KakaoNotificationParser) - same rule as NON_ROOT NLS.
-            val parsed = KakaoNotificationParser.parse(sbn.notification)
-            if (parsed == null) {
-                processedNotifications[key] = postTime
-                continue
-            }
-
-            val senderName = parsed.senderName
-            val senderId = parsed.senderId
-
-            // ROOT mode: room name resolved from DB only (chat_rooms/open_link), not shortcut store.
-            val room = dbRoomName(sbn.tag) ?: parsed.roomTitle ?: senderName
-
-            println(
-                "NotificationPoller: name=\"$senderName\" person=\"$senderId\" " +
-                    "chatId(tag)=\"${sbn.tag}\" room=\"$room\" group=${parsed.isGroupConversation} sbnKey=\"$key\""
-            )
-
-            processedNotifications[key] = postTime
-
-            if (senderId.isNotEmpty() && !cachedSenderIds.contains(senderId)) {
-                NamesDB.saveName(senderId, senderName, room)
-                cachedSenderIds.add(senderId)
-            }
-
-            // NOTE: chat events in ROOT mode are emitted by DBObserver -> ObserverHelper.
-            // Do not broadcast here: extra top-level keys cause irispy-client TypeErrors,
-            // missing inner json fields cause KeyErrors, and DB events would duplicate.
-        }
-
-        processedNotifications.keys.retainAll(currentActiveKeys)
-
-        if (cachedSenderIds.size > 5000) {
-            cachedSenderIds.clear()
-        }
-    }
-
-    /**
-     * 루팅(ADB) 모드 방 이름 — 루트 소스(카톡 DB, chat_rooms/open_link)로만 해결.
-     * conversationId(=sbn.tag) → 방 이름; 1:1 방이면 상대방 닉네임.
-     * 쇼트컷 스토어는 사용하지 않는다. 미해결(chat_rooms 없음/DB 오류) 시 null →
-     * 호출부에서 알림 값(subText/summary/닉네임)으로 폴백. 결과 캐시(해결되면 고정).
-     */
-    private fun dbRoomName(conversationId: String): String? {
-        if (conversationId.isEmpty()) return null
-        dbRoomCache[conversationId]?.let { return it.ifEmpty { null } }
-        val db = kakaoDb ?: return null
-        if (conversationId.toLongOrNull() == null) { dbRoomCache[conversationId] = ""; return null }
-        try {
-            val rooms = db.getRecentRooms(50).firstOrNull { it["id"] == conversationId } ?: run {
-                if (dbRoomCache.size < 1024) dbRoomCache[conversationId] = ""
-                return null
-            }
-            val name = rooms["name"]
-            if (!name.isNullOrBlank()) {
-                if (dbRoomCache.size < 1024) dbRoomCache[conversationId] = name
-                return name
-            }
-            if (dbRoomCache.size < 1024) dbRoomCache[conversationId] = ""
-            return null
-        } catch (e: Exception) {
-            return null
-        }
-    }
-
-    private val dbRoomCache = mutableMapOf<String, String>()
-
-    private fun getActiveNotifications(): Array<StatusBarNotification> {
-        try {
-            val serviceManager = Class.forName("android.os.ServiceManager")
-            val getService = serviceManager.getMethod("getService", String::class.java)
-            val binder = getService.invoke(null, "notification") as IBinder
-
-            val stub = Class.forName("android.app.INotificationManager\$Stub")
-            val inpm = stub.getMethod("asInterface", IBinder::class.java).invoke(null, binder)
-
-            val methods = inpm.javaClass.methods
-
-            val userId = try {
-                val userHandleClass = Class.forName("android.os.UserHandle")
-                userHandleClass.getMethod("myUserId").invoke(null) as Int
-            } catch (e: Exception) {
-                0
-            }
-
-            // try 1: getActiveNotifications(String callingPackage)
-            try {
-                val getActiveMethod = methods.find {
-                    it.name == "getActiveNotifications" &&
-                    it.parameterTypes.size == 1 &&
-                    it.parameterTypes[0] == String::class.java
-                }
-                if (getActiveMethod != null) {
-                    val result = getActiveMethod.invoke(inpm, "com.android.shell")
-                    val notifications = extractNotifications(result)
-                    if (notifications.isNotEmpty()) return notifications
-                }
-            } catch (e: Exception) {
-                // pass
-            }
-
-            // try 2: getAppActiveNotifications(String packageName, int userId)
-            try {
-                val getAppActiveMethod = methods.find {
-                    it.name == "getAppActiveNotifications" &&
-                    it.parameterTypes.size == 2 &&
-                    it.parameterTypes[0] == String::class.java
-                }
-                if (getAppActiveMethod != null) {
-                    val result = getAppActiveMethod.invoke(inpm, "com.kakao.talk", userId)
-                    val notifications = extractNotifications(result)
-                    if (notifications.isNotEmpty()) return notifications
-                }
-            } catch (e: Exception) {
-                // pass
-            }
-
-            // try 3: getActiveNotifications(String packageName)
-            try {
-                val getActiveMethod = methods.find {
-                    it.name == "getActiveNotifications" &&
-                    it.parameterTypes.size == 1 &&
-                    it.parameterTypes[0] == String::class.java
-                }
-                if (getActiveMethod != null) {
-                    val result = getActiveMethod.invoke(inpm, "com.kakao.talk")
-                    val notifications = extractNotifications(result)
-                    if (notifications.isNotEmpty()) return notifications
-                }
-            } catch (e: Exception) {
-                // pass
-            }
-
-        } catch (e: Exception) {
-            System.err.println("NotificationPoller: Failed to get notification manager: ${e.message}")
-        }
-        return emptyArray()
-    }
-
-    private fun extractNotifications(result: Any?): Array<StatusBarNotification> {
-        if (result == null) return emptyArray()
-
-        if (result is Array<*>) {
-            return result.filterIsInstance<StatusBarNotification>().toTypedArray()
-        }
-
-        try {
-            val getListMethod = result.javaClass.getMethod("getList")
-            val list = getListMethod.invoke(result) as? List<*>
-            if (list != null) {
-                return list.filterIsInstance<StatusBarNotification>().toTypedArray()
-            }
-        } catch (e: Exception) {
-            // pass
-        }
-
-        return emptyArray()
     }
 }
