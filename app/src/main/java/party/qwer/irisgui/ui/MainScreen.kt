@@ -21,7 +21,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Badge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -141,13 +143,17 @@ fun MainScreen() {
                         onClick = { selectedTabIndex = index },
                         icon = {
                             val warnDot = index == 0 && permission.needsAttention(currentMode)
-                            Box {
+                            Box(
+                                contentAlignment = Alignment.TopEnd,
+                                modifier = Modifier.size(24.dp)
+                            ) {
                                 Icon(icons[index], contentDescription = title)
                                 if (warnDot) {
-                                    Badge(
-                                        containerColor = AppColors.ErrorVivid,
-                                        modifier = Modifier.padding(14.dp).padding(12.dp)
-                                    ) {}
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(AppColors.ErrorVivid, CircleShape)
+                                    )
                                 }
                             }
                         },

@@ -1,5 +1,6 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +24,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
+import party.qwer.irisgui.AppState
 
 /**
  * NonRootDashboardScreen — NON_ROOT 모드 대시보드.
@@ -32,10 +34,15 @@ import party.qwer.irisgui.AppMode
 @Composable
 fun NonRootDashboardScreen(permission: PermissionStatus, mode: AppMode) {
     val context = LocalContext.current
-    var testRoom by remember { mutableStateOf("") }
+    var testRoom by rememberSaveable { mutableStateOf("") }
     var testMessage by remember { mutableStateOf("") }
     var testResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // 답장 가능 방 목록: 최근 알림에서 확보한 StoredRoom 리스트.
+    // StoredRoom.name = 방이름, id = chatid(알림 tag가 비면 있으면 빈칸). 답장 전송키는
+    // ReplyManager.replyActions 에 방이름/방id 양쪽 키가 걸려 있으므로 id→없으면 name을 쓴다.
+    val roomOptions = remember { derivedStateOf { AppState.storedRooms.map { Pair(it.id.ifBlank { it.name }, it.name) } } }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -89,10 +96,10 @@ fun NonRootDashboardScreen(permission: PermissionStatus, mode: AppMode) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("답장 테스트", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
                     }
-                    SettingsField(
-                        label = "방 ID",
-                        value = testRoom,
-                        onValueChange = { testRoom = it }
+                    RoomDropdownField(
+                        selectedId = testRoom,
+                        rooms = roomOptions.value,
+                        onSelect = { testRoom = it }
                     )
                     SettingsField(
                         label = "메시지",

@@ -7,8 +7,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,6 +34,7 @@ fun ConfigScreen() {
     var isEnabled by remember { mutableStateOf(AppConfig.isServiceEnabled) }
     var endpoint by remember { mutableStateOf(AppConfig.webEndpoint) }
     var sendRate by remember { mutableStateOf(AppConfig.sendRate.toString()) }
+    var port by rememberSaveable { mutableStateOf(AppConfig.serverPort.toString()) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -109,6 +112,22 @@ fun ConfigScreen() {
                             AppConfig.sendRate = it.toLongOrNull() ?: 100L
                         },
                         leadingIcon = { Icon(Icons.Default.Timer, contentDescription = null, tint = AppColors.TextSub) }
+                    )
+                    SettingsField(
+                        label = "서버 포트 (127.0.0.1)",
+                        value = port,
+                        numeric = true,
+                        onValueChange = {
+                            port = it
+                            val p = it.toIntOrNull()
+                            if (p != null && p in 1..65535) AppConfig.serverPort = p
+                        },
+                        leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = AppColors.TextSub) }
+                    )
+                    Text(
+                        "포트 변경은 서비스 재시작 시 반영됩니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextSub
                     )
                 }
             }

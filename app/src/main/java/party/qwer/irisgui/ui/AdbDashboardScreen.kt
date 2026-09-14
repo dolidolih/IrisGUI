@@ -205,7 +205,8 @@ fun AdbDashboardScreen() {
                 room = testRoom,
                 onRoomChange = { testRoom = it },
                 message = testMessage,
-                onMessageChange = { testMessage = it }
+                onMessageChange = { testMessage = it },
+                roomOptions = rooms.map { Pair(it.id, it.name ?: "") }
             )
         }
 
@@ -540,7 +541,8 @@ private fun ReplyTestCard(
     room: String,
     onRoomChange: (String) -> Unit,
     message: String,
-    onMessageChange: (String) -> Unit
+    onMessageChange: (String) -> Unit,
+    roomOptions: List<Pair<String, String>> = emptyList(),
 ) {
     val testRoom = room
     val testMessage = message
@@ -559,24 +561,10 @@ private fun ReplyTestCard(
                 Text("답장 테스트", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
             }
 
-            TextField(
-                value = testRoom,
-                onValueChange = onRoomChange,
-                label = { Text("방 ID") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                singleLine = true,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = AppColors.InputBg,
-                    unfocusedContainerColor = AppColors.InputBg,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = AppColors.TextMain,
-                    unfocusedTextColor = AppColors.TextMain,
-                    focusedLabelColor = AppColors.PrimaryAccent,
-                    unfocusedLabelColor = AppColors.TextSub,
-                    cursorColor = AppColors.PrimaryAccent
-                )
+            RoomDropdownField(
+                selectedId = testRoom,
+                rooms = roomOptions,
+                onSelect = onRoomChange
             )
 
             TextField(
