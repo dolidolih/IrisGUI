@@ -53,25 +53,13 @@ fun NonRootDashboardScreen(permission: PermissionStatus, mode: AppMode) {
     ) {
         // ── 상태 요약 ──────────────────────────────────
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-                border = BorderStroke(1.dp, AppColors.CardBorder)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = AppColors.PrimaryAccent)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("NLS 알림 수신", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            if (permission.nlsOk) "허용됨" else "필요",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = if (permission.nlsOk) AppColors.SuccessVivid else AppColors.ErrorVivid
-                        )
-                    }
+            SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+                Column(modifier = Modifier.padding(0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionHeader(
+                        icon = Icons.Default.NotificationsActive,
+                        title = "NLS 알림 수신",
+                        trailing = { StatusPill(ok = permission.nlsOk, label = if (permission.nlsOk) "허용됨" else "필요") }
+                    )
                     Text(
                         "엔드포인트 ${AppConfig.webEndpoint.ifEmpty { "미설정" }} · 발송 주기 ${AppConfig.sendRate}ms",
                         style = MaterialTheme.typography.bodySmall,
@@ -88,18 +76,9 @@ fun NonRootDashboardScreen(permission: PermissionStatus, mode: AppMode) {
 
         // ── 답장 테스트 ────────────────────────────────
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-                border = BorderStroke(1.dp, AppColors.CardBorder)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = AppColors.PrimaryAccent)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("답장 테스트", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                    }
+            SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+                Column(modifier = Modifier.padding(0.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionHeader(icon = Icons.AutoMirrored.Filled.Send, title = "답장 테스트")
                     RoomDropdownField(
                         selectedId = testRoom,
                         rooms = roomOptions.value,

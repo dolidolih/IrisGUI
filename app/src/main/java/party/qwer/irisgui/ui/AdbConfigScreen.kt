@@ -103,26 +103,19 @@ fun AdbConfigScreen() {
 
         // ── 현재 설정 요약 ────────────────────────────
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-                border = BorderStroke(1.dp, AppColors.CardBorder)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("현재 설정", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (config != null) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            ConfigStatusRow("봇 이름", config!!.bot_name)
-                            ConfigStatusRow("포트", config!!.bot_http_port.toString())
-                            ConfigStatusRow("엔드포인트", config!!.web_server_endpoint.ifEmpty { "없음" })
-                            ConfigStatusRow("DB 폴링", "${config!!.db_polling_rate}ms")
-                            ConfigStatusRow("발송 주기", "${config!!.message_send_rate}ms")
-                        }
-                    } else {
-                        Text("로딩 중...", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-                    }
+            SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+                SectionHeader(icon = Icons.Default.Settings, title = "현재 설정")
+                Spacer(modifier = Modifier.height(10.dp))
+                if (config != null) {
+                    StatTiles(
+                        StatItem("봇 이름", config!!.bot_name, Icons.Default.Face),
+                        StatItem("포트", config!!.bot_http_port.toString(), Icons.Default.Dns),
+                        StatItem("엔드포인트", config!!.web_server_endpoint.ifEmpty { "없음" }, Icons.Default.Hub, valueColor = AppColors.TextMain),
+                        StatItem("DB 폴링", "${config!!.db_polling_rate}ms", Icons.Default.Storage),
+                        StatItem("발송 주기", "${config!!.message_send_rate}ms", Icons.Default.Schedule)
+                    )
+                } else {
+                    Text("로딩 중...", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
                 }
             }
         }
@@ -277,14 +270,9 @@ private fun ConfigEditField(
     onValueChange: (String) -> Unit,
     onSave: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
+    SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+        Column(modifier = Modifier.padding(0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = value,
@@ -315,14 +303,9 @@ private fun ConfigEditFieldNumeric(
     onValueChange: (String) -> Unit,
     onSave: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
+    SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+        Column(modifier = Modifier.padding(0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = value,
@@ -347,13 +330,4 @@ private fun ConfigEditFieldNumeric(
     }
 }
 
-@Composable
-private fun ConfigStatusRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-        Text(value, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = AppColors.TextMain)
-    }
-}
+

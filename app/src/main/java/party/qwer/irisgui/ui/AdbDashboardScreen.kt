@@ -251,13 +251,8 @@ private fun ServerStatusCard(
     onToggle: () -> Unit,
     onStart: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+        Column(modifier = Modifier.padding(0.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
@@ -302,16 +297,14 @@ private fun ServerStatusCard(
             }
 
             if (status != null) {
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(color = AppColors.TextSub.copy(alpha = 0.2f))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    StatusRow("포트", "${status.port}")
-                    StatusRow("DB 관찰", if (status.db_observing) "✅ 활성" else "❌ 비활성")
-                    StatusRow("봇 ID", if (status.bot_id > 0) status.bot_id.toString() else "미감지")
-                    StatusRow("봇 이름", status.bot_name)
-                }
+                Spacer(modifier = Modifier.height(14.dp))
+                StatTiles(
+                    StatItem("포트", "${status.port}", Icons.Default.Dns),
+                    StatItem("DB 관찰", if (status.db_observing) "활성" else "비활성", Icons.Default.Storage),
+                    StatItem("봇 ID", if (status.bot_id > 0) status.bot_id.toString() else "미감지", Icons.Default.SupervisorAccount),
+                    StatItem("봇 이름", status.bot_name, Icons.Default.Face,
+                        valueColor = if (status.bot_name.isBlank()) AppColors.TextSub else AppColors.TextMain)
+                )
 
                 // 정지/시작/재시작 버튼
                 Spacer(modifier = Modifier.height(8.dp))
@@ -401,52 +394,25 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
 
 @Composable
 private fun DbObservingCard(dashboardStatus: DashboardStatusResponse?) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.History, contentDescription = null, tint = AppColors.PrimaryAccent)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("DB 관찰 상태", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-            }
-
-            if (dashboardStatus != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier.size(10.dp)
-                            .background(
-                                color = if (dashboardStatus.isObserving) AppColors.SuccessVivid else AppColors.ErrorVivid,
-                                shape = CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(6.dp),
-                            tint = Color.White
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        if (dashboardStatus.isObserving) "DB 관찰 중" else "DB 관찰 중지",
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (dashboardStatus.isObserving) AppColors.SuccessVivid else AppColors.ErrorVivid
+    SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+        SectionHeader(
+            icon = Icons.Default.History,
+            title = "DB 관찰 상태",
+            trailing = {
+                if (dashboardStatus != null) {
+                    StatusPill(
+                        ok = dashboardStatus.isObserving,
+                        label = if (dashboardStatus.isObserving) "관찰 중" else "중지"
                     )
                 }
-                Text(dashboardStatus.statusMessage, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-            } else {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("상태 조회 중...", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
             }
+        )
+        if (dashboardStatus != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(dashboardStatus.statusMessage, style = MaterialTheme.typography.bodyMedium, color = AppColors.TextSub)
+        } else {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("상태 조회 중...", style = MaterialTheme.typography.bodyMedium, color = AppColors.TextSub)
         }
     }
 }
@@ -454,15 +420,10 @@ private fun DbObservingCard(dashboardStatus: DashboardStatusResponse?) {
 @Composable
 private fun DbLogCard(log: Map<String, String?>) {
     var expanded by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
+    SurfaceCard(
+        onClick = { expanded = !expanded },
+        contentPadding = PaddingValues(14.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
@@ -510,19 +471,16 @@ private fun DbLogCard(log: Map<String, String?>) {
                     )
                 }
             }
-        }
     }
 }
 
 @Composable
 private fun RoomCard(room: RoomInfo, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
+    SurfaceCard(
+        onClick = onClick,
+        contentPadding = PaddingValues(14.dp)
     ) {
-        Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             val display = room.name?.takeIf { it.isNotBlank() } ?: "(이름 없음)"
             Box(
                 modifier = Modifier.size(36.dp).clip(CircleShape).background(AppColors.InputBg),
@@ -553,18 +511,9 @@ private fun ReplyTestCard(
     var testResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Send, contentDescription = null, tint = AppColors.PrimaryAccent)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("답장 테스트", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-            }
+    SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+        Column(modifier = Modifier.padding(0.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionHeader(icon = Icons.Default.Send, title = "답장 테스트")
 
             RoomDropdownField(
                 selectedId = testRoom,
@@ -630,16 +579,5 @@ private fun ReplyTestCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun StatusRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-        Text(value, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = AppColors.TextMain)
     }
 }

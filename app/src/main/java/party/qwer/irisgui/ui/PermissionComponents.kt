@@ -171,52 +171,22 @@ fun PermissionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = AppColors.PrimaryAccent, modifier = Modifier.size(22.dp))
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                    Text(description, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    SurfaceCard(modifier = modifier) {
+        SectionHeader(
+            icon = icon,
+            title = title,
+            trailing = { StatusPill(ok = isGranted, label = if (isGranted) "허용됨" else "필요") }
+        )
+        Text(description, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
+        if (!isGranted) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Button(
+                onClick = onClick,
+                modifier = Modifier.height(34.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(
-                                color = if (isGranted) AppColors.SuccessVivid else AppColors.ErrorVivid,
-                                shape = CircleShape
-                            )
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        if (isGranted) "권한 허용됨" else "권한 필요",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (isGranted) AppColors.SuccessVivid else AppColors.ErrorVivid,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                if (!isGranted) {
-                    Button(
-                        onClick = onClick,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = Color.White)
-                    ) {
-                        Text("설정하기", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                    }
-                }
+                Text("설정하기", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             }
         }
     }
