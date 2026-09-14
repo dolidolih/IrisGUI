@@ -1,0 +1,184 @@
+package party.qwer.irisgui.backend
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import party.qwer.irisgui.AppConfig
+import party.qwer.irisgui.models.*
+
+/**
+ * AdbProcessClient — Android 앱 ↔ app_process(HTTP) 통신 클라이언트
+ *
+ * ADB 모드에서 Android 앱 UI가 백그라운드 app_process(AdbServer)의
+ * 실제 상태를 조회하고 제어하는 역할을 한다.
+ *
+ * 주의: 모든 함수는 suspend + withContext(Dispatchers.IO) 로 동작한다.
+ * 동기 OkHttp 호출을 메인 스레드(LaunchedEffect/rememberCoroutineScope의 기본
+ * Main 디스패처)에서 실행하면 NetworkOnMainThreadException 이 발생하고
+ * try/catch 에 삼켜져 항상 null 을 반환(대시보드 "미실행")하는 문제가 있었다.
+ */
+object AdbProcessClient {
+    private val client = OkHttpClient()
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val baseUrl: String
+        get() = "http://127.0.0.1:${AppConfig.serverPort}"
+
+    // ── Process Status / Control ──────────────────────────
+
+    /** app_process의 현재 상태 조회 (응답 파싱 실패 시 null) */
+    suspend fun queryStatus(): AdbProcessStatusResponse? = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$baseUrl/process-status").get().build()
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string() ?: return@use null
+                json.decodeFromString<AdbProcessStatusResponse>(body)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** app_process 정지 */
+    suspend fun stopProcess(): Boolean = executeCommand("stop")
+
+    /** app_process 재시작 */
+    suspend fun restartProcess(): Boolean = executeCommand("restart")
+
+    private suspend fun executeCommand(command: String): Boolean = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(AdbProcessCommandRequest(command))
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url("$baseUrl/process-command").post(body).build()
+        try {
+            client.newCall(request).execute().use { response -> response.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // ── Config ────────────────────────────────────────────
+
+    /** 서버 설정 조회 (응답 파싱 실패 시 null) */
+    suspend fun fetchConfig(): ConfigResponse? = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$baseUrl/config").get().build()
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string() ?: return@use null
+                json.decodeFromString<ConfigResponse>(body)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 서버 설정 업데이트
+     * @param name 설정 항목 이름 (endpoint, botname, dbrate, sendrate, botport)
+     */
+    suspend fun updateConfig(name: String, request: ConfigRequest): Boolean = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(request)
+            .toRequestBody("application/json".toMediaType())
+        val httpRequest = Request.Builder().url("$baseUrl/config/$name").post(body).build()
+        try {
+            client.newCall(httpRequest).execute().use { response -> response.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // ── Query ─────────────────────────────────────────────
+
+    /** KakaoDB 쿼리 실행 (실패 시 null) */
+    suspend fun executeQuery(query: String, bind: List<String>? = null): QueryResponse? = withContext(Dispatchers.IO) {
+        val req = QueryRequest(query = query, bind = bind?.map { JsonPrimitive(it) })
+        val body = json.encodeToString(req)
+            .toRequestBody("application/json".toMediaType())
+        val httpRequest = Request.Builder().url("$baseUrl/query").post(body).build()
+        try {
+            client.newCall(httpRequest).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val bodyText = response.body?.string() ?: return@use null
+                json.decodeFromString<QueryResponse>(bodyText)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ── Reply (답장 테스트) ───────────────────────────────
+
+    /**
+     * /reply 로 텍스트 메시지 전송 (답장 테스트용).
+     * @return HTTP 상태 코드(200대=성공), 연결 실패 시 -1
+     */
+    suspend fun sendReply(room: String, message: String): Int = withContext(Dispatchers.IO) {
+        val safeRoom = room.replace("\\", "\\\\").replace("\"", "\\\"")
+        val safeMsg = message.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        val jsonString = """{"type":"text","room":"$safeRoom","data":"$safeMsg"}"""
+        val body = jsonString.toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url("$baseUrl/reply").post(body).build()
+        try {
+            client.newCall(request).execute().use { response -> response.code }
+        } catch (e: Exception) {
+            -1
+        }
+    }
+
+    // ── Decrypt ───────────────────────────────────────────
+
+    /** 메시지 복호화 */
+    suspend fun decryptMessage(enc: Int, b64Ciphertext: String, userId: Long? = null): DecryptResponse? = withContext(Dispatchers.IO) {
+        val req = DecryptRequest(enc = enc, b64_ciphertext = b64Ciphertext, user_id = userId)
+        val body = json.encodeToString(req)
+            .toRequestBody("application/json".toMediaType())
+        val httpRequest = Request.Builder().url("$baseUrl/decrypt").post(body).build()
+        try {
+            client.newCall(httpRequest).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val bodyText = response.body?.string() ?: return@use null
+                json.decodeFromString<DecryptResponse>(bodyText)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ── Rooms (방 목록) ───────────────────────────────────
+
+    /** 최근 채팅방 목록 조회 (실패 시 빈 리스트) */
+    suspend fun fetchRooms(): List<RoomInfo> = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$baseUrl/rooms").get().build()
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                val body = response.body?.string() ?: return@use emptyList()
+                json.decodeFromString<RoomListResponse>(body).rooms
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // ── Dashboard ─────────────────────────────────────────
+
+    /** 대시보드 상태 조회 */
+    suspend fun fetchDashboardStatus(): DashboardStatusResponse? = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$baseUrl/dashboard/status").get().build()
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string() ?: return@use null
+                json.decodeFromString<DashboardStatusResponse>(body)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}

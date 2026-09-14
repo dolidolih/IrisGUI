@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iris Dashboard</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #6b33b3;
+            --primary-dark: #5a289b;
+            --primary-light: #804dd9;
+            --secondary-color: #0f0f23;
+            --accent-color: #2e6370;
+            --success-color: #266b4d;
+            --warning-color: #b36113;
+            --error-color: #b33333;
+
+            --bg-primary: #030712;
+            --bg-secondary: #111827;
+            --bg-tertiary: #1f2937;
+            --bg-card: linear-gradient(145deg, #111827 0%, #1f2937 100%);
+
+            --text-primary: #f9fafb;
+            --text-secondary: #d1d5db;
+            --text-muted: #9ca3af;
+
+            --border-color: #374151;
+            --border-focus: var(--primary-color);
+
+            --glass-bg: rgba(20, 30, 40, 0.8);
+            --glass-border: rgba(40, 50, 60, 0.4);
+            --shadow-glow: 0 0 40px rgba(var(--primary-color), 0.1);
+            --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.5);
+            --shadow-elevated: 0 25px 50px rgba(0, 0, 0, 0.6);
+
+            --radius-sm: 0.5rem;
+            --radius-md: 0.75rem;
+            --radius-lg: 1rem;
+            --radius-xl: 1.5rem;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
+            background: radial-gradient(ellipse at top, #1e1b4b 0%, #0f0f23 40%, #030712 100%);
+            min-height: 100vh;
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(circle at 20% 50%, rgba(var(--primary-color), 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(var(--primary-light), 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 40% 80%, rgba(var(--accent-color), 0.07) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            text-align: left;
+            margin-bottom: 1rem;
+            position: relative;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(var(--primary-color), 0.1) 0%, transparent 70%);
+            border-radius: 50%;
+            z-index: -1;
+            animation: pulse-glow 4s ease-in-out infinite;
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.5; }
+            50% { transform: translate(-50%, -50%) scale(1.1); opacity: 0.8; }
+        }
+
+        .header h1 {
+            font-size: clamp(2rem, 2vw, 4rem);
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--text-primary) 0%, var(--primary-light) 50%, var(--accent-color) 100%);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: #ffffff;
+            margin-bottom: 0.5rem;
+            margin-left: 1rem;
+            letter-spacing: -0.02em;
+            position: relative;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 1.15rem;
+            margin-top: 1rem;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            text-shadow: 0 0 15px rgba(var(--primary-color), 0.2);
+            position: relative;
+            z-index: 1;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-card);
+            margin-bottom: 2rem;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(var(--primary-color), 0.5), transparent);
+        }
+
+        .card:hover {
+            transform: translateY(-8px);
+            box-shadow: var(--shadow-elevated);
+            border-color: var(--glass-border);
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, rgba(var(--primary-color), 0.9), rgba(var(--primary-light), 0.8));
+            color: white;
+            padding: 1rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card-header h2 {
+            /* Adjusted: Smaller font size for card headers */
+            font-size: 1.375rem; /* Reduced from 1.75rem */
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .card-body {
+            padding: 2.5rem;
+        }
+
+        .config-grid {
+            display: grid;
+            gap: 2rem;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        }
+
+        .config-item {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            padding: 1rem;
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--glass-border);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .config-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary-color), var(--primary-light), var(--accent-color));
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .config-item:hover {
+            border-color: var(--glass-border);
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .config-item:hover::before {
+            transform: scaleX(1);
+        }
+
+        .config-item h3 {
+            /* Adjusted: Smaller font size for inner card titles */
+            font-size: 1.125rem; /* Reduced from 1.375rem */
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .config-item h3 i {
+            color: var(--primary-light);
+            font-size: 1.25rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type='text'],
+        input[type='number'],
+        textarea,
+        select {
+            width: 100%;
+            padding: 1rem 1.25rem;
+            border: 2px solid var(--glass-border);
+            border-radius: var(--radius-md);
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+            background: rgba(17, 24, 39, 0.8);
+            backdrop-filter: blur(10px);
+            color: var(--text-primary);
+            font-family: inherit;
+        }
+
+        input[type='text']:focus,
+        input[type='number']:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 4px rgba(var(--primary-color), 0.1), 0 0 20px rgba(var(--primary-color), 0.2);
+            transform: translateY(-2px);
+        }
+
+        input[readonly] {
+            background: rgba(31, 41, 55, 0.6);
+            color: var(--text-muted);
+            cursor: not-allowed;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            /* Added: Center align button text horizontally */
+            justify-content: center;
+            gap: 0.75rem;
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: var(--radius-md);
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            text-decoration: none;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+            position: relative;
+            overflow: hidden;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-family: inherit;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn:last-of-type {
+            margin-right: 0;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+            box-shadow: 0 4px 15px rgba(var(--primary-color), 0.3);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(var(--primary-color), 0.4);
+        }
+
+        .btn-secondary {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(31, 41, 55, 0.8);
+            transform: translateY(-2px);
+            border-color: var(--primary-color);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--error-color), #992222);
+            box-shadow: 0 4px 15px rgba(var(--error-color), 0.3);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(var(--error-color), 0.4);
+        }
+
+        .status-section {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border-radius: var(--radius-xl);
+            padding: 2.5rem;
+            box-shadow: var(--shadow-card);
+            border: 1px solid var(--glass-border);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .status-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--success-color), var(--accent-color));
+        }
+
+        .status-section .status-header { /* Targeting the first h2 within status-section */
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .status-section h2 {
+            /* Adjusted: Smaller font size for the Database Observation Status title */
+            font-size: 1.375rem; /* Reduced from 1.75rem */
+            font-weight: 700;
+        }
+
+        .status-section h3 {
+            /* Adjusted: Smaller font size for Recent Chat Logs title */
+            font-size: 1.125rem; /* Reduced from 1.375rem */
+            font-weight: 700;
+            color: var(--primary-light);
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+
+        .status-indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            animation: pulse-status 2s infinite;
+            box-shadow: 0 0 20px currentColor;
+        }
+
+        .status-good {
+            background: var(--success-color);
+            color: var(--success-color);
+        }
+
+        .status-bad {
+            background: var(--error-color);
+            color: var(--error-color);
+        }
+
+        @keyframes pulse-status {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.1); }
+        }
+
+        .status-text {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .status-text.good {
+            color: var(--success-color);
+        }
+
+        .status-text.bad {
+            color: var(--error-color);
+        }
+
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 2rem;
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: var(--shadow-card);
+            border: 1px solid var(--glass-border);
+        }
+
+        .log-table th {
+            background: rgba(var(--primary-color), 0.1);
+            padding: 1.25rem;
+            text-align: left;
+            font-weight: 700;
+            color: var(--text-primary);
+            border-bottom: 2px solid var(--glass-border);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.8rem;
+        }
+
+        .log-table td {
+            padding: 1.25rem;
+            border-bottom: 1px solid var(--glass-border);
+            color: var(--text-secondary);
+        }
+
+        .log-table tr:hover {
+            background: rgba(var(--primary-color), 0.05);
+        }
+
+        .log-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .response-area {
+            background: rgba(15, 23, 42, 0.9);
+            backdrop-filter: blur(10px);
+            color: var(--text-secondary);
+            padding: 2rem;
+            border-radius: var(--radius-lg);
+            margin-top: 1rem;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 0.875rem;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            border: 1px solid var(--glass-border);
+            box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .notice {
+            background: rgba(var(--warning-color), 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(var(--warning-color), 0.3);
+            color: var(--warning-color);
+            padding: 0rem;
+            border-radius: var(--radius-md);
+            margin-top: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 500;
+            font-size: 0.8rem;
+        }
+
+        .input-buttons-group {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 1rem;
+        }
+
+        .input-buttons-group input {
+            width: 100%;
+            flex: none;
+        }
+
+        .input-buttons-group .btn {
+            width: 100%;
+            /* text-align: center; This is handled by justify-content now */
+            margin-right: 0;
+            margin-bottom: 0;
+            flex-shrink: 0;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            align-items: end;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        .form-row .btn {
+            margin-bottom: 0;
+        }
+
+        .section-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            .header {
+                margin-bottom: 0rem;
+            }
+
+            .card-body {
+                padding: 1.5rem;
+            }
+
+            .config-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .form-row {
+                flex-direction: column;
+                gap: 0;
+            }
+
+            .section-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .loading {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: currentColor;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(135deg, var(--primary-dark), var(--primary-color));
+        }
+
+        #lastLogs {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 0.5rem;
+        }
+
+        .log-table td {
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .config-item h3 i {
+            transition: transform 0.3s ease;
+        }
+
+        .config-item:hover h3 i {
+            transform: scale(1.1) rotate(5deg);
+        }
+
+        .btn:focus-visible {
+            outline: 2px solid var(--primary-color);
+            outline-offset: 2px;
+        }
+
+        input:focus-visible,
+        textarea:focus-visible,
+        select:focus-visible {
+            outline: 2px solid var(--primary-color);
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Iris Dashboard</h1>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-cog"></i> Configuration Settings</h2>
+        </div>
+        <div class="card-body">
+            <div class="config-grid">
+                <div class="config-item">
+                    <h3><i class="fas fa-tag"></i> Bot Name</h3>
+                    <div class="form-group">
+                        <label for="botName">Current Bot Name</label>
+                        <input type="text" id="botName" value="CURRENT_BOT_NAME" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="newBotName">New Bot Name</label>
+                        <div class="input-buttons-group">
+                            <input type="text" id="newBotName" placeholder="Enter new bot name">
+                            <button class="btn btn-primary"
+                                    onclick="updateConfig('botname', document.getElementById('newBotName').value)">
+                                Update
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-item">
+                    <h3><i class="fas fa-server"></i> Web Server Endpoint</h3>
+                    <div class="form-group">
+                        <label for="webServerEndpoint">Current Endpoint</label>
+                        <input type="text" id="webServerEndpoint" value="CURRENT_WEB_ENDPOINT" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="newWebServerEndpoint">New Endpoint</label>
+                        <div class="input-buttons-group">
+                            <input type="text" id="newWebServerEndpoint" placeholder="http://172.17.0.1:5000/db">
+                            <button class="btn btn-primary"
+                                    onclick="updateConfig('endpoint', document.getElementById('newWebServerEndpoint').value)">
+                                Update
+                            </button>
+                            <button class="btn btn-danger" onclick="clearEndpoint()">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-item">
+                    <h3><i class="fas fa-database"></i> DB Polling Rate</h3>
+                    <div class="form-group">
+                        <label for="dbPollingRate">Current Rate (ms)</label>
+                        <input type="number" id="dbPollingRate" value="CURRENT_DB_RATE" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="newDbPollingRate">New Rate (ms)</label>
+                        <div class="input-buttons-group">
+                            <input type="number" id="newDbPollingRate" placeholder="5000">
+                            <button class="btn btn-primary"
+                                    onclick="updateConfig('dbrate', document.getElementById('newDbPollingRate').value)">
+                                Update
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-item">
+                    <h3><i class="fas fa-paper-plane"></i> Message Send Rate</h3>
+                    <div class="form-group">
+                        <label for="messageSendRate">Current Rate (ms)</label>
+                        <input type="number" id="messageSendRate" value="CURRENT_SEND_RATE" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="newMessageSendRate">New Rate (ms)</label>
+                        <div class="input-buttons-group">
+                            <input type="number" id="newMessageSendRate" placeholder="1000">
+                            <button class="btn btn-primary"
+                                    onclick="updateConfig('sendrate', document.getElementById('newMessageSendRate').value)">
+                                Update
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-item">
+                    <h3><i class="fas fa-network-wired"></i> Bot Port</h3>
+                    <div class="form-group">
+                        <label for="botPort">Current Port</label>
+                        <input type="number" id="botPort" value="CURRENT_BOT_PORT" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="newBotPort">New Port</label>
+                        <div class="input-buttons-group">
+                            <input type="number" id="newBotPort" placeholder="3000">
+                            <button class="btn btn-primary"
+                                    onclick="updateConfig('botport', document.getElementById('newBotPort').value)">
+                                Update
+                            </button>
+                        </div>
+                    </div>
+                    <div class="notice">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        Server restart required for bot port changes to take effect.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-grid">
+        <div class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-reply"></i> Reply Endpoint Test</h2>
+            </div>
+            <div class="card-body">
+                <form id="replyForm">
+                    <div class="form-group">
+                        <label for="replyRoom">Room ID</label>
+                        <input type="text" id="replyRoom" name="room" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="replyType">Message Type</label>
+                        <select id="replyType" name="type" onchange="updateReplyDataPlaceholder()">
+                            <option value="text">Text</option>
+                            <option value="image">Image (Base64)</option>
+                            <option value="image_multiple">Multiple Images (Base64 JSON Array)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="replyData">Message Data</label>
+                        <textarea id="replyData" name="data" rows="4" required
+                                  placeholder="Enter message text"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="replyRawJson">Raw JSON Body (override above)</label>
+                        <textarea id="replyRawJson" name="rawJson" rows="4"
+                                  placeholder='{"room": "", "type": "text", "data": ""}'></textarea>
+                    </div>
+
+                    <button type="button" class="btn btn-primary"
+                            onclick="submitForm('/reply', 'replyForm', 'replyResponseArea')">
+                        <i class="fas fa-paper-plane"></i> Send Reply
+                    </button>
+                </form>
+                <div id="replyResponseArea" class="response-area" style="display: none;"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-search"></i> Query Endpoint Test</h2>
+            </div>
+            <div class="card-body">
+                <form id="queryForm">
+                    <div class="form-group">
+                        <label for="querySql">SQL Query</label>
+                        <textarea id="querySql" name="query" rows="4" required></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="queryBind">Bind Parameters (JSON Array String, optional)</label>
+                        <input type="text" id="queryBind" name="bind" placeholder='["value1", "value2"]'>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="queryRawJson">Raw JSON Body (override above)</label>
+                        <textarea id="queryRawJson" name="rawJson" rows="4"
+                                  placeholder='{"query": "SELECT * FROM chat_logs LIMIT 10"}'></textarea>
+                    </div>
+
+                    <button type="button" class="btn btn-primary"
+                            onclick="submitForm('/query', 'queryForm', 'queryResponseArea')">
+                        <i class="fas fa-play"></i> Execute Query
+                    </button>
+                </form>
+                <div id="queryResponseArea" class="response-area" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-section">
+        <div class="status-header">
+            <h2><i class="fas fa-heartbeat"></i> DB Status</h2>
+        </div>
+        <div class="status-header">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <p class="status-text" id="dbStatus">Checking status...</p>
+        </div>
+        <h3><i class="fas fa-history"></i> Recent Chat Logs</h3>
+        <div id="lastLogs"></div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        fetchDbStatus();
+        setInterval(fetchDbStatus, 5000);
+        updateReplyDataPlaceholder();
+    });
+
+    const formatUnixTimestamp = (timestamp) => {
+        const date = new Date(timestamp * 1000);
+        const year = String(date.getFullYear());
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+
+        return `${year}:${month}:${day} ${hours}:${minutes}:${seconds}`;
+    };
+
+    function fetchDbStatus() {
+        fetch('/dashboard/status')
+            .then(response => response.json())
+            .then(data => {
+                const dbStatusElement = document.getElementById('dbStatus');
+                const statusIndicator = document.getElementById('statusIndicator');
+                const lastLogsContainer = document.getElementById('lastLogs');
+                lastLogsContainer.innerHTML = '';
+
+                if (data.isObserving) {
+                    dbStatusElement.textContent = data.statusMessage;
+                    dbStatusElement.className = 'status-text good';
+                    statusIndicator.className = 'status-indicator status-good';
+                } else {
+                    dbStatusElement.textContent = data.statusMessage;
+                    dbStatusElement.className = 'status-text bad';
+                    statusIndicator.className = 'status-indicator status-bad';
+                }
+
+                if (data.lastLogs && data.lastLogs.length > 0) {
+                    const table = document.createElement('table');
+                    table.className = 'log-table';
+                    const headerRow = table.insertRow();
+                    const headers = ['ID', 'Chat ID', 'User ID', 'Message', 'Created At'];
+                    headers.forEach(headerText => {
+                        const th = document.createElement('th');
+                        th.textContent = headerText;
+                        headerRow.appendChild(th);
+                    });
+
+                    data.lastLogs.forEach(log => {
+                        const row = table.insertRow();
+                        ['_id', 'chat_id', 'user_id', 'message', 'created_at'].forEach(key => {
+                            const cell = row.insertCell();
+
+                            if (key == "created_at") {
+                                cell.textContent = formatUnixTimestamp(log[key] || 0)
+                            } else {
+                                cell.textContent = log[key] || '';
+                            }
+                        });
+                    });
+                    lastLogsContainer.appendChild(table);
+                } else {
+                    lastLogsContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 2rem;">No recent logs available.</p>';
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching DB status:', error);
+                const dbStatusElement = document.getElementById('dbStatus');
+                const statusIndicator = document.getElementById('statusIndicator');
+                dbStatusElement.textContent = 'Error checking DB status';
+                dbStatusElement.className = 'status-text bad';
+                statusIndicator.className = 'status-indicator status-bad';
+            });
+    }
+
+    function submitForm(endpoint, formId, responseAreaId, postDataOverride) {
+        const form = document.getElementById(formId);
+        const responseArea = document.getElementById(responseAreaId);
+
+        if (responseArea) {
+            responseArea.style.display = 'block';
+            responseArea.textContent = 'Sending request...';
+        }
+
+        let formData = {};
+        if (postDataOverride) {
+            formData = postDataOverride;
+        } else {
+            let rawJsonTextarea = form ? form.querySelector('[name="rawJson"]') : null;
+            let rawJson = rawJsonTextarea ? rawJsonTextarea.value.trim() : '';
+
+            if (rawJson) {
+                try {
+                    formData = JSON.parse(rawJson);
+                } catch (e) {
+                    if (responseArea) responseArea.textContent = 'Error parsing raw JSON: ' + e.message;
+                    return;
+                }
+            } else if (form) {
+                if (endpoint === '/query') {
+                    const querySqlElement = document.getElementById('querySql');
+                    const queryBindElement = document.getElementById('queryBind');
+                    formData['query'] = querySqlElement.value;
+                    if (queryBindElement.value.trim()) {
+                        try {
+                            formData['bind'] = JSON.parse(queryBindElement.value);
+                        } catch (e) {
+                            alert("JSON parsing error: " + e);
+                            return;
+                        }
+                    }
+                } else {
+                    const replyTypeElement = form.querySelector('[name="type"]');
+                    const replyDataElement = form.querySelector('[name="data"]');
+                    const messageType = replyTypeElement ? replyTypeElement.value : 'text';
+
+                    if (messageType === 'image_multiple') {
+                        formData['data'] = JSON.parse(replyDataElement.value);
+                    } else {
+                        formData['data'] = replyDataElement.value;
+                    }
+
+                    for (let element of form.elements) {
+                        if (element.name && element.name !== 'rawJson' && element.name !== 'data' && element.name !== 'type') {
+                            formData[element.name] = element.value;
+                        }
+                    }
+                    if (replyTypeElement) {
+                        formData['type'] = replyTypeElement.value;
+                    }
+                }
+            }
+        }
+
+        console.log("Sending FormData:", formData);
+
+        fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(formData)
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (responseArea) responseArea.textContent = JSON.stringify(data, null, 2);
+                if (endpoint.startsWith('/config/')) {
+                    if (data.success) {
+                        alert('Config updated successfully: ' + data.message);
+                        location.reload();
+                    } else {
+                        alert('Config update failed: ' + data.error);
+                    }
+                }
+            })
+            .catch(error => {
+                if (responseArea) responseArea.textContent = 'Error: ' + error.message;
+            });
+    }
+
+    function updateConfig(type, value) {
+        let url = '/config/' + type;
+        let postData = {};
+        if (type === 'endpoint') {
+            postData = { endpoint: value };
+        } else if (type === 'botname') {
+            postData = { botname: value };
+        } else if (type === 'dbrate' || type === 'sendrate') {
+            postData = { rate: value };
+        } else if (type === 'botport') {
+            postData = { port: value };
+        }
+        submitForm(url, null, null, postData);
+    }
+
+    function updateReplyDataPlaceholder() {
+        const replyType = document.getElementById('replyType');
+        const replyDataTextarea = document.getElementById('replyData');
+        if (replyType.value === 'image') {
+            replyDataTextarea.placeholder = 'Enter base64 encoded image data';
+        } else if (replyType.value === 'image_multiple') {
+            replyDataTextarea.placeholder = 'Enter base64 encoded image data JSON Array (e.g., ["data1", "data2"])';
+        } else {
+            replyDataTextarea.placeholder = 'Enter message text';
+        }
+    }
+
+    function clearEndpoint() {
+        document.getElementById('newWebServerEndpoint').value = "";
+        updateConfig('endpoint', "");
+    }
+</script>
+<div id="configResponseArea" style="display:none;"></div>
+</body>
+
+</html>
