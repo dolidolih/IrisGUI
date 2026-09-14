@@ -14,5 +14,6 @@ object AppColors {
     val TextSub = Color(0xFF9E9EA8)
     val SuccessVivid = Color(0xFF00E676)
     val ErrorVivid = Color(0xFFFF4B55)
+    val WarningVivid = Color(0xFFFFB020)
     val BottomNavBg = Color(0xFF161622)
 }

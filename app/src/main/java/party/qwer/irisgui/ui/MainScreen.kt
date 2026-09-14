@@ -3,22 +3,39 @@ package party.qwer.irisgui.ui
 import android.content.Context
 import android.os.PowerManager
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Badge
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -28,10 +45,22 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.launch
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
+import party.qwer.irisgui.service.IrisService
 
+/**
+ * MainScreen — IrisGUI 셸.
+ *
+ * 탭 구성은 모드마다 다르지만 항상 3개이며, 모드 전환은 탭 안이 아니라
+ * TopAppBar 의 모드 라벨(드릴다운 트리거)에서만 수행한다.
+ *
+ *   ROOT_ADB : 상태 / 설정 / 도구
+ *   NON_ROOT : 대시보드 / 히스토리 / 설정
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
@@ -39,42 +68,23 @@ fun MainScreen() {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
 
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
-    var hasRequiredPermissions by remember { mutableStateOf(true) }
-
-    // 관찰 가능한 전역 모드 상태를 직접 읽는다 — 모드 변경 시 즉시 재구성되어
-    // 재시작 없이 탭 메뉴가 바로 바뀐다.
     val currentMode = AppModeManager.currentMode
+    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var modeSheetOpen by remember { mutableStateOf(false) }
+    val permission = rememberPermissionStatus()
 
-    // 최초 1회 모드 자동 감지(저장된 모드가 있으면 그대로 사용)
-    LaunchedEffect(Unit) {
-        AppModeManager.detectMode()
+    LaunchedEffect(Unit) { AppModeManager.detectMode() }
+    LaunchedEffect(currentMode) { selectedTabIndex = 0 }
+
+    val scope = rememberCoroutineScope()
+
+    val tabs = when (currentMode) {
+        AppMode.ROOT_ADB -> listOf("상태", "설정", "도구")
+        AppMode.NON_ROOT -> listOf("대시보드", "히스토리", "설정")
     }
-
-    // 모드가 바뀌면 탭 구성이 달라지므로 선택 인덱스를 0으로 초기화(범위 초과 방지)
-    LaunchedEffect(currentMode) {
-        selectedTabIndex = 0
-    }
-
-    // 권한 상태 체크
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val enabledPackages = NotificationManagerCompat.getEnabledListenerPackages(context)
-                val hasNotif = enabledPackages.contains(context.packageName)
-                val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-                val hasBatt = pm.isIgnoringBatteryOptimizations(context.packageName)
-
-                // 논루팅 모드일 때만 NLS 권한 체크
-                hasRequiredPermissions = if (currentMode == AppMode.NON_ROOT) {
-                    hasNotif && hasBatt
-                } else {
-                    true  // 루팅 모드는 권한 체크 안함
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    val icons = when (currentMode) {
+        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.Settings, Icons.Default.Storage)
+        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Settings)
     }
 
     val modeLabel = when (currentMode) {
@@ -82,17 +92,16 @@ fun MainScreen() {
         AppMode.NON_ROOT -> "논루팅(알림)"
     }
 
-    // ADB 모드: 대시보드/설정/쿼리 탭
-    // 논루팅(알림) 모드: 설정&테스트/히스토리/권한 탭
-    val (tabs, icons) = when (currentMode) {
-        AppMode.ROOT_ADB -> {
-            listOf("대시보드", "설정", "DB 쿼리", "가이드") to
-            listOf(Icons.Default.Dashboard, Icons.Default.Settings, Icons.Default.Storage, Icons.Default.Terminal)
-        }
-        AppMode.NON_ROOT -> {
-            listOf("설정&테스트", "히스토리", "권한") to
-            listOf(Icons.Default.Settings, Icons.Default.History, Icons.Default.Security)
-        }
+    // 모드 전환: 이전 모드 서비스를 정지한 뒤 새 모드로 확정한다.
+    fun applyMode(mode: AppMode) {
+        AppConfig.appMode = mode
+        AppModeManager.setMode(mode)
+        context.startForegroundService(
+            android.content.Intent(context, IrisService::class.java)
+                .setAction(IrisService.ACTION_STOP_SERVICE)
+        )
+        modeSheetOpen = false
+        selectedTabIndex = 0
     }
 
     Scaffold(
@@ -106,7 +115,15 @@ fun MainScreen() {
                 title = {
                     Column {
                         Text("IrisGUI", fontWeight = FontWeight.ExtraBold, color = AppColors.TextMain)
-                        Text(modeLabel, style = MaterialTheme.typography.labelSmall, color = AppColors.TextSub)
+                        TextButton(
+                            onClick = { modeSheetOpen = true },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp, 0.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                contentColor = AppColors.TextSub
+                            )
+                        ) {
+                            Text(modeLabel, style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AppColors.DarkBg)
@@ -123,17 +140,15 @@ fun MainScreen() {
                         selected = selectedTabIndex == index,
                         onClick = { selectedTabIndex = index },
                         icon = {
-                            BadgedBox(
-                                badge = {
-                                    if (index == 2 && !hasRequiredPermissions) {
-                                        Badge(
-                                            containerColor = AppColors.ErrorVivid,
-                                            modifier = Modifier.offset(x = 6.dp, y = (-2).dp).size(10.dp)
-                                        )
-                                    }
-                                }
-                            ) {
+                            val warnDot = index == 0 && permission.needsAttention(currentMode)
+                            Box {
                                 Icon(icons[index], contentDescription = title)
+                                if (warnDot) {
+                                    Badge(
+                                        containerColor = AppColors.ErrorVivid,
+                                        modifier = Modifier.padding(14.dp).padding(12.dp)
+                                    ) {}
+                                }
                             }
                         },
                         label = { Text(title, fontWeight = FontWeight.SemiBold) },
@@ -152,28 +167,65 @@ fun MainScreen() {
     ) { paddingValues ->
         Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
             when (currentMode) {
-                AppMode.ROOT_ADB -> {
-                    when (selectedTabIndex) {
-                        0 -> AdbDashboardScreen(
-                            onNavigateToConfig = { selectedTabIndex = 1 },
-                            onNavigateToQuery = { selectedTabIndex = 2 }
-                        )
-                        1 -> AdbConfigScreen()
-                        2 -> AdbQueryScreen()
-                        3 -> androidx.compose.foundation.lazy.LazyColumn(
-                            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                            contentPadding = PaddingValues(vertical = 8.dp)
-                        ) { item { AdbGuideScreen() } }
-                    }
+                AppMode.ROOT_ADB -> when (selectedTabIndex) {
+                    0 -> AdbDashboardScreen()
+                    1 -> AdbConfigScreen()
+                    else -> ToolsScreen()
                 }
-                AppMode.NON_ROOT -> {
-                    when (selectedTabIndex) {
-                        0 -> ConfigScreen(mode = currentMode)
-                        1 -> HistoryScreen()
-                        2 -> PermissionScreen(mode = currentMode)
-                    }
+                AppMode.NON_ROOT -> when (selectedTabIndex) {
+                    0 -> NonRootDashboardScreen(permission, currentMode)
+                    1 -> HistoryScreen()
+                    else -> ConfigScreen()
                 }
             }
         }
     }
+
+    if (modeSheetOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { modeSheetOpen = false },
+            containerColor = AppColors.CardBg,
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("실행 모드", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
+                Spacer(Modifier.padding(top = 8.dp))
+                listOf(AppMode.ROOT_ADB, AppMode.NON_ROOT).forEach { mode ->
+                    val desc = when (mode) {
+                        AppMode.ROOT_ADB -> "adb shell + app_process 로 백그라운드 동작"
+                        AppMode.NON_ROOT -> "NLS(알림 수신) 기반 논루팅 동작"
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = currentMode == mode,
+                            onClick = { applyMode(mode) },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = AppColors.PrimaryAccent,
+                                unselectedColor = AppColors.TextSub
+                            )
+                        )
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Text(modeLabelOf(mode), fontWeight = FontWeight.Bold, color = AppColors.TextMain)
+                            Text(desc, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
+                        }
+                    }
+                }
+                Spacer(Modifier.padding(top = 8.dp))
+                Text(
+                    "모드를 바꾸면 실행 중인 서비스가 정지됩니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.WarningVivid
+                )
+                Spacer(Modifier.padding(bottom = 16.dp))
+            }
+        }
+    }
+}
+
+private fun modeLabelOf(mode: AppMode): String = when (mode) {
+    AppMode.ROOT_ADB -> "루팅(ADB)"
+    AppMode.NON_ROOT -> "논루팅(알림)"
 }

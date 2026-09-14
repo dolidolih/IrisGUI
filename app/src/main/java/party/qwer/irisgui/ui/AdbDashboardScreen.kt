@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppState
 import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.backend.DaemonLauncher
@@ -42,13 +43,14 @@ import party.qwer.irisgui.models.*
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AdbDashboardScreen(onNavigateToConfig: () -> Unit, onNavigateToQuery: () -> Unit) {
+fun AdbDashboardScreen() {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val permission = rememberPermissionStatus()
+    val mode = AppMode.ROOT_ADB
 
     // 상태 정보
     var processStatus by remember { mutableStateOf<AdbProcessStatusResponse?>(null) }
-    var configStatus by remember { mutableStateOf<ConfigResponse?>(null) }
     var dashboardStatus by remember { mutableStateOf<DashboardStatusResponse?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var lastUpdated by remember { mutableStateOf<String>("") }
@@ -94,7 +96,6 @@ fun AdbDashboardScreen(onNavigateToConfig: () -> Unit, onNavigateToQuery: () -> 
                 }
             }
 
-            configStatus = AdbProcessClient.fetchConfig()
             dashboardStatus = AdbProcessClient.fetchDashboardStatus()
             isLoading = false
             lastUpdated = "마지막 확인: ${android.text.format.DateFormat.format("kk:mm:ss", System.currentTimeMillis())}"
@@ -155,14 +156,10 @@ fun AdbDashboardScreen(onNavigateToConfig: () -> Unit, onNavigateToQuery: () -> 
             )
         }
 
-        // ── 설정 요약 ─────────────────────────────────
+        // ── 권한 배지 (미해결 시에만 등장) ────────────────
         item {
-            ConfigSummaryCard(configStatus) {
-                onNavigateToConfig()
-            }
+            PermissionStrip(status = permission, mode = mode)
         }
-
-        // ── DB 관찰 상태 ──────────────────────────────
         item {
             DbObservingCard(dashboardStatus)
         }
@@ -210,32 +207,6 @@ fun AdbDashboardScreen(onNavigateToConfig: () -> Unit, onNavigateToQuery: () -> 
                 message = testMessage,
                 onMessageChange = { testMessage = it }
             )
-        }
-
-        // ── 액션 버튼 ─────────────────────────────────
-        item(key = "actions") {
-            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onNavigateToQuery,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
-                ) {
-                    Icon(Icons.Default.Storage, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("DB 쿼리 실행", fontWeight = FontWeight.Bold)
-                }
-                Button(
-                    onClick = onNavigateToConfig,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.PrimaryAccent, contentColor = AppColors.TextMain)
-                ) {
-                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("설정 관리", fontWeight = FontWeight.Bold)
-                }
-            }
         }
 
         // ── DB 로그 (가변 길이 → 맨 아래 배치, 안정 key로 입력 보존) ──
@@ -329,7 +300,7 @@ private fun ServerStatusCard(
 
             if (status != null) {
                 Spacer(modifier = Modifier.height(12.dp))
-                Divider(color = AppColors.TextSub.copy(alpha = 0.2f))
+                HorizontalDivider(color = AppColors.TextSub.copy(alpha = 0.2f))
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -421,44 +392,6 @@ private fun ControlButtons(running: Boolean, onToggle: () -> Unit, onStart: () -
                     fontWeight = FontWeight.SemiBold,
                     fontSize = MaterialTheme.typography.bodySmall.fontSize
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConfigSummaryCard(config: ConfigResponse?, onEdit: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Settings, contentDescription = null, tint = AppColors.PrimaryAccent)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("설정 요약", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.TextMain)
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onEdit) {
-                    Text("편집", color = AppColors.PrimaryAccent)
-                }
-            }
-
-            if (config != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    StatusRow("봇 이름", config.bot_name)
-                    StatusRow("포트", "${config.bot_http_port}")
-                    StatusRow("엔드포인트", config.web_server_endpoint.ifEmpty { "없음" })
-                    StatusRow("DB 폴링", "${config.db_polling_rate}ms")
-                    StatusRow("발송 주기", "${config.message_send_rate}ms")
-                }
-            } else {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("설정 조회 중...", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
             }
         }
     }
