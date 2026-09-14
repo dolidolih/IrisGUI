@@ -44,6 +44,18 @@ object IrisServer {
     val isStarted: Boolean
         get() = activeEngine != null
 
+    /** 직전 기동 실패 원인(포트 점유 등) — 정지 시 초기화. */
+    var lastError: String? = null
+        private set
+
+    /** 기동 실패 원인이 포트 점유인지 판단. */
+    val isPortInUseError: Boolean
+        get() = lastError?.let {
+            val l = it.lowercase()
+            l.contains("address already in use") || l.contains("bindexception") ||
+                l.contains("already in use")
+        } == true
+
     private val wsBroadcastFlow = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val sharedFlow = wsBroadcastFlow.asSharedFlow()
 
@@ -51,8 +63,13 @@ object IrisServer {
         wsBroadcastFlow.tryEmit(message)
     }
 
-    fun start(context: Context) {
-        if (activeEngine != null) return
+    /**
+     * 인프로세스 서버 기동.
+     * @return 기동 성공 여부 — 실패 시 [lastError]에 원인이 남는다.
+     */
+    fun start(context: Context): Boolean {
+        if (activeEngine != null) return true
+        lastError = null
         try {
             val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -112,12 +129,13 @@ object IrisServer {
             }.start(wait = false).also { activeEngine = it.engine }
 
             startReplyManager()
+            println("IrisServer: started on port ${AppConfig.serverPort}")
+            return true
         } catch (e: Exception) {
             e.printStackTrace()
-            CoroutineScope(Dispatchers.Main).launch {
-                android.widget.Toast.makeText(context, "Server Start Failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-            }
+            lastError = e.message ?: e.javaClass.simpleName
             activeEngine = null
+            return false
         }
     }
 
@@ -131,6 +149,7 @@ object IrisServer {
         ReplyManager.stopQueue()
         activeEngine?.stop(1000, 2000)
         activeEngine = null
+        lastError = null
     }
 
     /**

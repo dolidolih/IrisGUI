@@ -42,7 +42,7 @@ import java.security.spec.X509EncodedKeySpec
  *     [24:]   payload
  *   클라이언트가 먼저 CNXN을 보낸다(payload: "host::features=...").
  *   adbd는 클라이언트 CNXN을 받을 때까지 아무것도 보내지 않는다.
- *   실측 근거: ADB_PROTOCOL_NOTES.md (host adb 37.0.1 ↔ redroid adbd 바이너리 캡처)
+ *   실측 근거: host adb 37.0.1 ↔ redroid adbd의 실제 패킷 캡처
  *
  * 옛 adbd는 CLASSIC: 즉시 "0016ANDROID!"(12B) 바너를 보내고,
  * 28바이트 big-endian 헤더 [length, cmd, arg0, arg1, data_start, checksum, magic].
@@ -72,7 +72,7 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
         private const val BANNER_TAIL = "ANDROID!"
         private const val CLASSIC_HDR = 28
 
-        // NEW 상수 (실측: ADB_PROTOCOL_NOTES.md)
+        // NEW 상수 (실측)
         private const val NEW_HDR = 24
         private const val NEW_CN_XN_ARG0 = 0x01000001
         private const val NEW_CN_XN_ARG1 = 0x00100000
@@ -194,7 +194,7 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
     }
 
     private fun handshake(): Failure? {
-        // 실측(ADB_PROTOCOL_NOTES.md, 172.30.10.100 adbd): 클라이언트 CNXN 직후 adbd는
+        // 실측(172.30.10.100 adbd): 클라이언트 CNXN 직후 adbd는
         // - 비보안(ro.adb.secure=0): 즉시 device CNXN 하나를 보내고 더 이상 핸드셰이크 메시지를
         //   보내지 않는다(OPEN만 대기). 따라서 "CNXN 수신 = 연결 완료".
         // - 보안(ro.adb.secure=1): AUTH 챌린지를 보내고, 유효한 서명 응답 후 device CNXN.
