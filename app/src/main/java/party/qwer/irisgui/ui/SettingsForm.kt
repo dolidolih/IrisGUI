@@ -27,7 +27,10 @@ import party.qwer.irisgui.AppColors
 @Composable
 fun irisFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = AppColors.PrimaryAccent,
-    unfocusedBorderColor = AppColors.TextSub.copy(alpha = 0.3f),
+    unfocusedBorderColor = AppColors.GlassStroke,
+    unfocusedContainerColor = AppColors.GlassInputBg,
+    focusedContainerColor = AppColors.GlassInputBg,
+    disabledContainerColor = AppColors.GlassInputBg,
     focusedTextColor = AppColors.TextMain,
     unfocusedTextColor = AppColors.TextMain,
     focusedLabelColor = AppColors.PrimaryAccent,
@@ -159,7 +162,14 @@ fun RoomDropdownField(
             shape = RoundedCornerShape(14.dp),
             colors = irisFieldColors()
         )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(AppColors.BlockRadius),
+            containerColor = AppColors.GlassFill,
+            tonalElevation = 0.dp,
+            border = BorderStroke(1.dp, AppColors.GlassStroke)
+        ) {
             rooms.distinctBy { it.first }
                 .sortedWith(compareBy({ roomLabel(it.first, it.second) }, { it.first }))
                 .forEach { (id, name) ->

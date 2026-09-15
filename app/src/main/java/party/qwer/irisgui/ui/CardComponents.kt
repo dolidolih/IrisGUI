@@ -2,6 +2,7 @@ package party.qwer.irisgui.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -13,39 +14,46 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import party.qwer.irisgui.AppColors
 
-/** 화면 카드 공용 스페이스/반경. */
-val CardCornerRadius = 20.dp
+/** 화면 블록 공용 스페이스/반경. */
 val ScreenPadding = 16.dp
 
-/** 표준 light 카드. 화면 어디서나 같은 형태(흰 면 + 은은한 구분선 + 20dp)를 쓴다. */
+/**
+ * 표준 glass 블록 — 반투명 흰 면 + 은은한 흰색 하이라이트 구분선 + 22dp.
+ * 배경 블롭이 면 아래로 살짝 비치므로 화면 어디에서 같은 형태를 쓴다.
+ */
 @Composable
 fun SurfaceCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    fillHeight: Boolean = false,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = PaddingValues(16.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(CardCornerRadius)
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = shape,
-        border = BorderStroke(1.dp, AppColors.CardBorder),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    val shape = RoundedCornerShape(AppColors.BlockRadius)
+    val blockModifier = modifier
+        .fillMaxWidth()
+        .then(if (fillHeight) Modifier.fillMaxHeight() else Modifier)
+        .shadow(14.dp, shape, ambientColor = AppColors.BlockShadow, spotColor = AppColors.BlockShadow, clip = false)
+        .clip(shape)
+        .background(AppColors.GlassFill, shape)
+    Box(
+        modifier = if (onClick != null) blockModifier.clickable(onClick = onClick) else blockModifier
     ) {
         Column(
-            modifier = if (onClick != null) Modifier
-                .padding(contentPadding)
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
+            modifier = if (fillHeight) Modifier.fillMaxSize().padding(contentPadding)
             else Modifier.padding(contentPadding),
+            verticalArrangement = if (fillHeight) Arrangement.SpaceBetween else Arrangement.Top,
             content = content
         )
     }
@@ -84,7 +92,7 @@ fun IconChip(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     tint: Color = AppColors.PrimaryAccent,
-    background: Color = AppColors.InputBg
+    background: Color = AppColors.PrimaryAccent.copy(alpha = 0.13f)
 ) {
     Box(
         modifier = modifier
@@ -111,7 +119,7 @@ fun StatusPill(
     Row(
         modifier = modifier
             .background(
-                color = if (ok) AppColors.SuccessVivid.copy(alpha = 0.10f) else AppColors.ErrorVivid.copy(alpha = 0.10f),
+                color = (if (ok) AppColors.SuccessVivid else AppColors.ErrorVivid).copy(alpha = 0.15f),
                 shape = RoundedCornerShape(50)
             )
             .padding(horizontal = 10.dp, vertical = 5.dp),
@@ -153,44 +161,66 @@ fun StatTiles(
     vararg items: StatItem,
     columns: Int = 2,
     modifier: Modifier = Modifier,
+    fillHeight: Boolean = false,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = PaddingValues(0.dp)
 ) {
-    val shape = RoundedCornerShape(14.dp)
-    Column(modifier.fillMaxWidth().padding(contentPadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val shape = RoundedCornerShape(AppColors.TileRadius)
+    val tileFill = if (items.any { it.onClick != null }) AppColors.ConfigTile else AppColors.GlassFillStrong
+    Column(
+        modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxSize() else Modifier)
+            .padding(contentPadding),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         items.toList().chunked(columns).forEach { rowItems ->
+            val rowModifier = if (fillHeight) Modifier.weight(1f) else Modifier
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = rowModifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 rowItems.forEach { item ->
-                    var cellModifier = Modifier.weight(1f).height(IntrinsicSize.Min)
-                    if (item.onClick != null) cellModifier = cellModifier.clickable(onClick = item.onClick)
+                    var cellModifier = Modifier.weight(1f)
+                        .then(if (fillHeight) Modifier.fillMaxHeight()
+                              else Modifier.height(IntrinsicSize.Min))
+                    // clip 은 clickable 앞에 와야 ripple/press 하이라이트가 모서리 둥근 사각형에
+                    // 맞춰 그려진다. (clickable 뒤 background(shape) 는 그리기만 둥글게 하고 하이라이트 clip 은 각진 채로 남는다)
+                    if (item.onClick != null) cellModifier = cellModifier.clip(shape).clickable(onClick = item.onClick)
+                    // 타일 구성: 위 — icon chip / 한복판 — 값(숫자는 모노, 액센트 잉크) / 아래 — 캡션 라벨.
                     Column(
-                        modifier = cellModifier.background(AppColors.InputBg, shape = shape)
+                        modifier = cellModifier.background(tileFill, shape = shape)
                             .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (item.icon != null) {
-                                Icon(
-                                    item.icon, contentDescription = null,
-                                    tint = AppColors.TextSub, modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
+                        if (item.icon != null) {
+                            IconChip(
+                                icon = item.icon,
+                                modifier = Modifier.size(30.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+                        Box(
+                            modifier = Modifier.fillMaxWidth()
+                                .then(if (fillHeight) Modifier.weight(1f) else Modifier),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Text(
-                                item.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = AppColors.TextSub,
+                                item.value,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    letterSpacing = 0.4.sp
+                                ),
+                                fontWeight = FontWeight.Bold,
+                                color = item.valueColor,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
                         Text(
-                            item.value,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = item.valueColor,
+                            item.label,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                letterSpacing = 0.6.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = AppColors.TextSub,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

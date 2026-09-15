@@ -1,14 +1,19 @@
 package party.qwer.irisgui.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Person
@@ -19,11 +24,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import party.qwer.irisgui.AppColors
@@ -59,6 +71,8 @@ fun LogsScreen() {
     // UI 프로세스의 AppState.lastChatLogs 는 항상 비어 있다. 반드시 daemon HTTP로 가져와야 한다.
     val messages = remember { mutableStateListOf<AppState.AppMessage>() }
     var runtimeLogs by remember { mutableStateOf<List<RuntimeLog.Entry>>(RuntimeLog.snapshot(80)) }
+    /** 실행 로그 통의 펼침/접힘. 탭 전환/회전에서도 유지. */
+    var logsExpanded by rememberSaveable { mutableStateOf(true) }
 
     if (mode == AppMode.ROOT_ADB) {
         LaunchedEffect(Unit) {
@@ -111,7 +125,7 @@ fun LogsScreen() {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(bottom = 32.dp, top = 12.dp)
+        contentPadding = PaddingValues(bottom = 32.dp, top = 14.dp)
     ) {
         item(key = "send_test") {
             SendTestCard(
@@ -135,10 +149,45 @@ fun LogsScreen() {
             )
         }
 
+        // ── 실행 로그 — 서비스/데몬의 출력 로그 전체. 고정 높이 통에서 스크롤. ─────
+        // 수신 메시지(DB 로그)보다 먼저(두 번째) 배치한다. 최근 50줄만 노출한다.
+        // 헤더 탭으로 통 전체를 펼침/접힘 할 수 있다.
+        item(key = "runtime_header") {
+            SectionHeader(
+                icon = Icons.Default.Info,
+                title = "실행 로그 (${runtimeLogs.size.coerceAtMost(50)})",
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .clickable { logsExpanded = !logsExpanded },
+                trailing = {
+                    Icon(
+                        if (logsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (logsExpanded) "접기" else "펼치기",
+                        tint = AppColors.TextSub,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            )
+        }
+        if (logsExpanded) {
+            if (runtimeLogs.isEmpty()) {
+                item(key = "runtime_empty") {
+                    Text(
+                        "남겨진 로그가 없습니다. 서비스를 켜면 동작 정보가 여기에 기록됩니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextSub
+                    )
+                }
+            } else {
+                item(key = "runtime_block") {
+                    RuntimeLogBlock(runtimeLogs.take(50))
+                }
+            }
+        }
+
+        // ── 수신 메시지(DB 로그) — 마지막 ────────────────
         item(key = "recv_header") {
             SectionHeader(icon = Icons.Default.Chat, title = "수신 메시지 (${messages.size})")
         }
-
         if (messages.isEmpty()) {
             item(key = "recv_empty") {
                 Text("수신된 메시지가 없습니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
@@ -148,66 +197,72 @@ fun LogsScreen() {
                 MessageCard(msg)
             }
         }
-
-        // ── 실행 로그 — 서비스/데몬의 동작 로그 ─────────────
-        item(key = "runtime_header") {
-            SectionHeader(icon = Icons.Default.Info, title = "실행 로그 (${runtimeLogs.size})")
-        }
-        if (runtimeLogs.isEmpty()) {
-            item(key = "runtime_empty") {
-                Text(
-                    "남겨진 로그가 없습니다. 서비스를 켜면 동작 정보가 여기에 기록됩니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.TextSub
-                )
-            }
-        } else {
-            items(runtimeLogs.take(80), key = { "log_${it.timeMs}_${it.source}_${it.message}" }) { entry ->
-                LogCard(entry)
-            }
-        }
     }
 }
 
-/** 하나의 로그 행 — 레벨 색점 + 시각/소스 + 메시지. */
+/**
+ * 실행 로그 콘솔 블록 — 통 하나가 곧 하나의 라벨.
+ * 고정이미(260dp) 안에서 스크롤하며, 최근 50줄을 각 행으로 표시한다(줄마다 시각 · 소스 · 메시지).
+ * 우측에 스크롤바 썸을 항상 노출한다(접을 수 있는 블록의 크기/위치 표식).
+ */
 @Composable
-private fun LogCard(entry: RuntimeLog.Entry) {
-    val levelColor = when (entry.level) {
-        "ERROR" -> AppColors.ErrorVivid
-        "WARN" -> AppColors.WarningVivid
-        else -> AppColors.TextSub
-    }
-    SurfaceCard(contentPadding = PaddingValues(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .background(levelColor, CircleShape)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
+private fun RuntimeLogBlock(entries: List<RuntimeLog.Entry>) {
+    val scroll = rememberScrollState()
+    SurfaceCard(contentPadding = PaddingValues(14.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(260.dp)
+        ) {
             Text(
-                entry.source,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = levelColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                buildAnnotatedString {
+                    entries.forEachIndexed { i, e ->
+                        val levelColor = when (e.level) {
+                            "ERROR" -> AppColors.ErrorVivid
+                            "WARN" -> AppColors.WarningVivid
+                            else -> AppColors.TextSub
+                        }
+                        withStyle(SpanStyle(color = AppColors.TextSub)) { append(timeLabel(e.timeMs)) }
+                        append(" ")
+                        withStyle(SpanStyle(color = levelColor, fontWeight = FontWeight.Bold)) { append(e.source) }
+                        append(" ")
+                        withStyle(SpanStyle(color = AppColors.TextMain)) { append(e.message) }
+                        if (i != entries.lastIndex) append("\n")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().verticalScroll(scroll),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp
+                )
             )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                timeLabel(entry.timeMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.TextSub
-            )
+
+            // 스크롤바 — 내용량이 화면보다 많을 때만. 썸 높이로 남은 분량을, 위치로 현재 지점을 나타낸다.
+            // value/maxValue 는 Canvas 의 드로잉 람다에서 읽으면 스냅샷 관찰이 안 되어
+            // recomposition 이 안 일어난다. composable 스코프에서 먼저 읽는다.
+            val scrollMax = scroll.maxValue
+            val scrollValue = scroll.value
+            if (scrollMax > 0) {
+                Canvas(modifier = Modifier.matchParentSize()) {
+                    val track = 5.dp.toPx()
+                    val x = size.width - track
+                    val viewport = size.height
+                    val thumbH = (viewport * viewport / (viewport + scrollMax)).coerceAtLeast(28.dp.toPx())
+                    val thumbY = (viewport - thumbH) * (scrollValue.toFloat() / scrollMax)
+                    drawRoundRect(
+                        color = AppColors.CardBorder,
+                        topLeft = Offset(x, 0f),
+                        size = Size(track, viewport)
+                    )
+                    drawRoundRect(
+                        color = AppColors.TextSub.copy(alpha = 0.55f),
+                        topLeft = Offset(x, thumbY),
+                        size = Size(track, thumbH)
+                    )
+                }
+            }
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            entry.message,
-            style = MaterialTheme.typography.bodySmall,
-            color = AppColors.TextMain,
-            maxLines = if (entry.level == "ERROR") 6 else 3,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 
