@@ -40,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -108,14 +109,6 @@ fun MainScreen() {
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { focusManager.clearFocus() })
             },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text("IrisGUI", fontWeight = FontWeight.ExtraBold, color = AppColors.TextMain)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = AppColors.DarkBg)
-            )
-        },
         bottomBar = {
             NavigationBar(
                 containerColor = AppColors.BottomNavBg,
@@ -146,7 +139,7 @@ fun MainScreen() {
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = AppColors.TextMain,
                             selectedTextColor = AppColors.TextMain,
-                            indicatorColor = AppColors.PrimaryAccent,
+                            indicatorColor = AppColors.PrimaryAccent.copy(alpha = 0.16f),
                             unselectedIconColor = AppColors.TextSub,
                             unselectedTextColor = AppColors.TextSub
                         )
@@ -154,7 +147,7 @@ fun MainScreen() {
                 }
             }
         },
-        containerColor = AppColors.DarkBg,
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {

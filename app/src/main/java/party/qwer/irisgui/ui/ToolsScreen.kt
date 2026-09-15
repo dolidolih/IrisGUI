@@ -1,6 +1,7 @@
 package party.qwer.irisgui.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -48,7 +49,7 @@ fun ToolsScreen() {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(bottom = 32.dp, top = 8.dp)
+        contentPadding = PaddingValues(bottom = 32.dp, top = 14.dp)
     ) {
         item {
             Card(
@@ -68,19 +69,20 @@ fun ToolsScreen() {
                             color = AppColors.TextMain
                         )
                     }
-                    TextField(
+                    OutlinedTextField(
                         value = queryText,
                         onValueChange = { queryText = it },
-                        modifier = Modifier.fillMaxWidth().height(110.dp),
-                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(130.dp),
+                        shape = RoundedCornerShape(AppColors.FieldRadius),
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = AppColors.InputBg,
-                            unfocusedContainerColor = AppColors.InputBg,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = AppColors.PrimaryAccent,
-                            unfocusedTextColor = AppColors.PrimaryAccent,
+                        placeholder = { Text("SELECT * FROM chat_logs ORDER BY id DESC LIMIT 50", color = AppColors.TextMute) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AppColors.PrimaryAccent,
+                            unfocusedBorderColor = AppColors.GlassStroke,
+                            focusedContainerColor = AppColors.GlassInputBg,
+                            unfocusedContainerColor = AppColors.GlassInputBg,
+                            focusedTextColor = AppColors.TextMain,
+                            unfocusedTextColor = AppColors.TextMain,
                             cursorColor = AppColors.PrimaryAccent
                         )
                     )
@@ -209,7 +211,8 @@ internal fun QueryResultCard(row: Map<String, String?>) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(AppColors.InputBg, RoundedCornerShape(12.dp))
+                        .background(AppColors.GlassInputBg, RoundedCornerShape(AppColors.FieldRadius))
+                        .border(BorderStroke(1.dp, AppColors.GlassStroke), RoundedCornerShape(AppColors.FieldRadius))
                         .padding(8.dp)
                 ) {
                     Text(
