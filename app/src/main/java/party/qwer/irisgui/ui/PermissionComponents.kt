@@ -73,7 +73,7 @@ fun rememberPermissionStatus(): PermissionStatus {
     return status
 }
 
-private fun currentPermissionStatus(context: Context): PermissionStatus {
+internal fun currentPermissionStatus(context: Context): PermissionStatus {
     val enabled = NotificationManagerCompat.getEnabledListenerPackages(context)
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val postGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

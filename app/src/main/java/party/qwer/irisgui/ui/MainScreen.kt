@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -92,12 +93,12 @@ fun MainScreen() {
 
 
     val tabs = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구")
-        AppMode.NON_ROOT -> listOf("상태", "로그")
+        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구", "권한")
+        AppMode.NON_ROOT -> listOf("상태", "로그", "권한")
     }
     val icons = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage)
-        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History)
+        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Shield)
+        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Shield)
     }
 
 
@@ -160,7 +161,10 @@ fun MainScreen() {
             when (selectedTabIndex) {
                 0 -> StatusScreen(permission)
                 1 -> LogsScreen()
-                else -> ToolsScreen()
+                else -> {
+                    if (currentMode == AppMode.ROOT_ADB && selectedTabIndex == 2) ToolsScreen()
+                    else PermissionScreen(permission)
+                }
             }
         }
     }
