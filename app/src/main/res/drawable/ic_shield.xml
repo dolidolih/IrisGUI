@@ -1,7 +1,0 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="110dp" android:height="110dp"
-    android:viewportWidth="110.00" android:viewportHeight="110.00">
-    <path android:pathData="M 55.00 8.00C 40.00 16.00 28.00 20.00 16.00 20.00C 16.00 52.00 16.00 76.00 35.00 94.00C 43.00 100.00 52.00 102.00 55.00 102.00C 58.00 102.00 67.00 100.00 75.00 94.00C 94.00 76.00 94.00 52.00 94.00 20.00C 82.00 20.00 70.00 16.00 55.00 8.00Z" android:fillColor="#FFE9E3FF"/>
-    <path android:pathData="M 55.00 8.00C 40.00 16.00 28.00 20.00 16.00 20.00C 16.00 52.00 16.00 76.00 35.00 94.00C 43.00 100.00 52.00 102.00 55.00 102.00C 58.00 102.00 67.00 100.00 75.00 94.00C 94.00 76.00 94.00 52.00 94.00 20.00C 82.00 20.00 70.00 16.00 55.00 8.00Z" android:strokeColor="#FF9B89E6" android:strokeWidth="5.00" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
-    <path android:pathData="M 40.00 55.00L 51.00 66.00L 74.00 40.00" android:strokeColor="#FF7B68D6" android:strokeWidth="8.00" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
-</vector>
