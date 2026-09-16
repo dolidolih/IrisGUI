@@ -1,8 +1,0 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="110dp" android:height="110dp"
-    android:viewportWidth="110.00" android:viewportHeight="110.00">
-    <path android:pathData="M 32.00 26.00L 78.00 26.00C 82.42 26.00 86.00 29.58 86.00 34.00L 86.00 62.00C 86.00 66.42 82.42 70.00 78.00 70.00L 32.00 70.00C 27.58 70.00 24.00 66.42 24.00 62.00L 24.00 34.00C 24.00 29.58 27.58 26.00 32.00 26.00Z" android:fillColor="#FFFFFFFF"/>
-    <path android:pathData="M 32.00 26.00L 78.00 26.00C 82.42 26.00 86.00 29.58 86.00 34.00L 86.00 62.00C 86.00 66.42 82.42 70.00 78.00 70.00L 32.00 70.00C 27.58 70.00 24.00 66.42 24.00 62.00L 24.00 34.00C 24.00 29.58 27.58 26.00 32.00 26.00Z" android:strokeColor="#FF9B89E6" android:strokeWidth="4.00" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
-    <path android:pathData="M 20.00 74.00L 90.00 74.00C 93.31 74.00 96.00 76.69 96.00 80.00L 96.00 80.00C 96.00 83.31 93.31 86.00 90.00 86.00L 20.00 86.00C 16.69 86.00 14.00 83.31 14.00 80.00L 14.00 80.00C 14.00 76.69 16.69 74.00 20.00 74.00Z" android:fillColor="#FFE1D9FB"/>
-    <path android:pathData="M 20.00 74.00L 90.00 74.00C 93.31 74.00 96.00 76.69 96.00 80.00L 96.00 80.00C 96.00 83.31 93.31 86.00 90.00 86.00L 20.00 86.00C 16.69 86.00 14.00 83.31 14.00 80.00L 14.00 80.00C 14.00 76.69 16.69 74.00 20.00 74.00Z" android:strokeColor="#FF9B89E6" android:strokeWidth="3.00" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
-</vector>

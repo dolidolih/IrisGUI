@@ -1,111 +1,84 @@
 package party.qwer.irisgui.ui
 
-import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
 import party.qwer.irisgui.AppColors
-import party.qwer.irisgui.R
+import kotlin.random.Random
 
 /**
- * GlassBackground — 콘텐츠 전면에 깐는 파스텔 스티커 배경.
+ * GlassBackground — 콘텐츠 전면에 깐는 파스텔 블롭 매시.
  *
- *   1) 대각 삼중 그래디언트(분홍 -> 라일락 -> 하늘)
- *   2) 대형 블롭으로 깊이감
- *   3) 정규화 좌표(0..1) 에 얹는 부유 에셋(구름 · 반짝임 · 꽃 · 별)
+ * 각 블롭은 가장자리가 투명까지 퍼지는 radial 그래디언트라 별도 블러 없이도 번지는
+ * 느낌으로 그려진다. (Modifier.blur 는 API 31+ 에서만 동작하므로 minSdk 30인 본 앱과
+ * 테스트 장비에서는 no-op — 그래서 그래디언트 페더링만으로 번짐을 낸다.)
  *
- * 전부 정적이라 매 프레임 리드로 그려지지 않는다(애니 없음).
+ * 세 정지 배경 — 세션마다 한 번 색 조합/배치를 뽑고(seed), rememberSaveable 로 화면 회전·
+ * 탭 전환 중 같은 배경을 유지한다. 리스트 스크롤마다 배경이 invalidate 되지 않도록
+ * 애니메이션(매 프레임 드로잉)은 넣지 않는다.
  */
-data class Floating(@DrawableRes val res: Int, val fx: Float, val fy: Float,
-                    val size: Dp, val rot: Float = 0f, val alpha: Float = 1f)
+private data class PastelBlob(val color: Color, val x: Float, val y: Float, val radius: Float)
 
-private val FloatingAssets = listOf(
-    Floating(R.drawable.ic_cloud, 0.50f, 0.015f, 96.dp, alpha = 0.92f),
-    Floating(R.drawable.ic_cloud, 0.89f, 0.075f, 66.dp, alpha = 0.85f),
-    Floating(R.drawable.ic_star, 0.94f, 0.11f, 26.dp, rot = 15f, alpha = 0.8f),
-    Floating(R.drawable.ic_sparkle, 0.985f, 0.25f, 24.dp, rot = 12f, alpha = 0.75f),
-    Floating(R.drawable.ic_sparkle_lav, 0.01f, 0.31f, 28.dp, rot = -8f, alpha = 0.7f),
-    Floating(R.drawable.ic_flower_pink, 0.00f, 0.48f, 32.dp, alpha = 0.9f),
-    Floating(R.drawable.ic_flower, 0.99f, 0.54f, 30.dp, alpha = 0.8f),
-    Floating(R.drawable.ic_leaf, 0.985f, 0.90f, 28.dp, rot = -18f, alpha = 0.75f),
+/** 화사하게 쓰기 위한 파스텔 풀 — 여기서 4개를 뽑아 얹는다. (좌표는 화면 정규화값) */
+private val PastelPool = listOf(
+    PastelBlob(Color(0xFFBFD8FF), 0.12f, 0.08f, 1.10f),   // periwinkle
+    PastelBlob(Color(0xFFDCCDFF), 0.88f, 0.04f, 1.00f),   // lilac
+    PastelBlob(Color(0xFFB8F2DE), 0.04f, 0.94f, 1.02f),   // mint
+    PastelBlob(Color(0xFFFFCBD9), 0.98f, 0.88f, 0.96f),   // peach pink
+    PastelBlob(Color(0xFFC9ECFF), 0.54f, 1.06f, 0.88f),   // sky
+    PastelBlob(Color(0xFFFFE9C4), 0.80f, 0.50f, 0.72f),   // butter
+    PastelBlob(Color(0xFFCEDFFC), 0.20f, 0.52f, 0.80f),   // cornflower
 )
+
+/** 블롭 옅기/흰색 베일 — 베일이 강할수록 배경이 희석되어 블록 위에 얹는 색이 과해지지 않는다. */
+private const val BlobAlpha = 0.70f
+private const val VeilAlpha = 0.10f
+/** 캔버스 전체를 10% 어둡게 — 블록 아래 배경 위에서만 어두워지므로 블록 면은 그대로다. */
+private const val DarkenAlpha = 0.10f
 
 @Composable
 fun GlassBackground(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
-    BoxWithConstraints(
-        modifier = modifier
-            .fillMaxSize()
-            .background(
-                Brush.horizontalGradient(
-                    listOf(AppColors.Gradient1, AppColors.Gradient2, AppColors.Gradient3)
-                )
+    val seed = rememberSaveable { Random.nextLong() }
+    val blobs = remember(seed) {
+        val rnd = Random(seed)
+        PastelPool.shuffled(rnd).take(5).map { blob ->
+            blob.copy(
+                x = (blob.x + (rnd.nextFloat() - 0.5f) * 0.12f).coerceIn(0.04f, 0.96f),
+                y = (blob.y + (rnd.nextFloat() - 0.5f) * 0.12f).coerceIn(0.04f, 0.96f)
             )
-    ) {
-        val wPx = constraints.maxWidth.toFloat()
-        val hPx = constraints.maxHeight.toFloat()
+        }
+    }
 
-        // 깊이감 블롭 (radial feather — 별도 블러 없이 번져 보인다; Modifier.blur 는
-        // API 31+ 전용이라 minSdk 30 본 앱에서는 no-op 이므로 그래디언트 페더링만 사용)
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val side = maxOf(size.width, size.height)
-            val blobs = listOf(
-                Triple(Color(0xFFFFD3E6), Offset(size.width * 0.15f, size.height * 0.10f), 0.34f),
-                Triple(Color(0xFFCFE6FF), Offset(size.width * 0.90f, size.height * 0.18f), 0.30f),
-                Triple(Color(0xFFD9CCFF), Offset(size.width * 0.85f, size.height * 0.88f), 0.38f),
-                Triple(Color(0xFFC8F2DE), Offset(size.width * 0.08f, size.height * 0.95f), 0.28f),
-            )
-            blobs.forEach { (c, ctr, rf) ->
-                val radius = side * rf
+    Box(modifier.fillMaxSize().background(AppColors.CanvasBase)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val side = maxOf(size.width, size.height) * 0.85f
+            blobs.forEach { b ->
+                val center = Offset(size.width * b.x, size.height * b.y)
+                val radius = side * b.radius
                 drawCircle(
-                    brush = Brush.radialGradient(listOf(c.copy(alpha = 0.50f), c.copy(alpha = 0f)), ctr, radius),
+                    brush = Brush.radialGradient(
+                        listOf(b.color.copy(alpha = BlobAlpha), b.color.copy(alpha = 0f)),
+                        center,
+                        radius
+                    ),
                     radius = radius,
-                    center = ctr
+                    center = center
                 )
             }
-            // 흰색 베일 — 콘텐츠 위 색이 과하지 않게 배경을 담근다.
-            drawRect(Color.White.copy(alpha = 0.14f))
+            // 흰색 베일 — 배경을 밝게 데워 블록 안 잉크/액센트가 과하게 서지 않게 한다.
+            drawRect(Color.White.copy(alpha = VeilAlpha))
+            // 캔버스만 10% 딤 — content(블록/필) 는 이 위로 그려져 영향을 받지 않는다.
+            drawRect(Color.Black.copy(alpha = DarkenAlpha))
         }
-
-        // 부유 에셋 — 화면 정규화 좌표 중심
-        val density = LocalDensity.current
-        FloatingAssets.forEach { f ->
-            val half = with(density) { f.size.roundToPx() } / 2f
-            Image(
-                painter = painterResource(f.res),
-                contentDescription = null,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .size(f.size)
-                    .alpha(f.alpha)
-                    .rotate(f.rot)
-                    .offset {
-                        IntOffset(
-                            (f.fx * wPx - half).toInt(),
-                            (f.fy * hPx - half).toInt()
-                        )
-                    }
-            )
-        }
-
         content()
     }
 }
