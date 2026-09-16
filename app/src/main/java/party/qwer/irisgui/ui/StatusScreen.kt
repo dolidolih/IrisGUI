@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -29,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.R
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
@@ -118,7 +121,7 @@ fun StatusScreen(permission: PermissionStatus) {
 
     // DB 폴링은 DBObserver(루팅 모드) 전용 항목 — 논루팅 모드에서는 보여주지 않는다.
     val values = buildList {
-        add(GridValue("포트", port.toString(), Icons.Default.Memory) {
+        add(GridValue("포트", port.toString(), R.drawable.ic_chip) {
             editor = ValueEditor("포트", port.toString(), numeric = true) { v ->
                 val p = v.toIntOrNull() ?: return@ValueEditor false
                 AppConfig.serverPort = p; port = p
@@ -126,7 +129,7 @@ fun StatusScreen(permission: PermissionStatus) {
                 true
             }
         })
-        add(GridValue("엔드포인트", endpoint.ifBlank { "미설정" }, Icons.Default.Cable) {
+        add(GridValue("엔드포인트", endpoint.ifBlank { "미설정" }, R.drawable.ic_plug) {
             editor = ValueEditor("엔드포인트", endpoint) { v ->
                 AppConfig.webEndpoint = v; endpoint = v
                 scope.launch { AdbProcessClient.updateConfig("endpoint", ConfigRequest(endpoint = v)) }
@@ -134,7 +137,7 @@ fun StatusScreen(permission: PermissionStatus) {
             }
         })
         if (mode == AppMode.ROOT_ADB) {
-            add(GridValue("DB 폴링", "${dbPoll}ms", Icons.Default.Timer) {
+            add(GridValue("DB 폴링", "${dbPoll}ms", R.drawable.ic_stopwatch) {
                 editor = ValueEditor("DB 폴링 (ms)", dbPoll.toString(), numeric = true) { v ->
                     val r = v.toLongOrNull() ?: return@ValueEditor false
                     AppConfig.dbPollingRate = r; dbPoll = r
@@ -143,7 +146,7 @@ fun StatusScreen(permission: PermissionStatus) {
                 }
             })
         }
-        add(GridValue("발송 주기", "${send}ms", Icons.Default.Send) {
+        add(GridValue("발송 주기", "${send}ms", R.drawable.ic_play) {
             editor = ValueEditor("발송 주기 (ms)", send.toString(), numeric = true) { v ->
                 val r = v.toLongOrNull() ?: return@ValueEditor false
                 AppConfig.sendRate = r; AppConfig.messageSendRate = r; send = r
@@ -189,6 +192,29 @@ fun StatusScreen(permission: PermissionStatus) {
     }
 }
 
+/** 동작 중에만 숨쉬는 광환 — 무한 애니메이션은 이 작은 composable 에만 국한해
+ *  카드 전체 recomposition 을 유발하지 않는다. */
+@Composable
+private fun StatusHalo(running: Boolean) {
+    Box(modifier = Modifier.size(10.dp), contentAlignment = Alignment.Center) {
+        val scale = if (running) rememberInfiniteTransition(label = "halo").animateFloat(
+            0f, 1f, infiniteRepeatable(tween(1500, easing = LinearEasing), RepeatMode.Restart), label = "s"
+        ).value else 0f
+        if (running) {
+            Box(
+                modifier = Modifier
+                    .size((10 + scale * 14).dp)
+                    .background(AppColors.SuccessVivid.copy(alpha = 0.28f * (1f - scale)), CircleShape)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .background(if (running) AppColors.SuccessVivid else AppColors.TextMute, CircleShape)
+        )
+    }
+}
+
 /** 행1: 서비스 카드 — ON/OFF 토글 + 모드 전환 칩(원 카드). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -202,13 +228,6 @@ private fun ServiceCard(
     val dropdownContext = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
 
-    val pulse = rememberInfiniteTransition(label = "halo")
-    val halo by pulse.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing), RepeatMode.Restart),
-        label = "haloScale"
-    )
-
     SurfaceCard(modifier = modifier, fillHeight = true, contentPadding = PaddingValues(16.dp)) {
         ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
             // ExposedDropdownMenuBox 의 content 는 BoxScope — 행 정렬은 안쪽 Column 이 맡는다.
@@ -218,9 +237,9 @@ private fun ServiceCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    IconChip(
-                        icon = Icons.Default.Devices,
-                        modifier = Modifier.size(30.dp)
+                    IconChipAsset(
+                        iconRes = R.drawable.ic_mascot_dog,
+                        modifier = Modifier.size(32.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
@@ -258,21 +277,7 @@ private fun ServiceCard(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                // 동작 중일 때만 숨쉬는 광환 — 정지 시에는 잉크색 도트로 조용히.
-                                Box(modifier = Modifier.size(10.dp), contentAlignment = Alignment.Center) {
-                                    if (running) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size((10 + halo * 14).dp)
-                                                .background(AppColors.SuccessVivid.copy(alpha = 0.28f * (1f - halo)), CircleShape)
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(9.dp)
-                                            .background(if (running) AppColors.SuccessVivid else AppColors.TextMute, CircleShape)
-                                    )
-                                }
+                                StatusHalo(running = running)
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Text(
                                     if (running) "작동 중" else "정지됨",
@@ -289,11 +294,23 @@ private fun ServiceCard(
                                 color = AppColors.TextSub
                             )
                         }
+                        // 동작 카드 우단 장식 — 작은 두 깃발
+                        Image(
+                            painter = painterResource(R.drawable.ic_flag_pink),
+                            contentDescription = null,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Image(
+                            painter = painterResource(R.drawable.ic_flag_blue),
+                            contentDescription = null,
+                            modifier = Modifier.size(26.dp)
+                        )
                         Spacer(modifier = Modifier.width(10.dp))
-                        Switch(
+                        StickerSwitch(
                             checked = running,
                             onCheckedChange = onToggle,
-                            modifier = Modifier.scale(1.15f)
+                            modifier = Modifier.scale(1.05f)
                         )
                     }
                 }
@@ -346,14 +363,14 @@ private fun ValueGridCard(
     fillHeight: Boolean = false
 ) {
     SurfaceCard(modifier = modifier, fillHeight = fillHeight, contentPadding = PaddingValues(16.dp)) {
-        SectionHeader(icon = Icons.Default.Cable, title = "동작 설정")
+        SectionHeaderAsset(iconRes = R.drawable.ic_cog, title = "동작 설정")
         Spacer(modifier = Modifier.height(10.dp))
         StatTiles(
             *values.map {
                 StatItem(
                     it.label,
                     it.value,
-                    it.icon,
+                    iconRes = it.iconRes,
                     valueColor = if (it.value == "미설정") AppColors.TextSub else AppColors.PrimaryAccent,
                     onClick = it.onClick
                 )
@@ -367,7 +384,7 @@ private fun ValueGridCard(
 
 // ── 값 편집 팝업 ──────────────────────────────────────────────
 
-data class GridValue(val label: String, val value: String, val icon: ImageVector?, val onClick: () -> Unit)
+data class GridValue(val label: String, val value: String, @androidx.annotation.DrawableRes val iconRes: Int, val onClick: () -> Unit)
 
 private class ValueEditor(
     val title: String,

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.Image
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -40,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -50,6 +52,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.launch
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.R
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
@@ -97,9 +100,9 @@ fun MainScreen() {
         AppMode.ROOT_ADB -> listOf("상태", "로그", "도구", "권한")
         AppMode.NON_ROOT -> listOf("상태", "로그", "권한")
     }
-    val icons = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Shield)
-        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Shield)
+    val navIcons = when (currentMode) {
+        AppMode.ROOT_ADB -> listOf(R.drawable.ic_nav_home, R.drawable.ic_nav_log, R.drawable.ic_nav_tools, R.drawable.ic_nav_perm)
+        AppMode.NON_ROOT -> listOf(R.drawable.ic_nav_home, R.drawable.ic_nav_log, R.drawable.ic_nav_perm)
     }
 
 
@@ -125,7 +128,11 @@ fun MainScreen() {
                                 contentAlignment = Alignment.TopEnd,
                                 modifier = Modifier.size(24.dp)
                             ) {
-                                Icon(icons[index], contentDescription = title)
+                                Image(
+                                    painter = painterResource(navIcons[index]),
+                                    contentDescription = title,
+                                    modifier = Modifier.size(24.dp)
+                                )
                                 if (warnDot) {
                                     Box(
                                         modifier = Modifier
