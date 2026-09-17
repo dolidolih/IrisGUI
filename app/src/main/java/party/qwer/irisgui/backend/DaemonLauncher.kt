@@ -23,9 +23,11 @@ import party.qwer.irisgui.AppConfig
  *     셸은 adbd 자식 도메인이므로 거기서 su를 수행하면 host PC의 `adb shell su ...`와 동일.
  *     redroid(userdebug/debuggable)에서는 셸 자체가 uid=0인 경우가 많아 su 불필요.
  *
- * su 방언 주의: AOSP debug su(redroid)는 `su -c <cmd>`를 "invalid uid/gid '-c'"로 거부하고
- * `su 0 <cmd>`만 허용한다. 매직스크 su는 `su -c`를 허용한다. 따라서 방언은 런타임에
- * `su <variant> id`를 probe해 uid=0을 얻는 형식을 택한다. 우선순위는 검증된 `su 0`.
+ * su 방언은 경로별로 다르다.
+ *   PATH1(앱 프로세스 exec) — Magisk 는 `su -c "<cmd>"` 만 허용하므로 `su -c` 만 쓴다.
+ *   PATH2(로컬 adb 셸) — redroid 는 셸 자체가 uid=0 인 경우가 많고, debug su 는
+ *   `-c` 를 "invalid uid/gid '-c'" 로 거부하고 uid 인자형만 허용한다. 따라서 PATH2
+ *   는 셸 root 확인 후 `su <variant> id` 를 probe하며, 우선순위는 검증된 `su 0`.
  */
 object DaemonLauncher {
 
@@ -39,7 +41,14 @@ object DaemonLauncher {
 
     private const val MAIN_CLASS = "party.qwer.irisgui.Main"
 
-    /** uid=0을 만드는 형식을 런타임에 선택하기 위한 `su <variant>` 후보. */
+    /** 앱(uid) 프로세스에서 실제로 exec 가능한 su 후보.
+     *  /system/xbin/su 는 PATH 에 잡히지만 앱 네임스페이스에서 inaccessible,
+     *  /sbin/su 만 exec 가능. */
+    private val SU_PATHS = listOf("su", "/sbin/su")
+
+    /** PATH2(로컬 adb 셸) 탐색 순서. redroid AOSP su는 `-c`를
+     *  "invalid uid/gid '-c'"로 거부하며 uid 인자형만 허용한다. 검증된 `su 0`부터.
+     */
     private val SU_VARIANTS = listOf("0", "-c", "root")
 
     /** PATH1(인-프로세스) 방언 probe 타임아웃 — su 미설치/redroid에서는 즉시 실패해야 PATH2로 넘어간다. */
@@ -96,9 +105,8 @@ object DaemonLauncher {
 
             val prefix = if (root.variant.isEmpty()) "" else "su ${root.variant} "
 
-            // 이전 세션의 잔여 데몬(HTTP만 죽고 poller는 남은 채 포트를 점유)을 정리한다.
-            // 건너뛰면 새 기동이 BindException(Address already in use)으로 HTTP만 못 띄우고
-            // poller만 도는 귀먹은 상태가 된다. (stop과 동일 커맨드로 포트부터 비운다.)
+            // 이전 세션의 잔여 데몬(HTTP만 끊고 poller는 남은 채 포트를 점유)을 정리한다.
+            // 건너뛰면 새 기동이 BindException(Address already in use)으로 HTTP만 띄우지 못한 채 poller만 도는 귀먹은 상태가 된다.
             adb.execService("shell:${prefix}pkill -9 -f $MAIN_CLASS")
             delay(1_500)
 
@@ -110,7 +118,7 @@ object DaemonLauncher {
                 )
             }
             println("DaemonLauncher: start command sent via local ADB (apk=$apkPath)")
-            return@withContext awaitDaemonUp()
+            return@withContext awaitDaemonUp(logPath = logPath)
         } finally {
             adb.close()
         }
@@ -123,41 +131,38 @@ object DaemonLauncher {
 
     /**
      * PATH 1 helper — 앱 프로세스에서 su로 데몬을 띄운다.
-     * 성공 시 Started/AlreadyRunning, 어떤 su 방언도 root를 못 얻으면 null(PATH2 진행).
+     * root 를 얻으면 결과를 그대로 반환(PATH2 불필요). 어떤 후보도 root를 못 얻으면 null(PATH2 진행).
      */
     private suspend fun tryStartViaInProcessSu(apkPath: String, logPath: String): StartResult? {
         val inner = daemonStartCommand(apkPath, logPath)
-        for (variant in SU_VARIANTS) {
-            val probe = runSu("su $variant id", SU_PROBE_TIMEOUT_MS)
-            when {
-                probe == null -> {
-                    println("DaemonLauncher: in-proc su '$variant' unavailable")
-                    continue
-                }
-                probe.second.contains("uid=0") -> Unit
-                isSuUnavailable(probe.second) -> {
-                    // su 바이너리 부재/SELinux 거부 — 앱 shell 루트는 구조적으로 불가. PATH2로 직행.
-                    println("DaemonLauncher: in-proc su '$variant' unavailable cause: ${probe.second.trim().take(80)}")
-                    return null
-                }
-                else -> {
-                    println("DaemonLauncher: in-proc su '$variant' no root (${probe.second.trim().take(80)})")
-                    continue
-                }
+        for (suPath in SU_PATHS) {
+            val probe = runSu(suCommand(suPath, "id"), SU_PROBE_TIMEOUT_MS)
+            if (probe == null || !probe.second.contains("uid=0")) {
+                println("DaemonLauncher: in-proc '$suPath' no root (${(probe?.second ?: "").trim().take(80)})")
+                continue
             }
-            println("DaemonLauncher: in-proc su '$variant' has root; launching daemon")
-            runSu("su $variant sh -c \"($inner)\"")
-            val r = awaitDaemonUp(maxWaitMs = 4_000)
+            println("DaemonLauncher: in-proc '$suPath -c' has root; launching daemon")
+            // 이전 세션 로그가 남아 있으면 진단이 남의 오류를 집는다. 먼저 비운다.
+            runSu(suCommand(suPath, "rm -f $logPath"))
+            runSu(suCommand(suPath, inner))
+            val r = awaitDaemonUp(maxWaitMs = 4_000, logPath = logPath)
             if (r is StartResult.Started) {
                 println("DaemonLauncher: daemon started via in-proc su (no adb)")
-                return r
+            } else {
+                println("DaemonLauncher: in-proc su HTTP not up")
             }
-            println("DaemonLauncher: in-proc su launched command but daemon not up")
+            // PATH1 에서 이미 루트를 확보해 기동까지 마쳤다. PATH2 도 같은 `su -c` 를
+            // 쓰므로 더 나은 결과가 나오지 않는다. HTTP 미상승은 daemon.log 로 판단한다.
+            return r
         }
         return null
     }
 
-    /** 셸 세션에서 root 확보: 셸 자체 root or su 방언. 없으면 null. */
+    /** `su -c "<한 단계 감싼 inner>"` 커맨드 — inner 에 double quote 는 없다. */
+    private fun suCommand(suPath: String, inner: String): String =
+        suPath + " -c " + '"' + inner + '"'
+
+
     private fun probeRootInShell(adb: LocalAdb): ShellRoot? {
         adb.execService("shell:id")
         if (adb.lastOutput.contains("uid=0")) {
@@ -175,16 +180,61 @@ object DaemonLauncher {
     }
 
     /** 데몬 HTTP가 올라올 때까지 최대 maxWaitMs 대기. */
-    private suspend fun awaitDaemonUp(maxWaitMs: Long = 10_000): StartResult {
+    private suspend fun awaitDaemonUp(maxWaitMs: Long = 10_000, logPath: String? = null): StartResult {
         val steps = (maxWaitMs / 500).toInt().coerceAtLeast(1)
         repeat(steps) {
             delay(500)
             if (AdbProcessClient.queryStatus() != null) return StartResult.Started
+            val died = diagnoseDaemonLog(logPath)
+            if (died != null) {
+                println("DaemonLauncher: $died")
+                return StartResult.Failed(FailureReason.START_TIMEOUT, died)
+            }
         }
-        return StartResult.Failed(
-            FailureReason.START_TIMEOUT,
-            "daemon started but /process-status did not come up in ${maxWaitMs / 1000}s"
-        )
+        val tail = readDaemonLogTail(logPath)
+        if (tail.isNotBlank()) println("DaemonLauncher: \n$tail")
+        val detail = if (tail.isBlank()) {
+            "데몬은 기동했으나 /process-status 가 ${maxWaitMs / 1000}s 내 응답하지 않았습니다."
+        } else {
+            "데몬은 기동했으나 /process-status 가 응답하지 않습니다.\n— daemon.log —\n" + tail
+        }
+        return StartResult.Failed(FailureReason.START_TIMEOUT, detail)
+    }
+
+    /** daemon.log 에 명확한 종료 원인이 있으면 한 줄 요약, 없으면 null. */
+    private fun diagnoseDaemonLog(logPath: String?): String? {
+        val text = readDaemonLog(logPath) ?: return null
+        return when {
+            text.contains("KakaoTalk app path not found") ->
+                "KakaoTalk 이 설치되어 있지 않아 데몬이 즉시 종료되었습니다. (KakaoTalk app path not found)"
+            text.contains("permission to access KakaoTalk Database") ->
+                "KakaoTalk DB 접근 권한이 없어 데몬이 종료되었습니다. (SELinux/uid 권한 문제)"
+            text.contains("SQLiteException") ->
+                "KakaoTalk DB 여는 중 SQLite 오류로 데몬이 종료되었습니다. (DB 손상/권한 가능성)"
+            text.contains("Address already in use") ->
+                "포트 ${AppConfig.serverPort} 가 이미 사용 중입니다. 이전 데몬이 살아 있습니다."
+            text.contains("BindException") ->
+                "HTTP 서버 바인딩 실패로 데몬이 종료되었습니다. 포트/재시작 문제 확인."
+            else -> null
+        }
+    }
+
+    private fun readDaemonLog(logPath: String?): String? {
+        if (logPath == null) return null
+        return try {
+            val f = File(logPath)
+            if (!f.exists()) null else f.readText()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** daemon.log 마지막 12줄. */
+    private fun readDaemonLogTail(logPath: String?): String {
+        val text = readDaemonLog(logPath) ?: return ""
+        val lines = text.trimEnd().lines().filter { it.isNotBlank() }
+        val from = if (lines.size > 12) lines.size - 12 else 0
+        return lines.subList(from, lines.size).joinToString("\n")
     }
 
     /** 인-프로세스 exec. @return (exitCode, stdout+stderr), exec 불가 시 null. */
@@ -204,14 +254,6 @@ object DaemonLauncher {
         }
     }
 
-    /** su 바이너리/정책 미사용 여부 판단 — true면 앱 shell 루트가 구조적으로 불가(PATH2 직행). */
-    private fun isSuUnavailable(out: String): Boolean {
-        val l = out.lowercase()
-        return l.contains("not found") || l.contains("no such file") ||
-            l.contains("permission denied") || l.contains("avc") ||
-            l.contains("denied") || l.contains("inaccessible")
-    }
-
     /** 데emon 정지 — HTTP /process-command 우선, 없으면 su pkill(PATH1 → PATH2). */
     suspend fun stopDaemon(context: Context): Boolean = withContext(Dispatchers.IO) {
         if (AdbProcessClient.stopProcess()) {
@@ -220,13 +262,13 @@ object DaemonLauncher {
         }
         println("DaemonLauncher: /process-command unavailable, trying su pkill")
 
-        // PATH 1: 인-프로세스 su pkill
-        for (variant in SU_VARIANTS) {
-            val out = runSu("su $variant pkill -f $MAIN_CLASS") ?: continue
+        // PATH 1: 인-프로세스 su pkill (Magisk `su -c "<cmd>"`)
+        for (suPath in SU_PATHS) {
+            val out = runSu(suCommand(suPath, "pkill -f $MAIN_CLASS")) ?: continue
             if (!looksDenied(out.second)) {
                 delay(1000)
                 if (AdbProcessClient.queryStatus() == null) {
-                    println("DaemonLauncher: stopped via in-proc su '$variant'")
+                    println("DaemonLauncher: stopped via in-proc su '$suPath -c'")
                     return@withContext true
                 }
             }
@@ -285,6 +327,7 @@ object DaemonLauncher {
         FailureReason.EXEC_FAILED ->
             "데몬 시작 명령 실행 실패: $detail"
         FailureReason.START_TIMEOUT ->
-            "데몬이 기동되지 않았습니다. daemon.log(/data/local/tmp 또는 앱 filesDir)를 확인하세요."
+            if (detail.isNotBlank()) "기동되지 않았습니다. $detail"
+            else "데몬이 기동되지 않았습니다. daemon.log(/data/local/tmp 또는 앱 filesDir)를 확인하세요."
     }
 }

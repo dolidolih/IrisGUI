@@ -36,7 +36,16 @@ object AdbConfig {
      */
     fun detectBotId() {
         try {
-            val dbPath = "${PathUtils.getAppPath()}databases/KakaoTalk.db"
+            val appPath = PathUtils.getAppPathOrNull()
+            if (appPath == null) {
+                println("AdbConfig: KakaoTalk 이 설치되지 않음. botId=${config.botId} 유지.")
+                return
+            }
+            val dbPath = "${appPath}databases/KakaoTalk.db"
+            if (!File(dbPath).exists()) {
+                println("AdbConfig: KakaoTalk 은 설치되어 있나 DB 파일이 없음. path=$dbPath")
+                return
+            }
             val db = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY)
             db.rawQuery(
                 "SELECT user_id FROM chat_logs WHERE v LIKE '%\"isMine\":true%' ORDER BY _id DESC LIMIT 1",
@@ -49,6 +58,8 @@ object AdbConfig {
                         saveConfig()
                         println("AdbConfig: botId auto-detected: $detectedId")
                     }
+                } else {
+                    println("AdbConfig: KakaoTalk DB를 찾았지만 내 계정의 isMine 레코드가 없어 botId 미파악. botId=${config.botId} 유지.")
                 }
             }
             db.close()
