@@ -69,9 +69,9 @@ fun PermissionScreen(permission: PermissionStatus) {
         contentPadding = PaddingValues(bottom = 32.dp, top = 12.dp)
     ) {
         item {
-            SectionHeader(
+            SectionTitle(
+                "권한",
                 icon = Icons.Default.Shield,
-                title = "권한",
                 trailing = {
                     StatusPill(ok = !attention, label = if (attention) "처리 필요" else "모두 허용됨")
                 }
@@ -133,9 +133,9 @@ fun PermissionScreen(permission: PermissionStatus) {
 @Composable
 private fun DaemonStatusCard(running: Boolean, port: Int) {
     SurfaceCard {
-        SectionHeader(
+        SectionTitle(
+            "백그라운드 프로세스(ADB)",
             icon = Icons.Default.Shield,
-            title = "백그라운드 프로세스(ADB)",
             trailing = { StatusPill(ok = running, label = if (running) "실행 중" else "정지됨") }
         )
         Text(

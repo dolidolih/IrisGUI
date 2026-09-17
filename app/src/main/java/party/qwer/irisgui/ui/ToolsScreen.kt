@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
@@ -16,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -52,23 +55,10 @@ fun ToolsScreen() {
         contentPadding = PaddingValues(bottom = 32.dp, top = 14.dp)
     ) {
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-                border = BorderStroke(1.dp, AppColors.CardBorder)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = AppColors.PrimaryAccent)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "SQL 쿼리 (KakaoTalk.db)",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = AppColors.TextMain
-                        )
-                    }
+            SectionTitle("SQL 쿼리 (KakaoTalk.db)", icon = Icons.Default.Search)
+            Spacer(modifier = Modifier.height(10.dp))
+            SurfaceCard(contentPadding = PaddingValues(16.dp)) {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = queryText,
                         onValueChange = { queryText = it },
@@ -76,15 +66,8 @@ fun ToolsScreen() {
                         shape = RoundedCornerShape(AppColors.FieldRadius),
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         placeholder = { Text("SELECT * FROM chat_logs ORDER BY id DESC LIMIT 50", color = AppColors.TextMute) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = AppColors.PrimaryAccent,
-                            unfocusedBorderColor = AppColors.GlassStroke,
-                            focusedContainerColor = AppColors.GlassInputBg,
-                            unfocusedContainerColor = AppColors.GlassInputBg,
-                            focusedTextColor = AppColors.TextMain,
-                            unfocusedTextColor = AppColors.TextMain,
-                            cursorColor = AppColors.PrimaryAccent
-                        )
+                        // 공용 필 채움과 똑같이 — 다른 탭 입력 필과 동일한 면/테두리/잉크.
+                        colors = irisFieldColors()
                     )
                     Button(
                         onClick = {
@@ -118,46 +101,47 @@ fun ToolsScreen() {
         }
 
         item {
-            Text("빠른 쿼리", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AppColors.PrimaryAccent)
-        }
-        items(quickQueries) { (label, sql) ->
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { queryText = sql },
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = AppColors.PrimaryAccent,
-                        modifier = Modifier.width(80.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        sql,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = AppColors.TextSub,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                    )
+            SectionTitle("빠른 쿼리", icon = Icons.Default.Bolt)
+            Spacer(modifier = Modifier.height(10.dp))
+            SurfaceCard(contentPadding = PaddingValues(8.dp)) {
+                quickQueries.forEachIndexed { i, (label, sql) ->
+                    if (i > 0) Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { queryText = sql }
+                            .background(AppColors.ConfigTile)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = AppColors.PrimaryAccent,
+                            modifier = Modifier.width(84.dp),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            sql,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = AppColors.TextSub,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
 
         if (queryError != null) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = AppColors.InputBg)
-                ) {
-                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = AppColors.ErrorVivid, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
+                SurfaceCard(contentPadding = PaddingValues(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconChip(icon = Icons.Default.Warning, tint = AppColors.ErrorVivid)
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(queryError!!, style = MaterialTheme.typography.bodySmall, color = AppColors.ErrorVivid)
                     }
                 }
@@ -166,17 +150,12 @@ fun ToolsScreen() {
 
         if (queryResult != null && queryResult!!.data.isNotEmpty()) {
             item {
-                Text(
-                    "결과 (${queryResult!!.data.size}행)",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = AppColors.PrimaryAccent
-                )
+                SectionTitle("결과", icon = Icons.Default.Article, count = queryResult!!.data.size)
             }
             items(queryResult!!.data) { row -> QueryResultCard(row) }
         } else if (queryResult != null && queryError == null) {
             item {
-                Text("쿼리 결과: 0행", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
+                SectionTitle("결과", icon = Icons.Default.Article, count = 0)
             }
         }
     }
@@ -187,15 +166,12 @@ fun ToolsScreen() {
 internal fun QueryResultCard(row: Map<String, String?>) {
     var expanded by remember { mutableStateOf(false) }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
-        border = BorderStroke(1.dp, AppColors.CardBorder)
+    SurfaceCard(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { expanded = !expanded },
+        contentPadding = PaddingValues(14.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column {
             row.entries.firstOrNull()?.let { (key, value) ->
                 Text(
                     "$key: $value",

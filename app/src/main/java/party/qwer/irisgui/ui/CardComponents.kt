@@ -162,6 +162,8 @@ fun StatTiles(
     columns: Int = 2,
     modifier: Modifier = Modifier,
     fillHeight: Boolean = false,
+    /** true: 아이콘/값/라벨을 한 행에 담는 컴팩트 타일. 세로 여백이 적은 화면용. */
+    compact: Boolean = false,
     contentPadding: androidx.compose.foundation.layout.PaddingValues = PaddingValues(0.dp)
 ) {
     val shape = RoundedCornerShape(AppColors.TileRadius)
@@ -169,61 +171,98 @@ fun StatTiles(
     Column(
         modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxSize() else Modifier)
             .padding(contentPadding),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        // 채워 쓰는 카드에서는 남은 세로 여유를 행 '위/아래'로만 쓰고, 행 자체는 콘텐츠
+        // 높이 그대로 둔다. 행에 weight 를 주면 콘텐츠가 세로로 잘려 아이콘만 남는다.
+        verticalArrangement = if (fillHeight) Arrangement.spacedBy(10.dp, Alignment.CenterVertically)
+        else Arrangement.spacedBy(10.dp)
     ) {
         items.toList().chunked(columns).forEach { rowItems ->
-            val rowModifier = if (fillHeight) Modifier.weight(1f) else Modifier
             Row(
-                modifier = rowModifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 rowItems.forEach { item ->
-                    var cellModifier = Modifier.weight(1f)
-                        .then(if (fillHeight) Modifier.fillMaxHeight()
-                              else Modifier.height(IntrinsicSize.Min))
+                    var cellModifier = Modifier.weight(1f).height(IntrinsicSize.Min)
                     // clip 은 clickable 앞에 와야 ripple/press 하이라이트가 모서리 둥근 사각형에
                     // 맞춰 그려진다. (clickable 뒤 background(shape) 는 그리기만 둥글게 하고 하이라이트 clip 은 각진 채로 남는다)
                     if (item.onClick != null) cellModifier = cellModifier.clip(shape).clickable(onClick = item.onClick)
-                    // 타일 구성: 위 — icon chip / 한복판 — 값(숫자는 모노, 액센트 잉크) / 아래 — 캡션 라벨.
-                    Column(
-                        modifier = cellModifier.background(tileFill, shape = shape)
-                            .padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        if (item.icon != null) {
-                            IconChip(
-                                icon = item.icon,
-                                modifier = Modifier.size(30.dp)
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                        }
-                        Box(
-                            modifier = Modifier.fillMaxWidth()
-                                .then(if (fillHeight) Modifier.weight(1f) else Modifier),
-                            contentAlignment = Alignment.Center
+                    // 타일 구성 — compact: 좌측 아이콘 칩 + 우측(위 값 / 아래 라벨) 행.
+                    // compact 아님: 위 칩 / 한복판 값 / 아래 라벨.
+                    if (compact) {
+                        Row(
+                            modifier = cellModifier.background(tileFill, shape = shape)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            if (item.icon != null) {
+                                IconChip(icon = item.icon, modifier = Modifier.size(28.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    item.value,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 0.3.sp
+                                    ),
+                                    fontWeight = FontWeight.Bold,
+                                    color = item.valueColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    item.label,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        letterSpacing = 0.6.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    color = AppColors.TextSub,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = cellModifier.background(tileFill, shape = shape)
+                                .padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (item.icon != null) {
+                                IconChip(
+                                    icon = item.icon,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            Box(
+                                modifier = Modifier.fillMaxWidth()
+                                    .then(if (fillHeight) Modifier.weight(1f) else Modifier),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    item.value,
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 0.4.sp
+                                    ),
+                                    fontWeight = FontWeight.Bold,
+                                    color = item.valueColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                             Text(
-                                item.value,
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    letterSpacing = 0.4.sp
+                                item.label,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    letterSpacing = 0.6.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 ),
-                                fontWeight = FontWeight.Bold,
-                                color = item.valueColor,
+                                color = AppColors.TextSub,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Text(
-                            item.label,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                letterSpacing = 0.6.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = AppColors.TextSub,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                     }
                 }
                 // 마지막 행이 columns 로 안 맞으면 빈 셀로 폭 정렬 유지
@@ -233,4 +272,25 @@ fun StatTiles(
             }
         }
     }
+}
+
+/**
+ * SectionTitle — 블록 위에 얹는 절 제목. SectionHeader 와 동일 구성(34dp 원형 아이콘
+ * 칩 + 10dp 여백 + titleMedium 제목)을 쓰므로 배경에 얹히든 블록 안에 쓰든 똑같은
+ * 절 표기가 된다. count 가 있으면 "(n)" 접미.
+ */
+@Composable
+fun SectionTitle(
+    title: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    count: Int? = null,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    SectionHeader(
+        icon = icon,
+        title = if (count != null) "$title ($count)" else title,
+        modifier = modifier,
+        trailing = trailing
+    )
 }
