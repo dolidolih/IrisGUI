@@ -153,10 +153,12 @@ fun LogsScreen() {
         // 수신 메시지(DB 로그)보다 먼저(두 번째) 배치한다. 최근 50줄만 노출한다.
         // 헤더 탭으로 통 전체를 펼침/접힘 할 수 있다.
         item(key = "runtime_header") {
-            SectionHeader(
+            SectionTitle(
+                "실행 로그",
                 icon = Icons.Default.Info,
-                title = "실행 로그 (${runtimeLogs.size.coerceAtMost(50)})",
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                count = runtimeLogs.size.coerceAtMost(50),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable { logsExpanded = !logsExpanded },
                 trailing = {
                     Icon(
@@ -186,7 +188,7 @@ fun LogsScreen() {
 
         // ── 수신 메시지(DB 로그) — 마지막 ────────────────
         item(key = "recv_header") {
-            SectionHeader(icon = Icons.Default.Chat, title = "수신 메시지 (${messages.size})")
+            SectionTitle("수신 메시지", icon = Icons.Default.Chat, count = messages.size)
         }
         if (messages.isEmpty()) {
             item(key = "recv_empty") {
@@ -277,9 +279,9 @@ private fun SendTestCard(
     result: String?,
     onSend: () -> Unit
 ) {
+    SectionTitle("메시지 발송 테스트", icon = Icons.Default.Send)
+    Spacer(modifier = Modifier.height(10.dp))
     SurfaceCard(contentPadding = PaddingValues(16.dp)) {
-        SectionHeader(icon = Icons.Default.Send, title = "메시지 발송 테스트")
-        Spacer(modifier = Modifier.height(10.dp))
         RoomDropdownField(selectedId = room, rooms = roomOptions, onSelect = onRoomChange)
         Spacer(modifier = Modifier.height(10.dp))
         SettingsField(label = "메시지", value = message, onValueChange = onMessageChange)

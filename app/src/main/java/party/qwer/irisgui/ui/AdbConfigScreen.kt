@@ -104,7 +104,7 @@ fun AdbConfigScreen() {
         // ── 현재 설정 요약 ────────────────────────────
         item {
             SurfaceCard(contentPadding = PaddingValues(16.dp)) {
-                SectionHeader(icon = Icons.Default.Settings, title = "현재 설정")
+                SectionTitle("현재 설정", icon = Icons.Default.Settings)
                 Spacer(modifier = Modifier.height(10.dp))
                 if (config != null) {
                     StatTiles(

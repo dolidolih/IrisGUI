@@ -172,9 +172,9 @@ fun PermissionCard(
     modifier: Modifier = Modifier
 ) {
     SurfaceCard(modifier = modifier) {
-        SectionHeader(
+        SectionTitle(
+            title,
             icon = icon,
-            title = title,
             trailing = { StatusPill(ok = isGranted, label = if (isGranted) "허용됨" else "필요") }
         )
         Text(description, style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
