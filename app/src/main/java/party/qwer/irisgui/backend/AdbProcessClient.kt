@@ -23,7 +23,15 @@ import party.qwer.irisgui.models.*
  * try/catch 에 삼켜져 항상 null 을 반환(대시보드 "미실행")하는 문제가 있었다.
  */
 object AdbProcessClient {
-    private val client = OkHttpClient()
+    // 커넥션 풀을 쓰지 않는다: 데몬이 내려간 뒤 같은 포트를 다른 프로세스가 재사용하면
+    // 커넥션 풀에 남은 stale 커넥션에 응답하려 "unexpected end of stream" 이 발생한다.
+    // 조회 실패가 곧 '정지'로 오인되는 원인. 커넥션마다 새로 연결한다.
+    private val client = OkHttpClient.Builder()
+        .connectionPool(okhttp3.ConnectionPool(0, 1, java.util.concurrent.TimeUnit.NANOSECONDS))
+        .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .build()
     private val json = Json { ignoreUnknownKeys = true }
 
     private val baseUrl: String
@@ -42,6 +50,22 @@ object AdbProcessClient {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 서버 포트가 TCP 로 열려있는지 — HTTP 응답은 없지만 프로세스가 떠있는지 구분해야 할 때 쓴다.
+     * status 조회가 null 을 반환해도 포트가 열려 있으면 '막 기동 중/한창 바쁨'이고,
+     * 연결이 거절되면 정말로 내려간 상태다.
+     */
+    suspend fun isHttpPortOpen(timeoutMs: Int = 300): Boolean = withContext(Dispatchers.IO) {
+        try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", AppConfig.serverPort), timeoutMs)
+                true
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
