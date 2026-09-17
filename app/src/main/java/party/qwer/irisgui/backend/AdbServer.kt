@@ -364,11 +364,12 @@ object AdbServer {
                     val threadIdLong = threadId?.toLongOrNull()
                     Replier.sendMessage(referer, chatId, text, threadIdLong)
                 }
-                // P18: JSON 이스케이프 적용
-                val safeRoom = roomId?.replace("\\", "\\\\")?.replace("\"", "\\\"") ?: ""
-                val safeText = text?.replace("\\", "\\\\")?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: ""
-                val msg = """{"type":"reply","room":"$safeRoom","data":"$safeText","status":"sent"}"""
-                broadcastToClients(msg)
+                // irispy-client 규약상 /ws 는 반드시 `{msg, room, sender, json}` 형태만 허용한다.
+                // (클라이언트 쪽에서 `del data["json"]` 을 수행하므로 `json` 키가 없는 페이로드는
+                //  KeyError('json') → "이벤트를 처리 중 오류" 가 된다.)
+                // 원본 Iris 도 답장 ACK 를 /ws 로 브로드캐스트하지 않으므로 로그만 남긴다.
+                val safeText = text?.replace("\n", "\\n") ?: ""
+                println("AdbServer: text reply sent room=$roomId len=${safeText.length}")
             } catch (e: Exception) {
                 System.err.println("AdbServer Replier error: ${e.message}")
                 e.printStackTrace()
@@ -387,11 +388,9 @@ object AdbServer {
                         Replier.sendMultiplePhotos(chatId, images)
                     }
                 }
-                // P18: JSON 이스케이프 — kotlinx.serialization 사용
-                val safeRoom = roomId?.replace("\\", "\\\\")?.replace("\"", "\\\"") ?: ""
-                val safeImages = images.map { it.replace("\\", "\\\\")?.replace("\"", "\\\"") }
-                val msg = """{"type":"reply","room":"$safeRoom","data":${safeImages}, "status":"sent"}"""
-                broadcastToClients(msg)
+                // 답장 ACK 를 /ws 로 브로드캐스트하면 irispy-client 에서는 'json' 키가
+                // 없어 KeyError 가 발생하므로 로그만 남긴다.
+                println("AdbServer: image reply sent room=$roomId count=${images.size}")
             } catch (e: Exception) {
                 System.err.println("AdbServer Replier image error: ${e.message}")
                 e.printStackTrace()

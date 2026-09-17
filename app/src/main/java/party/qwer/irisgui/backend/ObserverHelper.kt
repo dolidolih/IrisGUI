@@ -167,7 +167,10 @@ class ObserverHelper(
     }
 
     private fun getStringJsonToMap(data: String?): MutableMap<String, Any?> {
-        if(data == null) return HashMap()
+        // null 및 빈 문자열("")은 Object가 없는것으로 취급.
+        // attachment/supplement 컬럼은 값이 없는 메시지가 많기 때문에 ""가 전달될 수 있고,
+        // 그때 JSONObject("")가 "End of input at character 0"를 던져 DB 폴링 전체가 중단된다.
+        if(data == null || data.isEmpty()) return HashMap()
         val object_ = JSONObject(data)
         val map: MutableMap<String, Any?> = HashMap()
 
