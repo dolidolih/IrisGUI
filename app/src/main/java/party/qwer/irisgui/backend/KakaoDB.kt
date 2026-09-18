@@ -131,6 +131,217 @@ class KakaoDB {
         return queryUserNameFromCrypto(userId)
     }
 
+    /**
+     * user_id → (표시 이름, 프로필 이미지 URL).
+     *
+     * `crypto_user_database.user`이 이름/프로필 이미지를 평문으로 모두 들고 있어 최우선으로
+     * 쓰고, 없으면 `open_chat_member`(enc 필드 복호화)로 폴백한다. 둘 다 없으면 (null, null).
+     */
+    fun getUserProfile(userId: Long): Pair<String?, String?> {
+        CryptoUserDatabaseReader.getUserProfile(userId)?.let { (n, u) ->
+            if (!n.isNullOrEmpty() || !u.isNullOrEmpty()) return n to u
+        }
+        var name: String? = null
+        var url: String? = null
+        runCatching {
+            if (hasTable("db2", "open_chat_member")) {
+                connection.rawQuery(
+                    "SELECT nickname, profile_image_url, enc FROM db2.open_chat_member WHERE user_id = ? ORDER BY _id DESC LIMIT 1",
+                    arrayOf(userId.toString())
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        val enc = c.getInt(2)
+                        val nm = c.getString(0)
+                        val prof = c.getString(1)
+                        name = nm?.takeIf { it.isNotEmpty() }?.let {
+                            runCatching { KakaoDecrypt.decrypt(enc, it, AppConfig.botId) }.getOrElse { nm }
+                        }
+                        url = prof?.takeIf { it.isNotEmpty() }?.let {
+                            runCatching { KakaoDecrypt.decrypt(enc, it, AppConfig.botId) }.getOrNull()
+                        }
+                    }
+                }
+            }
+        }.onFailure { System.err.println("getUserProfile: open_chat_member query error $it") }
+
+        if (name.isNullOrEmpty()) name = CryptoUserDatabaseReader.getUserProfile(userId)?.first
+        return name to url
+    }
+
+    /**
+     * OpenChat 방 링크 메타 (`db2.open_link`) 조회.
+     * link_id가 null인 1:1/regular 방은 null 반환.
+     */
+    fun getOpenLink(linkId: Long): Map<String, Any?>? {
+        if (!hasTable("db2", "open_link")) return null
+        return runCatching {
+            connection.rawQuery(
+                "SELECT id, name, url, image_url, member_limit, searchable, description " +
+                    "FROM db2.open_link WHERE id = ?", arrayOf(linkId.toString())
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    mapOf(
+                        "id" to c.getLong(0),
+                        "name" to c.getString(1),
+                        "url" to c.getString(2),
+                        "image_url" to c.getString(3),
+                        "member_limit" to if (c.isNull(4)) null else c.getInt(4),
+                        "searchable" to if (c.isNull(5)) null else c.getInt(5),
+                        "description" to c.getString(6)
+                    )
+                } else null
+            }
+        }.getOrElse {
+            System.err.println("getOpenLink error: $it"); null
+        }
+    }
+
+    /**
+     * OpenChat 멤버 목록 (`db2.open_chat_member`) — link_id 기준.
+     * nickname은 enc=31 복호화. privilege (1=admin, 2=manager/0=normal measured).
+     */
+    fun getOpenChatMembers(linkId: Long, limit: Int = 256): List<Map<String, Any?>> = runCatching {
+        if (!hasTable("db2", "open_chat_member")) return emptyList()
+        connection.rawQuery(
+            "SELECT user_id, nickname, profile_image_url, privilege, enc FROM db2.open_chat_member WHERE link_id = ? ORDER BY _id DESC LIMIT ?",
+            arrayOf(linkId.toString(), limit.toString())
+        ).use { c ->
+            val list = ArrayList<Map<String, Any?>>()
+            while (c.moveToNext()) {
+                val userId = c.getLong(0)
+                val enc = c.getInt(4)
+                val nicknameRaw = c.getString(1)
+                val profileRaw = c.getString(2)
+                val privilege = if (c.isNull(3)) null else c.getInt(3)
+                val nickname = if (nicknameRaw.isNullOrEmpty()) null
+                    else runCatching { KakaoDecrypt.decrypt(enc, nicknameRaw, AppConfig.botId) }.getOrElse { nicknameRaw }
+                val profile = if (profileRaw.isNullOrEmpty()) null
+                    else runCatching { KakaoDecrypt.decrypt(enc, profileRaw, AppConfig.botId) }.getOrElse { null }
+                list.add(mapOf("user_id" to userId, "nickname" to nickname, "profile_image_url" to profile, "privilege" to privilege))
+            }
+            list
+        }
+    }.getOrElse {
+        System.err.println("getOpenChatMembers error: $it"); emptyList()
+    }
+
+    /**
+     * 리액션 조회 (db2.chat_log_meta type=2).
+     * log_id 조인키는 chat_logs.id(snowflake, _id 아님).
+     * content = {"rx":[{"k","o","c","a":{locale}}]}, o = 이모티콘 ID(예: "1200509_021").
+     */
+    fun getReactions(logId: Long): List<Map<String, Any?>> = runCatching {
+        if (!hasTable("db2", "chat_log_meta")) return emptyList()
+        connection.rawQuery(
+            "SELECT content FROM db2.chat_log_meta WHERE log_id = ? AND type = 2 LIMIT 1",
+            arrayOf(logId.toString())
+        ).use { c ->
+            if (!c.moveToFirst()) return emptyList()
+            val content = c.getString(0)
+            if (content.isNullOrEmpty()) return emptyList()
+            val rx = JSONObject(content).optJSONArray("rx") ?: return emptyList()
+            val out = ArrayList<Map<String, Any?>>()
+            for (i in 0 until rx.length()) {
+                val o = rx.getJSONObject(i)
+                val labels = o.optJSONObject("a")
+                val label = if (labels != null) {
+                    val it = labels.keys()
+                    if (it.hasNext()) labels.getString(it.next()) else null
+                } else null
+                out.add(mapOf(
+                    "id" to o.opt("k"),
+                    "emotion_id" to o.optString("o", ""),
+                    "count" to o.optInt("c", 1),
+                    "label" to label
+                ))
+            }
+            out
+        }
+    }.getOrElse {
+        System.err.println("getReactions error: $it"); emptyList()
+    }
+
+    /** chat_id에 연결된 open_link.link_id (없으면 null). */
+    fun linkIdOfChat(chatId: Long): Long? {
+        return runCatching {
+            connection.rawQuery(
+                "SELECT link_id FROM chat_rooms WHERE id = ?", arrayOf(chatId.toString())
+            ).use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * 방 멤버 목록 (user_id + nickname + profile_image_url + privilege).
+     *
+     * OpenChat(link_id가 있는 방)은 `open_chat_member`를 link_id별로, 그 외 일반/1:1 방은
+     * `chat_rooms.active_member_ids` JSON 배열의 id를 해석한다.
+     */
+    fun getRoomMembers(chatId: Long): List<Map<String, Any?>> {
+        val linkId = linkIdOfChat(chatId)
+        if (linkId != null) return getOpenChatMembers(linkId)
+
+        val memberIds = runCatching {
+            connection.rawQuery(
+                "SELECT active_member_ids FROM chat_rooms WHERE id = ?", arrayOf(chatId.toString())
+            ).use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull()
+        if (memberIds.isNullOrEmpty()) return emptyList()
+
+        return runCatching {
+            val arr = JSONArray(memberIds)
+            (0 until arr.length()).map { i ->
+                val id = arr.getLong(i)
+                val (nm, url) = getUserProfile(id)
+                mapOf("user_id" to id, "nickname" to nm, "profile_image_url" to url)
+            }
+        }.getOrElse {
+            System.err.println("getRoomMembers(active_member_ids) error: $it"); emptyList()
+        }
+    }
+
+    /** chat_rooms 정보 요약 (room_id, member_ids, private_meta.name, link_id 등). */
+    fun getChatRoomMeta(chatId: Long): Map<String, Any?> {
+        return runCatching {
+            connection.rawQuery(
+                "SELECT id, active_member_ids, private_meta, link_id, type, last_updated_at " +
+                    "FROM chat_rooms WHERE id = ?", arrayOf(chatId.toString())
+            ).use { c ->
+                if (!c.moveToFirst()) return emptyMap()
+                val linkId = if (c.isNull(3)) null else c.getLong(3)
+                val name = runCatching {
+                    val pm = c.getString(2)
+                    if (!pm.isNullOrEmpty()) {
+                        val m = Json.decodeFromString<Map<String, JsonElement>>(pm)["name"]
+                        m?.jsonPrimitive?.content
+                    } else null
+                }.getOrNull()
+                // OpenChat/regular 방은 private_meta 비어있으므로 db2.open_link.name 로 폴백.
+                var resolvedName = if (name.isNullOrEmpty() && linkId != null) {
+                    getOpenLink(linkId)?.get("name") as? String
+                } else name
+                // 1:1(DirectChat)은 private_meta/link_id 없음 → active_member_ids 의 bot 아닌 상대 이름으로 폴백.
+                if (resolvedName.isNullOrEmpty()) {
+                    val rep = firstNonBotMember(c.getString(1))
+                    if (rep != 0L) resolvedName = queryUserName(c.getString(0).toLong(), rep)
+                }
+                mapOf(
+                    "id" to c.getString(0),
+                    "name" to resolvedName,
+                    "active_member_ids" to c.getString(1),
+                    "link_id" to linkId,
+                    "type" to if (c.isNull(4)) null else c.getInt(4),
+                    "last_updated_at" to c.getString(5)
+                )
+            }
+        }.getOrElse {
+            System.err.println("getChatRoomMeta error: $it"); emptyMap()
+        }
+    }
+
 
     fun getChatInfo(chatId: Long, userId: Long): Array<String?> {
         val sender = if (userId == AppConfig.botId) {
