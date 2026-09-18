@@ -49,8 +49,11 @@ class ObserverHelper(
                         val v = JSONObject(cursor.getString(columnNames.indexOf("v")))
                         val enc = v.getInt("enc")
                         val origin = v.getString("origin")
+                        val typeVal = cursor.getString(columnNames.indexOf("type")).toIntOrNull() ?: 0
 
-                        if (origin == "SYNCMSG" || origin == "MCHATLOGS") {
+                        // origin/type 브로드캐스트 필터 (filter=null 이면 현행: SYNCMSG/MCHATLOGS 제외).
+                        val filter = AppConfig.broadcastTypes
+                        if (!KakaoMessageType.shouldBroadcast(typeVal, origin, filter, AppConfig.includeSystemEvents)) {
                             lastLogId = currentLogId
                             continue
                         }
@@ -137,14 +140,19 @@ class ObserverHelper(
                         var roomName = chatInfo[0]
                         var senderName = chatInfo[1]
 
-                        val data = JSONObject(
-                            mapOf(
-                                "msg" to message,
-                                "room" to roomName,
-                                "sender" to senderName,
-                                "json" to raw
-                            )
-                        ).toString()
+                        val frame = mutableMapOf<String, Any?>(
+                            "msg" to message,
+                            "room" to roomName,
+                            "sender" to senderName,
+                            "json" to raw
+                        )
+                        if (AppConfig.enableExtension) {
+                            buildExtension(cursor, columnNames, v, enc, userId, chatId, typeVal)?.let {
+                                frame["extension"] = it
+                            }
+                        }
+
+                        val data = JSONObject(frame).toString()
 
                         runBlocking {
                             (wsBroadcastFlow as kotlinx.coroutines.flow.MutableSharedFlow<String>).emit(data)
@@ -164,6 +172,45 @@ class ObserverHelper(
     private fun getLastLogIdFromDB(): Long {
         val lastLog = db.logToDict(0)
         return lastLog["_id"]?.toLongOrNull() ?: 0
+    }
+
+    /**
+     * /ws 프레임용 `extension` 조립.
+     *
+     * 기존 `msg/room/sender/json` 은 불변이고, `json` 의 key 유무/형식은 절대 바꾸지 않는다.
+     * irispy-client는 top-level 신규 키 `extension`만 ignoreUnknownKeys=true 로 무시하므로 안전.
+     *
+     * 싼 필드(타코드/OpenChat비트/origin)만 담고, 리액션은 해당 로그에 실제로 reaction이
+     * 있는 경우(chat_log_meta type=2 존재)에만 쿼리한다.
+     */
+    private fun buildExtension(
+        cursor: Cursor,
+        columnNames: Array<String>,
+        v: JSONObject,
+        enc: Int,
+        userId: Long,
+        chatId: Long,
+        type: Int
+    ): Map<String, Any?>? {
+        val out = LinkedHashMap<String, Any?>()
+        out["type_code"] = type
+        out["type_base"] = KakaoMessageType.baseType(type)
+        out["is_openchat"] = KakaoMessageType.isOpenChat(type)
+        out["type_name"] = KakaoMessageType.classify(type, v.optString("origin", ""))
+        if (userId == AppConfig.botId) out["is_mine"] = true
+
+        val logIdIdx = columnNames.indexOf("id")
+        if (logIdIdx != -1) {
+            val snowflake = cursor.getString(logIdIdx)
+            out["log_id"] = snowflake
+            try {
+                val rx = db.getReactions(snowflake?.toLongOrNull() ?: -1L)
+                if (rx.isNotEmpty()) out["reactions"] = rx
+            } catch (e: Exception) {
+                // reaction 조회 실패는 무시 (extension 는 best-effort)
+            }
+        }
+        return if (out.isEmpty()) null else out
     }
 
     private fun getStringJsonToMap(data: String?): MutableMap<String, Any?> {
@@ -263,4 +310,4 @@ class ObserverHelper(
     companion object {
         private const val MAX_LOGS_STORED = 50
     }
-}
+}

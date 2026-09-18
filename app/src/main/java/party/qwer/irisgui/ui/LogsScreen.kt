@@ -78,11 +78,11 @@ fun LogsScreen() {
         LaunchedEffect(Unit) {
             while (true) {
                 rooms = AdbProcessClient.fetchRooms().map { it.id to (it.name ?: "") }
-                val status = AdbProcessClient.fetchDashboardStatus()
-                val daemonLogs = AdbProcessClient.queryStatus()?.logs ?: emptyList()
+                // DB 로그와 데몬 실행 로그는 같은 응답(/process-status)에 함께 온다.
+                val processStatus = AdbProcessClient.queryStatus()
                 messages.clear()
                 messages.addAll(
-                    (status?.lastLogs ?: emptyList()).map { log ->
+                    (processStatus?.last_logs ?: emptyList()).map { log ->
                         AppState.AppMessage(
                             id = log["_id"] ?: (log["created_at"] ?: "").toString(),
                             roomName = log["room_name"]?.takeIf { it.isNotBlank() } ?: log["chat_id"] ?: "?",
@@ -93,7 +93,7 @@ fun LogsScreen() {
                         )
                     }.sortedByDescending { it.timeMs }
                 )
-                runtimeLogs = (RuntimeLog.snapshot(60) + daemonLogs)
+                runtimeLogs = (RuntimeLog.snapshot(60) + (processStatus?.logs ?: emptyList()))
                     .sortedByDescending { it.timeMs }
                     .take(120)
                 delay(3000)

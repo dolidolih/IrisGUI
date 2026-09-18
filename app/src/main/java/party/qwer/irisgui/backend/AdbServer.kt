@@ -1,6 +1,5 @@
 package party.qwer.irisgui.backend
 
-import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
 import io.ktor.serialization.kotlinx.json.json
@@ -11,7 +10,6 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
@@ -168,7 +166,8 @@ object AdbServer {
                                     web_server_endpoint = AdbConfig.webEndpoint,
                                     db_polling_rate = AdbConfig.dbPollingRate,
                                     message_send_rate = AdbConfig.messageSendRate,
-                                    bot_id = AdbConfig.botId
+                                    bot_id = AdbConfig.botId,
+                                    broadcast_types = AdbConfig.broadcastTypes
                                 )
                             )
                         }
@@ -200,28 +199,26 @@ object AdbServer {
                                     if (value < 1 || value > 65535) throw Exception("Invalid port number")
                                     AdbConfig.serverPort = value
                                 }
+                                "types" -> {
+                                    val value = req.types ?: throw Exception("missing value")
+                                    if (value.isNotEmpty()) {
+                                        val invalid = value.filter { it !in KakaoMessageType.VALID_FILTERS }
+                                        if (invalid.isNotEmpty())
+                                            throw Exception("Invalid broadcast type(s): $invalid")
+                                    }
+                                    // 빈 list = 필터 해제(null, 현행 동작)
+                                    AdbConfig.broadcastTypes = value.ifEmpty { null }
+                                }
+
+                                "extension" -> {
+                                    val value = req.enable
+                                        ?: throw Exception("missing or invalid value")
+                                    AdbConfig.enableExtension = value
+                                }
                                 else -> throw Exception("Unknown config $name")
                             }
 
                             call.respond(ApiResponse(success = true, message = "success"))
-                        }
-                    }
-
-                    // /dashboard
-                    route("/dashboard") {
-                        get {
-                            val html = PageRenderer.renderDashboard()
-                            call.respondText(html, ContentType.Text.Html)
-                        }
-
-                        get("status") {
-                            call.respond(
-                                DashboardStatusResponse(
-                                    isObserving = AppState.isObserving,
-                                    statusMessage = if (AppState.isObserving) "Observing database" else "Not observing database",
-                                    lastLogs = AppState.lastChatLogs.toList()
-                                )
-                            )
                         }
                     }
 
@@ -239,6 +236,96 @@ object AdbServer {
                             call.respond(RoomListResponse(rooms = rooms))
                         } catch (e: Exception) {
                             call.respond(RoomListResponse(rooms = emptyList()))
+                        }
+                    }
+
+                    // ── path 기반 read-only 조회 API (info provision) ───
+                    route("/user") {
+                        get("/name/{id}") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid user id"))
+                            try {
+                                val name = kakaoDb?.getUserProfile(id)?.first
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    put("name", name?.let { JsonPrimitive(it) } ?: JsonNull)
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                        get("/{id}") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid user id"))
+                            try {
+                                val (name, url) = kakaoDb!!.getUserProfile(id)
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    put("id", JsonPrimitive(id))
+                                    put("name", name?.let { JsonPrimitive(it) } ?: JsonNull)
+                                    put("profile_image_url", url?.let { JsonPrimitive(it) } ?: JsonNull)
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                    }
+
+                    route("/room") {
+                        get("/name/{id}") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid room id"))
+                            try {
+                                val name = kakaoDb?.getChatRoomMeta(id)?.get("name") as? String
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    put("name", name?.let { JsonPrimitive(it) } ?: JsonNull)
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                        get("/{id}") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid room id"))
+                            try {
+                                call.respond(JsonPayloadResponse(payload = toJsonElement(kakaoDb?.getChatRoomMeta(id))))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                        get("/{id}/members") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid room id"))
+                            try {
+                                val members = kakaoDb?.getRoomMembers(id) ?: emptyList()
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    put("members", toJsonElement(members))
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                        get("/{id}/links") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid room id"))
+                            try {
+                                val db = kakaoDb!!
+                                val linkId = db.linkIdOfChat(id)
+                                call.respond(JsonPayloadResponse(payload = toJsonElement(linkId?.let { db.getOpenLink(it) })))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                    }
+
+                    get("/reactions/{id}") {
+                        val id = call.parameters["id"]?.toLongOrNull()
+                            ?: return@get call.respond(ApiResponse(false, "invalid log id"))
+                        try {
+                            val rx = kakaoDb?.getReactions(id) ?: emptyList()
+                            call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                put("reactions", toJsonElement(rx))
+                            }))
+                        } catch (e: Exception) {
+                            call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
                         }
                     }
 
@@ -316,7 +403,8 @@ object AdbServer {
                                 web_server_endpoint = AdbConfig.webEndpoint,
                                 db_polling_rate = AdbConfig.dbPollingRate,
                                 message_send_rate = AdbConfig.messageSendRate,
-                                logs = RuntimeLog.snapshot(limit = 60)
+                                logs = RuntimeLog.snapshot(limit = 60),
+                                last_logs = AppState.lastChatLogs.toList()
                             )
                         )
                     }
@@ -396,6 +484,29 @@ object AdbServer {
                 e.printStackTrace()
             }
         }
+    }
+
+    /**
+     * Map<String, Any?> / List<Map> 를 kotlinx JsonElement로 변환.
+     * 숫자 타입(Long 포함)은 JSON 숫자 그대로, 그 외 문자열.
+     */
+    private fun toJsonElement(value: Any?): JsonElement = when (value) {
+        null -> JsonNull
+        is String -> JsonPrimitive(value)
+        is Boolean -> JsonPrimitive(value)
+        is Int -> JsonPrimitive(value)
+        is Long -> JsonPrimitive(value)
+        is Short -> JsonPrimitive(value.toInt())
+        is Double -> JsonPrimitive(value)
+        is Float -> JsonPrimitive(value)
+        is Number -> JsonPrimitive(value)
+        is Map<*, *> -> buildJsonObject {
+            for ((k, v) in value) put(k.toString(), toJsonElement(v))
+        }
+        is List<*> -> buildJsonArray {
+            for (item in value) add(toJsonElement(item))
+        }
+        else -> JsonPrimitive(value.toString())
     }
 
     /**

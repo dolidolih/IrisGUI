@@ -22,6 +22,15 @@ interface ConfigStore {
     var messageSendRate: Long
     var appMode: AppMode?
 
+    /** 브로드캐스트 이벤트 필터. null = 현행 동작 유지. */
+    var broadcastTypes: List<String>?
+
+    /** true(기본) = system(origin) 이벤트를 브로드캐스트에 포함 (현행 동작). */
+    var includeSystemEvents: Boolean
+
+    /** extension 필드 전송 여부 (false = 현행 불변). */
+    var enableExtension: Boolean
+
     /** 저장소 초기화 (NON_ROOT 모드에서만 필요) */
     fun init(context: Context)
 }
@@ -74,6 +83,21 @@ class SharedPrefConfigStore : ConfigStore {
             return try { AppMode.valueOf(raw) } catch (_: IllegalArgumentException) { null }
         }
         set(v) { prefs.edit().putString("appMode", v?.name).apply() }
+
+    override var broadcastTypes: List<String>?
+        get() {
+            val raw = prefs.getStringSet("broadcastTypes", null) ?: return null
+            return raw.toList()
+        }
+        set(v) { prefs.edit().putStringSet("broadcastTypes", v?.toSet()).apply() }
+
+    override var includeSystemEvents: Boolean
+        get() = prefs.getBoolean("includeSystemEvents", true)
+        set(v) { prefs.edit().putBoolean("includeSystemEvents", v).apply() }
+
+    override var enableExtension: Boolean
+        get() = prefs.getBoolean("enableExtension", false)
+        set(v) { prefs.edit().putBoolean("enableExtension", v).apply() }
 }
 
 /**
@@ -116,6 +140,18 @@ class JsonConfigStore : ConfigStore {
     override var appMode: AppMode?
         get() = runCatching { AppMode.valueOf(AdbConfig.appMode) }.getOrNull()
         set(v) { AdbConfig.appMode = v?.name ?: "ROOT_ADB" }
+
+    override var broadcastTypes: List<String>?
+        get() = AdbConfig.broadcastTypes
+        set(v) { AdbConfig.broadcastTypes = v }
+
+    override var includeSystemEvents: Boolean
+        get() = AdbConfig.includeSystemEvents
+        set(v) { AdbConfig.includeSystemEvents = v }
+
+    override var enableExtension: Boolean
+        get() = AdbConfig.enableExtension
+        set(v) { AdbConfig.enableExtension = v }
 
     override fun init(context: Context) {
         // ADB 모드: Context 없음 → 초기화 필요 없음

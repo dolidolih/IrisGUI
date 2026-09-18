@@ -95,7 +95,9 @@ data class ConfigRequest(
     val endpoint: String? = null,
     val botname: String? = null,
     val rate: Long? = null,
-    val port: Int? = null
+    val port: Int? = null,
+    val types: List<String>? = null,
+    val enable: Boolean? = null
 )
 
 @Serializable
@@ -105,7 +107,8 @@ data class ConfigResponse(
     val web_server_endpoint: String,
     val db_polling_rate: Long,
     val message_send_rate: Long,
-    val bot_id: Long
+    val bot_id: Long,
+    val broadcast_types: List<String>? = null
 )
 
 @Serializable
@@ -116,6 +119,15 @@ data class ConfigValues(
     var dbPollingRate: Long = 100,
     var messageSendRate: Long = 50,
     var botId: Long = 0L
+)
+
+// ── path 기반 read-only 조회 API (info provision) ────────
+// payload 필드는 실제 JSON 객체(JsonObject)를 그대로 싣기 위해 JsonElement를 쓴다.
+// (Map<String, Any?>는 kotlinx.serialization 불가)
+@Serializable
+data class JsonPayloadResponse(
+    val payload: JsonElement,
+    val error: String? = null
 )
 
 // ── 쿼리/복호화 API ───────────────────────────────────
@@ -173,15 +185,6 @@ data class ShortcutRoomResponse(
 )
 
 @Serializable
-data class DashboardStatusResponse(
-    // 주의: 필드명은 원본 Iris의 API 규격(camelCase)과 반드시 일치해야 한다.
-    // irispy-client 및 번들 dashboard.html이 이 키 이름으로 역직렬화한다.
-    val isObserving: Boolean,
-    val statusMessage: String,
-    val lastLogs: List<Map<String, String?>> = emptyList()
-)
-
-@Serializable
 data class AotResponse(
     val success: Boolean,
     val aot: JsonElement
@@ -201,7 +204,12 @@ data class AdbProcessStatusResponse(
     val db_polling_rate: Long,
     val message_send_rate: Long,
     /** 데몬 stdout/stderr 로그(최신 선행) — 로그 탭의 "실행 로그"에 병합 표시. */
-    val logs: List<RuntimeLog.Entry> = emptyList()
+    val logs: List<RuntimeLog.Entry> = emptyList(),
+    /**
+     * 최근 DB 채팅 로그(raw 행, 최신 선행) — 로그 탭의 수신 메시지 목록.
+     * 데몬(app_process) 프로세스의 상태이므로 UI는 반드시 HTTP 로 가져야 한다.
+     */
+    val last_logs: List<Map<String, String?>> = emptyList()
 )
 
 @Serializable

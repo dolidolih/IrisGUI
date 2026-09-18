@@ -189,20 +189,4 @@ object AdbProcessClient {
             emptyList()
         }
     }
-
-    // ── Dashboard ─────────────────────────────────────────
-
-    /** 대시보드 상태 조회 */
-    suspend fun fetchDashboardStatus(): DashboardStatusResponse? = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url("$baseUrl/dashboard/status").get().build()
-        try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val body = response.body?.string() ?: return@use null
-                json.decodeFromString<DashboardStatusResponse>(body)
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
 }

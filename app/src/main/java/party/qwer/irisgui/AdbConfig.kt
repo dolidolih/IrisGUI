@@ -24,7 +24,17 @@ object AdbConfig {
         val botName: String = "Iris",
         val botId: Long = 0L,
         val dbPollingRate: Long = 100L,
-        val messageSendRate: Long = 50L
+        val messageSendRate: Long = 50L,
+        /**
+         * 브로드캐스트할 이벤트 종류 필터. null/비워둠 = 필터 없음(현행 동작 유지).
+         * 값: text, photo, video, audio, file, contact, photo_animation, gif, list,
+         * feed, feed_share, current_user, mention, mchatlog, system.
+         */
+        val broadcastTypes: List<String>? = null,
+        /** true(기본) = 현행대로 system(origin) 이벤트를 브로드캐스트에 포함. false = 시스템 이벤트 제외. */
+        val includeSystemEvents: Boolean = true,
+        /** true면 /ws 브로드캐스트 프레임에 `extension` 필드(타입/리액션/OpenChat비트) 추가. 기본 false = 현행 불변. */
+        val enableExtension: Boolean = false
     )
 
     private var config: Config = loadConfig()
@@ -143,6 +153,18 @@ object AdbConfig {
     var messageSendRate: Long
         get() = config.messageSendRate
         set(value) { config = config.copy(messageSendRate = value); saveConfig() }
+
+    var broadcastTypes: List<String>?
+        get() = config.broadcastTypes
+        set(value) { config = config.copy(broadcastTypes = value); saveConfig() }
+
+    var enableExtension: Boolean
+        get() = config.enableExtension
+        set(value) { config = config.copy(enableExtension = value); saveConfig() }
+
+    var includeSystemEvents: Boolean
+        get() = config.includeSystemEvents
+        set(value) { config = config.copy(includeSystemEvents = value); saveConfig() }
 
     /**
      * SharedPreferences → AdbConfig(JSON) — prefs 초기화 시 JSON 동기화 (L1 명명 수정)

@@ -162,6 +162,38 @@ object CryptoUserDatabaseReader {
         return null
     }
 
+    /**
+     * Resolves a user's plaintext profile (name + profile image URL) for a KakaoTalk user id.
+     *
+     * The `user` table stores both `nickname` and `profile_image_url` in plaintext (measured:
+     * 322 live rows). Falls back to `talk_channel` for plus-friend / Kakao-channel / talk accounts
+     * that have no `user` row (name only). Returns null if unknown or the DB cannot be opened.
+     */
+    fun getUserProfile(userId: Long): Pair<String?, String?>? {
+        var database = db
+        if (database == null) {
+            if (!open()) return null
+            database = db ?: return null
+        }
+        database.rawQuery(
+            "SELECT nickname, profile_image_url FROM user WHERE id = ? LIMIT 1",
+            arrayOf(userId.toString())
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val name = cursor.getString(0)
+                val url = cursor.getString(1)
+                if (!name.isNullOrEmpty() || !url.isNullOrEmpty()) return name to url
+            }
+        }
+        database.rawQuery(
+            "SELECT name FROM talk_channel WHERE id = ? AND name <> '' LIMIT 1",
+            arrayOf(userId.toString())
+        ).use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0) to null
+        }
+        return null
+    }
+
     /** Bulk map of user id → nickname, for priming a name cache. Note: only `user`
      *  rows; unlike queryUserName it omits talk_channel names. Not used by the
      *  hot path, which calls queryUserName per-id instead. */

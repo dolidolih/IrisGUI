@@ -83,4 +83,19 @@ object AppConfig {
     var appMode: AppMode?
         get() = store().appMode
         set(value) { store().appMode = value }
+
+    /** 브로드캐스트 이벤트 필터 (ADB 모드). null = 필터 없음. */
+    var broadcastTypes: List<String>?
+        get() = store().broadcastTypes
+        set(value) { store().broadcastTypes = value }
+
+    /** extension 필드 전송 여부. */
+    var enableExtension: Boolean
+        get() = store().enableExtension
+        set(value) { store().enableExtension = value }
+
+    /** system(origin) 이벤트를 브로드캐스트에 포함할지. */
+    var includeSystemEvents: Boolean
+        get() = store().includeSystemEvents
+        set(value) { store().includeSystemEvents = value }
 }
