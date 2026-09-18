@@ -78,15 +78,27 @@ object AdbConfig {
         }
     }
 
+    /**
+     * 설정을 저장할 경로를 택한다. 파일이 아직 없다는 이유로 경로를 Reject()하지
+     * 않도록, 디렉터리에 써서 신규 생성할 수 있는지까지 본다.
+     * (File.canWrite()는 존재하지 않는 경로에 대해 false를 반환하므로, 파일 유무와
+     *  무관하게 디렉터리 쓰기 가능 여부로 판정해야 신규 설치 후 첫 설정 변경이 보존된다.)
+     */
     private fun findWritablePath(): String? {
-        // /data/local/tmp/가 있으면 사용 (원본 Iris와 호환)
-        val tmp = "/data/local/tmp/$CONFIG_FILENAME"
-        if (File(tmp).canWrite()) return tmp
-
-        // /data/local/tmp/가 없으면 /data/에 직접 저장
-        val data = "/data/$CONFIG_FILENAME"
-        if (File(data).canWrite()) return data
-
+        val candidates = listOf(
+            // /data/local/tmp/를 우선 사용 (원본 Iris와 호환)
+            "/data/local/tmp/$CONFIG_FILENAME",
+            "/data/$CONFIG_FILENAME",
+        )
+        for (path in candidates) {
+            val file = File(path)
+            if (file.isFile) {
+                if (file.canWrite()) return path
+            } else {
+                val dir = file.parentFile ?: continue
+                if (dir.isDirectory && dir.canWrite()) return path
+            }
+        }
         return null
     }
 
@@ -108,7 +120,11 @@ object AdbConfig {
     }
 
     private fun saveConfig() {
-        val path = findWritablePath() ?: return
+        val path = findWritablePath()
+        if (path == null) {
+            println("AdbConfig: 쓰기 가능한 config 경로를 찾지 못해 설정 변경이 저장되지 않음")
+            return
+        }
         try {
             File(path).writeText(json.encodeToString(Config.serializer(), config))
         } catch (e: Exception) {

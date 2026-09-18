@@ -10,6 +10,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
@@ -46,6 +47,13 @@ object AdbServer {
 
     /** KakaoDB 싱글톤 — 매 쿼리마다 생성하지 않음 */
     private var kakaoDb: KakaoDB? = null
+
+    /** /chat 조회 경로용 ObserverHelper — kakaoDb 변경 시에만 다시 만든다. */
+    private var readHelper: Pair<KakaoDB, ObserverHelper>? = null
+
+    private fun readHelper(db: KakaoDB): ObserverHelper =
+        readHelper?.takeIf { it.first === db }?.second
+            ?: ObserverHelper.forReads(db).also { readHelper = db to it }
 
     /** AdbServer 전용 CoroutineScope — handleTextReply에서 재사용 (P7 누수 방지) */
     private val serverScope = CoroutineScope(Dispatchers.IO)
@@ -329,6 +337,69 @@ object AdbServer {
                         }
                     }
 
+                    // ── /chat — 채팅 로그 조회 (live /ws 프레임과 동일한 형식) ──────────
+                    // id 는 확장자의 log_id(스노우플레이크)와 같은 계열. /reply 나 /ws 와 동일 포맷이라
+                    // 기존 클라이언트가 그대로 파싱할 수 있다.
+                    route("/chat") {
+                        get("/{id}") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid log id"))
+                            try {
+                                val db = kakaoDb ?: return@get call.respond(ApiResponse(false, "db not ready"))
+                                val frame = readHelper(db).frameForLogId(id)
+                                    ?: return@get call.respond(ApiResponse(false, "log not found"))
+                                call.respond(JsonPayloadResponse(payload = toJsonElement(frame)))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                        // n번째 이전 메시지
+                        get("/{id}/prev/{n}") {
+                            val (id, n) = parseChatOffset(call) ?: return@get call.respond(
+                                ApiResponse(false, "invalid id or offset")
+                            )
+                            respondRelative(call, id, -n)
+                        }
+                        get("/{id}/before/{n}") {
+                            val (id, n) = parseChatOffset(call) ?: return@get call.respond(
+                                ApiResponse(false, "invalid id or offset")
+                            )
+                            respondRelative(call, id, -n)
+                        }
+                        // n번째 다음 메시지
+                        get("/{id}/next/{n}") {
+                            val (id, n) = parseChatOffset(call) ?: return@get call.respond(
+                                ApiResponse(false, "invalid id or offset")
+                            )
+                            respondRelative(call, id, n)
+                        }
+                        get("/{id}/after/{n}") {
+                            val (id, n) = parseChatOffset(call) ?: return@get call.respond(
+                                ApiResponse(false, "invalid id or offset")
+                            )
+                            respondRelative(call, id, n)
+                        }
+                        // days: 소수 허용(0.5 == 12시간). days보다 오래된 chat_logs 삭제.
+                        delete("/logs") {
+                            try {
+                                val db = kakaoDb ?: return@delete call.respond(ApiResponse(false, "db not ready"))
+                                val raw = call.request.queryParameters["days"]
+                                val days = raw?.toDoubleOrNull()
+                                    ?: return@delete call.respond(ApiResponse(false, "missing 'days'"))
+                                if (days <= 0.0) return@delete call.respond(
+                                    ApiResponse(false, "'days' must be positive")
+                                )
+                                val deleted = readHelper(db).purgeChatLogsOlderThan(days)
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    put("deleted", JsonPrimitive(deleted))
+                                    put("cutoff_days", JsonPrimitive(days))
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
+                    }
+
                     // /query — KakaoDB 쿼리 (싱글톤 사용)
                     route("/query") {
                         post {
@@ -486,10 +557,33 @@ object AdbServer {
         }
     }
 
-    /**
-     * Map<String, Any?> / List<Map> 를 kotlinx JsonElement로 변환.
-     * 숫자 타입(Long 포함)은 JSON 숫자 그대로, 그 외 문자열.
-     */
+    /** `/chat/{id}/prev/{n}` 류 경로 파라미터 파싱. 실패 시 null. */
+    private fun parseChatOffset(
+        call: io.ktor.server.application.ApplicationCall
+    ): Pair<Long, Int>? {
+        val id = call.parameters["id"]?.toLongOrNull() ?: return null
+        val n = call.parameters["n"]?.toIntOrNull() ?: return null
+        if (n <= 0) return null
+        return id to n
+    }
+
+    /** 동일 채팅방 내 n번째 전후(offset 음수=이전) 메시지를 /ws 프레임 포맷으로 응답. */
+    private suspend fun respondRelative(
+        call: io.ktor.server.application.ApplicationCall, id: Long, offset: Int
+    ) {
+        try {
+            val db = kakaoDb ?: return call.respond(ApiResponse(false, "db not ready"))
+            val frame = readHelper(db).frameRelative(id, offset)
+            if (frame == null) {
+                call.respond(ApiResponse(false, "message not found"))
+            } else {
+                call.respond(JsonPayloadResponse(payload = toJsonElement(frame)))
+            }
+        } catch (e: Exception) {
+            call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+        }
+    }
+
     private fun toJsonElement(value: Any?): JsonElement = when (value) {
         null -> JsonNull
         is String -> JsonPrimitive(value)
