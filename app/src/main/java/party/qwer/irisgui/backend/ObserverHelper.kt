@@ -22,7 +22,8 @@ class ObserverHelper(
 ) {
     private var lastLogId: Long = 0
     private val lastDecryptedLogs = LinkedList<Map<String, String?>>()
-    private val httpRequestExecutor = Executors.newFixedThreadPool(8)
+    // 읽기 전용 경로(/chat 조회)에서는 절대 쓰지 않는 스레드 풀이 생성자마다 뜨지 않도록 지연 초기화한다.
+    private val httpRequestExecutor by lazy { Executors.newFixedThreadPool(8) }
     private val okHttpClient = OkHttpClient()
 
     fun checkChange(db: KakaoDB) {
@@ -46,10 +47,10 @@ class ObserverHelper(
                     val currentLogId = cursor.getLong(columnNames.indexOf("_id"))
 
                     if (currentLogId > lastLogId) {
-                        val v = JSONObject(cursor.getString(columnNames.indexOf("v")))
-                        val enc = v.getInt("enc")
-                        val origin = v.getString("origin")
                         val typeVal = cursor.getString(columnNames.indexOf("type")).toIntOrNull() ?: 0
+                        val origin = runCatching {
+                            JSONObject(cursor.getString(columnNames.indexOf("v")) ?: "").getString("origin")
+                        }.getOrDefault("")
 
                         // origin/type 브로드캐스트 필터 (filter=null 이면 현행: SYNCMSG/MCHATLOGS 제외).
                         val filter = AppConfig.broadcastTypes
@@ -58,109 +59,20 @@ class ObserverHelper(
                             continue
                         }
 
-                        val chatId = cursor.getLong(columnNames.indexOf("chat_id"))
-                        val userId = cursor.getLong(columnNames.indexOf("user_id"))
-
-                        var message = cursor.getString(columnNames.indexOf("message"))
-                        var attachment = cursor.getString(columnNames.indexOf("attachment"))
-                        val messageType = cursor.getString(columnNames.indexOf("type"))
-
-                        val threadId: String? = if (columnNames.indexOf("thread_id") != -1) {
-                            cursor.getString(columnNames.indexOf("thread_id"))
-                        } else {
-                            null
-                        }
-
-                        var supplement = "{}"
-                        try {
-                            supplement = cursor.getString(columnNames.indexOf("supplement"))
-                            if(supplement.isNotEmpty() && supplement != "{}")
-                                supplement = KakaoDecrypt.decrypt(enc, supplement, userId)
-                        } catch(_: Exception) {}
-
-                        try {
-                            if (message.isNotEmpty() && message != "{}") message =
-                                KakaoDecrypt.decrypt(enc, message, userId)
-                        } catch (e: Exception) {
-                            println("failed to decrypt message: $e")
-                        }
-
-                        try {
-                            if ((message.contains("선물") && messageType == "71") or (attachment == null)) {
-                                attachment = "{}"
-                            } else if (attachment.isNotEmpty() && attachment != "{}") {
-                                attachment =
-                                    KakaoDecrypt.decrypt(enc, attachment, userId)
-                            }
-                        } catch (e: Exception) {
-                            println("failed to decrypt attachment: $e")
-                        }
-
-                        storeDecryptedLog(cursor, message)
-
+                        val frame = buildFrame(cursor, columnNames)
                         lastLogId = currentLogId
 
-                        val raw = mutableMapOf<String, String?>()
-                        val advancedPlainSerialized = mutableMapOf<String, MutableMap<String, Any?>?>()
+                        if (frame != null) {
+                            val data = JSONObject(frame).toString()
 
-                        for ((idx, columnName) in columnNames.withIndex()) {
-                            if (columnName == "message") {
-                                raw[columnName] = message
-                            } else if (columnName == "attachment") {
-                                raw[columnName] = attachment
-                                advancedPlainSerialized[columnName] = getStringJsonToMap(attachment)
-                                advancedPlainSerialized[columnName]!!["src_isThread"] = false
-                            } else if (columnName == "supplement") {
-                                raw["supplement"] = supplement
-                                advancedPlainSerialized[columnName] = getStringJsonToMap(supplement)
-                            } else {
-                                raw[columnName] = cursor.getString(idx)
+                            runBlocking {
+                                (wsBroadcastFlow as kotlinx.coroutines.flow.MutableSharedFlow<String>).emit(data)
                             }
-                        }
 
-                        if (
-                            (threadId == null || threadId.isEmpty()) &&
-                            advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "") != ""
-                            &&
-                            advancedPlainSerialized["attachment"]!!.getOrDefault("src_logId", "") == ""
-                            &&
-                            messageType == "1"
-                        ) {
-                            advancedPlainSerialized["attachment"]!!["src_logId"] =
-                                advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "")
-                            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
-                        } else if(threadId != null && messageType == "1") {
-                            advancedPlainSerialized["attachment"]!!["src_logId"] = threadId.toLong()
-                            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
-                        }
-
-                        raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
-
-                        val chatInfo = db.getChatInfo(chatId, userId)
-                        var roomName = chatInfo[0]
-                        var senderName = chatInfo[1]
-
-                        val frame = mutableMapOf<String, Any?>(
-                            "msg" to message,
-                            "room" to roomName,
-                            "sender" to senderName,
-                            "json" to raw
-                        )
-                        if (AppConfig.enableExtension) {
-                            buildExtension(cursor, columnNames, v, enc, userId, chatId, typeVal)?.let {
-                                frame["extension"] = it
-                            }
-                        }
-
-                        val data = JSONObject(frame).toString()
-
-                        runBlocking {
-                            (wsBroadcastFlow as kotlinx.coroutines.flow.MutableSharedFlow<String>).emit(data)
-                        }
-
-                        if (AppConfig.webEndpoint.isNotEmpty()) {
-                            httpRequestExecutor.execute {
-                                sendPostRequest(data)
+                            if (AppConfig.webEndpoint.isNotEmpty()) {
+                                httpRequestExecutor.execute {
+                                    sendPostRequest(data)
+                                }
                             }
                         }
                     }
@@ -168,6 +80,169 @@ class ObserverHelper(
             }
         }
     }
+    /**
+     * chat_logs 커서가 가리키는 행 하나를 /ws 브로드캐스트 프레임과 동일한 형태로 조립한다.
+     * DB 폴링(`/ws`)과 `/chat` GET 엔드포인트가 같은 포맷을 쓰도록 분리한 것이라,
+     * 한쪽 포맷을 바꾸면 자동으로 양쪽 모두에 반영된다.
+     *
+     * 원본 프레임과 동일하게 맞추기 위해 decrypt 중 예외가 나면(=행이 잘못됨) null을 반환한다.
+     */
+    private fun buildFrame(cursor: Cursor, columnNames: Array<String>, store: Boolean = true): Map<String, Any?>? {
+        val v = try {
+            JSONObject(cursor.getString(columnNames.indexOf("v")))
+        } catch (e: Exception) {
+            return null
+        }
+        val enc = v.optInt("enc", 0)
+        val origin = v.optString("origin", "")
+        val typeVal = cursor.getString(columnNames.indexOf("type")).toIntOrNull() ?: 0
+        val messageType = cursor.getString(columnNames.indexOf("type"))
+        val chatId = cursor.getLong(columnNames.indexOf("chat_id"))
+        val userId = cursor.getLong(columnNames.indexOf("user_id"))
+
+        var message = cursor.getString(columnNames.indexOf("message"))
+        var attachment = cursor.getString(columnNames.indexOf("attachment"))
+
+        val threadId: String? = if (columnNames.indexOf("thread_id") != -1) {
+            cursor.getString(columnNames.indexOf("thread_id"))
+        } else {
+            null
+        }
+
+        var supplement = "{}"
+        try {
+            supplement = cursor.getString(columnNames.indexOf("supplement"))
+            if (supplement.isNotEmpty() && supplement != "{}")
+                supplement = KakaoDecrypt.decrypt(enc, supplement, userId)
+        } catch (_: Exception) {
+        }
+
+        try {
+            if (message.isNotEmpty() && message != "{}") message =
+                KakaoDecrypt.decrypt(enc, message, userId)
+        } catch (e: Exception) {
+            println("failed to decrypt message: $e")
+            return null
+        }
+
+        try {
+            if ((message.contains("선물") && messageType == "71") || (attachment == null)) {
+                attachment = "{}"
+            } else if (attachment.isNotEmpty() && attachment != "{}") {
+                attachment = KakaoDecrypt.decrypt(enc, attachment, userId)
+            }
+        } catch (e: Exception) {
+            println("failed to decrypt attachment: $e")
+            return null
+        }
+
+        if (store) storeDecryptedLog(cursor, message)
+
+        val raw = mutableMapOf<String, String?>()
+        val advancedPlainSerialized = mutableMapOf<String, MutableMap<String, Any?>?>()
+
+        for ((idx, columnName) in columnNames.withIndex()) {
+            if (columnName == "message") {
+                raw[columnName] = message
+            } else if (columnName == "attachment") {
+                raw[columnName] = attachment
+                advancedPlainSerialized[columnName] = getStringJsonToMap(attachment)
+                advancedPlainSerialized[columnName]!!["src_isThread"] = false
+            } else if (columnName == "supplement") {
+                raw["supplement"] = supplement
+                advancedPlainSerialized[columnName] = getStringJsonToMap(supplement)
+            } else {
+                raw[columnName] = cursor.getString(idx)
+            }
+        }
+
+        if (
+            (threadId == null || threadId.isEmpty()) &&
+            advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "") != "" &&
+            advancedPlainSerialized["attachment"]!!.getOrDefault("src_logId", "") == "" &&
+            messageType == "1"
+        ) {
+            advancedPlainSerialized["attachment"]!!["src_logId"] =
+                advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "")
+            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+        } else if (threadId != null && messageType == "1") {
+            advancedPlainSerialized["attachment"]!!["src_logId"] = threadId.toLong()
+            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+        }
+
+        raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
+
+        val chatInfo = db.getChatInfo(chatId, userId)
+        val frame = mutableMapOf<String, Any?>(
+            "msg" to message,
+            "room" to chatInfo[0],
+            "sender" to chatInfo[1],
+            "json" to raw
+        )
+        if (AppConfig.enableExtension) {
+            buildExtension(cursor, columnNames, v, userId, chatId, typeVal, origin)?.let {
+                frame["extension"] = it
+            }
+        }
+        return frame
+    }
+
+    /**
+     * `/chat/{id}` GET 조회용. `id` 는 /ws extension 의 `log_id` 와 같은 스노우플레이크 id 이다
+     * (`/reactions/{id}` 와 동일 계열). 행이 존재하지 않으면 null.
+     */
+    fun frameForLogId(id: Long): Map<String, Any?>? =
+        connectionQuery("SELECT * FROM chat_logs WHERE id = ?", arrayOf(id.toString()))
+
+    /**
+     * 같은 채팅방(chat_id) 기준으로 n번째 이전(offset<0) / n번째 다음(offset>0) 로그의
+     * 프레임. 물리 순서(_id)를 기준으로 하며, 이는 id(스노우플레이크)처럼 정확히 단조 증가하지
+     * 않는 값에 의존하지 않아도 되기 때문에 안전하다.
+     */
+    fun frameRelative(id: Long, offset: Int): Map<String, Any?>? {
+        if (offset == 0) return frameForLogId(id)
+        val row =
+            "SELECT _id, chat_id FROM chat_logs WHERE id = ? ORDER BY _id ASC LIMIT 1"
+        val seed = db.connection.rawQuery(row, arrayOf(id.toString())).use { c ->
+            if (!c.moveToNext()) return null
+            c.getLong(0) to c.getLong(1)
+        }
+        val (seedId, chatId) = seed
+        val (cmp, ord) = if (offset < 0) ("<" to "DESC") else (">" to "ASC")
+        return connectionQuery(
+            "SELECT * FROM chat_logs WHERE _id $cmp ? AND chat_id = ? ORDER BY _id $ord LIMIT 1 OFFSET ?",
+            arrayOf(seedId.toString(), chatId.toString(), (kotlin.math.abs(offset) - 1).toString())
+        )
+    }
+
+    /** 임의 SELECT 한 행을 /ws 프레임 형태로 반환(0~1행 기대). */
+    private fun connectionQuery(sql: String, bind: Array<String?>): Map<String, Any?>? =
+        db.connection.rawQuery(sql, bind).use { cursor ->
+            if (!cursor.moveToNext()) return@use null
+            buildFrame(cursor, cursor.columnNames, store = false)
+        }
+
+    /**
+     * chat_logs 에서 days(0.5 = 12시간)보다 오래된 로그를 삭제한다.
+     * created_at(초 단위 epoch) 기준이며, 0.5일처럼 소수일 허용을 위해 float로 계산한다.
+     * 반환은 삭제된 행 수.
+     *
+     * VACUUM은 하지 않는다 — 전체 DB를 재작성하므로 수 초간 다른 쓰기/읽기를 막고,
+     * SQLite 는 삭제 후 남는 free page를 이후 INSERT에서 재사용하기 때문에 용량은 저절로 회복된다.
+     */
+    fun purgeChatLogsOlderThan(days: Double): Int {
+        val cutoffSec = System.currentTimeMillis() / 1000.0 - days * 86400.0
+        val stmt = db.connection.compileStatement(
+            "DELETE FROM chat_logs WHERE created_at > 0 AND created_at < ?"
+        )
+        return try {
+            stmt.bindDouble(1, cutoffSec)
+            stmt.executeUpdateDelete()
+        } finally {
+            stmt.close()
+        }
+    }
+
 
     private fun getLastLogIdFromDB(): Long {
         val lastLog = db.logToDict(0)
@@ -187,17 +262,25 @@ class ObserverHelper(
         cursor: Cursor,
         columnNames: Array<String>,
         v: JSONObject,
-        enc: Int,
         userId: Long,
         chatId: Long,
-        type: Int
+        type: Int,
+        origin: String
     ): Map<String, Any?>? {
         val out = LinkedHashMap<String, Any?>()
         out["type_code"] = type
         out["type_base"] = KakaoMessageType.baseType(type)
         out["is_openchat"] = KakaoMessageType.isOpenChat(type)
-        out["type_name"] = KakaoMessageType.classify(type, v.optString("origin", ""))
+        out["type_name"] = KakaoMessageType.classify(type, origin)
         if (userId == AppConfig.botId) out["is_mine"] = true
+
+        // 소프트 삭제로 남은(삭제된) 메시지 여부. deleted_at > 0 는 삭제 마크이므로
+        // 폴링 필터에서 origin=MCHATLOGS/SYNCMODMSG 로 걸러진 삭제건을 식별하는 수단.
+        val delIdx = columnNames.indexOf("deleted_at")
+        if (delIdx != -1) {
+            val deletedAt = cursor.getString(delIdx)?.toLongOrNull() ?: 0L
+            if (deletedAt > 0) out["is_deleted"] = true
+        }
 
         val logIdIdx = columnNames.indexOf("id")
         if (logIdIdx != -1) {
@@ -309,5 +392,12 @@ class ObserverHelper(
 
     companion object {
         private const val MAX_LOGS_STORED = 50
+
+        /**
+         * DB 폴링을 돌리지 않고 /ws 프레임 조립만 재사용하기 위한 경량 인스턴스.
+         * (SharedFlow 는 read-only 경로에서는 쓰여지지 않는다.)
+         */
+        fun forReads(db: KakaoDB): ObserverHelper =
+            ObserverHelper(db, MutableSharedFlow(extraBufferCapacity = 1))
     }
-}
+}
