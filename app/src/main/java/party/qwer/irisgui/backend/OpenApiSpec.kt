@@ -12,9 +12,24 @@ package party.qwer.irisgui.backend
  */
 object OpenApiSpec {
 
-    fun render(port: Int): String = JSON
-        .replace("__PORT__", port.toString())
-        .replace("@@REF@@", "\$ref")
+    fun render(port: Int, host: String? = null): String {
+        val base = baseUrls(port, host).first().removeSuffix("/")
+        return JSON
+            .replace("__SERVER_URL__", base)
+            .replace("@@REF@@", "\$ref")
+    }
+
+    /**
+     * 서버 주소는 요청 Host(Host 헤더)에서 만든다. 명세에 127.0.0.1 를 박으면 Swagger UI 의
+     * "Try it out" 이 반드시 보는 주체가 되어 기기 IP 로 접속한 테스트가 전부 실패한다.
+     * Host 는JSON 에 직접 들어가는 값이므로 허용 문자만 남긴다.
+     */
+    fun baseUrls(port: Int, host: String?): List<String> {
+        val authority = host?.replace(Regex("[^A-Za-z0-9.:\\-]"), "")
+        if (authority.isNullOrEmpty()) return listOf("http://127.0.0.1:$port")
+        // Host 헤더에 포트가 없으면(희소한 경우) 실제 바인드 포트를 붙인다.
+        return listOf("http://" + if (authority.contains(":")) authority else "$authority:$port")
+    }
 
     /** Swagger UI 셸. CDN 로드 실패 시에도 `/openapi.json` 링크는 보이도록 폴백 포함. */
     fun html(): String = HTML
@@ -57,7 +72,7 @@ private const val JSON = """
     "description": "KakaoTalk bot 데몬(HTTP) + 이벤트 스트리밍(`/ws`) 명세. 데몬(`app_process`)은 루팅 모드에서만 구동하므로 표시 없는 항목은 논루팅(NON_ROOT, 앱 내장) 모드에서 제공되지 않습니다. irispy-client 호환 계약은 `json` 키 필드명/경로 변경 금지가 최상위 규격입니다.\n\n`/ws` 는 OpenAPI 로 설명 불가하므로 `x-websocket` 으로 나타냅니다.",
     "contact": { "name": "IrisGUI" }
   },
-  "servers": [ { "url": "http://127.0.0.1:__PORT__", "description": "로컬(forward 포함)" } ],
+  "servers": [ { "url": "__SERVER_URL__", "description": "요청 Host 기준 (기기 IP · forward 포트 포함)" } ],
   "tags": [
     { "name": "events", "description": "이벤트 스트림 · 답장 발송" },
     { "name": "config", "description": "설정 조회/변경" },

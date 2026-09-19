@@ -1,6 +1,7 @@
 package party.qwer.irisgui.backend
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
 import io.ktor.serialization.kotlinx.json.json
@@ -471,7 +472,10 @@ object AdbServer {
                     // UI 번들만 브라우저가 CDN 에서 읽고, 없으면 JSON 링크로 대체된다.
                     get("/openapi.json") {
                         call.respondText(
-                            OpenApiSpec.render(AdbConfig.serverPort),
+                            OpenApiSpec.render(
+                                AdbConfig.serverPort,
+                                host = call.request.headers[HttpHeaders.Host]
+                            ),
                             ContentType.Application.Json
                         )
                     }
