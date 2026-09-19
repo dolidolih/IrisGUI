@@ -19,8 +19,17 @@ object KakaoMessageType {
 
     fun isOpenChat(type: Int): Boolean = (type and OPEN_CHAT_BIT) != 0
 
-    /** type/origin을 "사람이 알아볼 문자열"로 매핑 (extension.type_name, 필터용). */
-    fun classify(type: Int, origin: String): String {
+    /** origin기반 "삭제 마크" 판별: SYNCDLMSG=작성자 삭제, SYNCMODMSG=방장(어드민) 삭제.
+     *  deleted_at>0 이면서 origin 만 삭제 마크에 해당한다 (SYNCREWR 등 다른 deleted_at 행은 제외). */
+    fun isDeletionEvent(origin: String, deletedAt: Long): Boolean =
+        deletedAt > 0L && (origin == "SYNCDLMSG" || origin == "SYNCMODMSG")
+
+    /** type/origin을 "사람이 알아볼 문자열"로 매핑 (extension.type_name, 필터용).
+     *  삭제 마크행이면 type/origin 을 보지 않고 "deleted" 로 분류한다. */
+    fun classify(type: Int, origin: String): String = classify(type, origin, 0L)
+
+    fun classify(type: Int, origin: String, deletedAt: Long): String {
+        if (isDeletionEvent(origin, deletedAt)) return "deleted"
         if (origin.isEmpty()) return "unknown"
         // 시스템(origin 기반)
         if (origin != "MSG" && origin != "MCHATLOGS" && origin != "SYNCMSG" && origin != "WRITE") {
@@ -62,23 +71,41 @@ object KakaoMessageType {
      *   단 origin=NEWMEM/DELMEM/… 시스템 이벤트도 기존 규격대로 포함된다.
      * filter != null: classify 결과가 필터에 속한 로그만 브로드캐스트.
      *   단 SYNCMSG는 항상 제외. MCHATLOGS/system("system")은 필터에 명시된 경우에만 포함.
+     * deletedAt 인자를 받지 않는 호출은 삭제 마크 여부를 보지 않으므로 0 을 넘긴다.
      */
-    fun shouldBroadcast(type: Int, origin: String, filter: List<String>?, includeSystem: Boolean): Boolean {
+    /** deleted_at 값은 classify/필터판정이 필요 없는 호출에서는 0 으로 넘긴다. */
+    fun shouldBroadcast(type: Int, origin: String, filter: List<String>?, includeSystem: Boolean): Boolean =
+        shouldBroadcast(type, origin, 0L, filter, includeSystem)
+
+    /**
+     * 삭제 이벤트(origin=SYNCDLMSG/SYNCMODMSG 이고 deleted_at>0)는 systemOrigin 과 동일하게
+     * includeSystem 으로만 제어한다 — 기존 wire 동작을 바꾸지 않기 위함. filter가 지정된 경우엔
+     * "deleted" 로 분류되므로 필터에 "deleted" 를 포함해야 전송된다.
+     */
+    fun shouldBroadcast(
+        type: Int,
+        origin: String,
+        deletedAt: Long,
+        filter: List<String>?,
+        includeSystem: Boolean
+    ): Boolean {
         if (origin == "SYNCMSG") return false
-        if (origin == "MCHATLOGS" && (filter == null || filter.isEmpty())) return false
+        val deletion = isDeletionEvent(origin, deletedAt)
+        if (!deletion && origin == "MCHATLOGS" && (filter == null || filter.isEmpty())) return false
         val systemOrigin = (origin != "MSG" && origin != "MCHATLOGS" && origin != "SYNCMSG" && origin != "WRITE")
         if (systemOrigin && !includeSystem) return false
         if (filter == null || filter.isEmpty()) return true
-        if (origin == "MCHATLOGS") return "mchatlog" in filter
-        if (origin == "WRITE") return "current_user" in filter
+        if (!deletion && origin == "MCHATLOGS") return "mchatlog" in filter
+        if (!deletion && origin == "WRITE") return "current_user" in filter
+        if (deletion) return "deleted" in filter
         if (systemOrigin) return "system" in filter
-        return classify(type, origin) in filter
+        return classify(type, origin, deletedAt) in filter
     }
 
     /** 필터 문자열 유효성 검사 (config /config/{name} 검증용). */
     val VALID_FILTERS = setOf(
         "text", "photo", "video", "audio", "file", "contact", "photo_animation", "gif",
         "emoticon", "list", "app", "app_feed", "feed", "feed_share", "talk_memo",
-        "long_app", "current_user", "mchatlog", "syncmsg", "system", "unknown"
+        "long_app", "current_user", "mchatlog", "syncmsg", "system", "unknown", "deleted"
     )
 }

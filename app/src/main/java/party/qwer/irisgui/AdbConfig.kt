@@ -27,8 +27,9 @@ object AdbConfig {
         val messageSendRate: Long = 50L,
         /**
          * 브로드캐스트할 이벤트 종류 필터. null/비워둠 = 필터 없음(현행 동작 유지).
-         * 값: text, photo, video, audio, file, contact, photo_animation, gif, list,
-         * feed, feed_share, current_user, mention, mchatlog, system.
+         * 값: text, photo, video, audio, file, contact, photo_animation, gif, emoticon, list,
+         * app, app_feed, feed, feed_share, talk_memo, long_app, current_user, mchatlog, syncmsg, system,
+         * unknown, deleted. ("deleted" = 메시지 삭제 마크 이벤트 — SYNCDLMSG(작성자)/SYNCMODMSG(방장).)
          */
         val broadcastTypes: List<String>? = null,
         /** true(기본) = 현행대로 system(origin) 이벤트를 브로드캐스트에 포함. false = 시스템 이벤트 제외. */

@@ -51,10 +51,14 @@ class ObserverHelper(
                         val origin = runCatching {
                             JSONObject(cursor.getString(columnNames.indexOf("v")) ?: "").getString("origin")
                         }.getOrDefault("")
+                        val deletedAt = columnNames.indexOf("deleted_at")
+                            .takeIf { it != -1 }
+                            ?.let { cursor.getString(it)?.toLongOrNull() ?: 0L } ?: 0L
 
                         // origin/type 브로드캐스트 필터 (filter=null 이면 현행: SYNCMSG/MCHATLOGS 제외).
                         val filter = AppConfig.broadcastTypes
-                        if (!KakaoMessageType.shouldBroadcast(typeVal, origin, filter, AppConfig.includeSystemEvents)) {
+                        if (!KakaoMessageType.shouldBroadcast(
+                                typeVal, origin, deletedAt, filter, AppConfig.includeSystemEvents)) {
                             lastLogId = currentLogId
                             continue
                         }
@@ -173,6 +177,9 @@ class ObserverHelper(
         raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
 
         val chatInfo = db.getChatInfo(chatId, userId)
+        val deletedAt = columnNames.indexOf("deleted_at")
+            .takeIf { it != -1 }
+            ?.let { cursor.getString(it)?.toLongOrNull() ?: 0L } ?: 0L
         val frame = mutableMapOf<String, Any?>(
             "msg" to message,
             "room" to chatInfo[0],
@@ -180,11 +187,129 @@ class ObserverHelper(
             "json" to raw
         )
         if (AppConfig.enableExtension) {
-            buildExtension(cursor, columnNames, v, userId, chatId, typeVal, origin)?.let {
+            buildExtension(cursor, columnNames, v, userId, chatId, typeVal, origin, deletedAt)?.let {
                 frame["extension"] = it
             }
         }
         return frame
+    }
+
+    /** SYNCDLMSG = 작성자/참여자 삭제, SYNCMODMSG = 방장(어드민) 삭제. */
+    fun deletionBy(origin: String): String = when (origin) {
+        "SYNCDLMSG" -> "writer"
+        "SYNCMODMSG" -> "admin"
+        else -> "unknown"
+    }
+
+    /**
+     * 삭제 마크의 페로드(origin=SYNCDLMSG/SYNCMODMSG, deleted_at > 0)를 해석해
+     * 누가(who) 어떤 원본(log_id)을 지웠는지를 반환한다. 마크가 아니거나 페로드가 깨져 있으면 null.
+     *
+     * KakaoTalk 은 메시지 삭제 시 '원본 행'을 지우지 않고 '별개의 삭제 마크 행'만 남긴다
+     * (deleted_at>0, type=0). 따라서 원본은 아직 DB 에 평문 그대로 남아 있어 복원 가능하다.
+     */
+    fun deletedInfoFromMarker(origin: String, messagePayload: String): Map<String, Any?>? {
+        val who = deletionBy(origin)
+        if (who == "unknown") return null
+        val payload = runCatching { JSONObject(messagePayload) }.getOrNull() ?: return null
+        val logId = payload.optString("logId").toLongOrNull() ?: return null
+        val out = LinkedHashMap<String, Any?>()
+        out["who"] = who
+        out["log_id"] = logId.toString()
+        payload.opt("hidden")?.let { out["hidden"] = it }
+        payload.opt("targetRevision")?.let { out["target_revision"] = it }
+        return out
+    }
+
+    /** 원본 log_id -> 삭제 마크 역색인 캐시. 원본 삭제 표지는 별도 마크 행에만 존재한다. */
+    private var deletionIndexEpoch: Pair<Long, Long> = -1L to -1L
+    private var deletionIndex: Map<Long, Map<String, Any?>> = emptyMap()
+
+    /**
+     * 원본 스노우플레이크 id 를 지운 삭제 마크 정보를 반환한다.
+     * 없으면 null (아직 삭제되지 않거나, 삭제건까지 purge 로 물리 삭제된 경우).
+     *
+     * 삭제 표지가 '별개의' 마크 행에만 있으므로 주어진 원본 id 와 연결된 마크를 찾으려면
+     * 현존 마크 전체(~800건) 를 훑어야 한다. 마크 수 + MAX(_id) 가 그대로면 캐시를 재사용한다.
+     * purge 는 created_at 기준으로 원본/마크를 함께 지우므로 이 기준으로 무결하게 무효화된다.
+     */
+    fun deletedByOriginal(originalLogId: Long): Map<String, Any?>? {
+        refreshDeletionIndexIfNeeded()
+        return deletionIndex[originalLogId]
+    }
+
+    private fun refreshDeletionIndexIfNeeded() {
+        val epoch = db.connection
+            .rawQuery(
+                "SELECT COUNT(*), IFNULL(MAX(_id), 0) FROM chat_logs WHERE deleted_at > 0", null
+            )
+            .use { c -> if (c.moveToNext()) Pair(c.getLong(0), c.getLong(1)) else 0L to 0L }
+        if (epoch == deletionIndexEpoch) return
+        val rebuilt = HashMap<Long, Map<String, Any?>>()
+        db.connection.rawQuery(
+            "SELECT id, user_id, message, v FROM chat_logs WHERE deleted_at > 0", null
+        ).use { c ->
+            while (c.moveToNext()) {
+                val userId = c.getLong(1)
+                val v = runCatching { JSONObject(c.getString(3)) }.getOrNull() ?: continue
+                val raw = c.getString(2) ?: continue
+                val payload = runCatching {
+                    JSONObject(KakaoDecrypt.decrypt(v.optInt("enc", 31), raw, userId))
+                }.getOrElse { runCatching { JSONObject(raw) }.getOrNull() }
+                val info = deletedInfoFromMarker(v.optString("origin"),
+                    payload?.toString() ?: continue) ?: continue
+                rebuilt[info["log_id"].toString().toLong()] = info + ("marker_id" to c.getString(0))
+            }
+        }
+        deletionIndex = rebuilt
+        deletionIndexEpoch = epoch
+    }
+
+    /**
+     * 임의 chat_logs id(스노우플레이크) 에 대해 삭제 사실을 조립한다.
+     *
+     * 주어진 id 가 삭제 마크이면 마크→원본(순방향), 이미 지워진 원본이면 원본→마크(역방향) 로
+     * 해석한다. 둘 다 아니면 null. 반환은 {deleted, who, log_id(원본), marker_id, original:{...}}.
+     */
+    fun deletedRecoveryFor(id: Long): Map<String, Any?>? {
+        // 1) 순방향: id 자체가 삭제 마크인 경우
+        val row = db.connection.rawQuery(
+            "SELECT v, message, user_id FROM chat_logs WHERE id = ?", arrayOf(id.toString())
+        ).use { c ->
+            if (!c.moveToNext()) return null
+            Triple(c.getString(0), c.getString(1), c.getLong(2))
+        }
+        val origin = runCatching { JSONObject(row.first).optString("origin") }.getOrDefault("")
+        val isMarkerRow = origin == "SYNCDLMSG" || origin == "SYNCMODMSG"
+        val markerId: String?
+        var who = "unknown"
+        var originalLogId: Long
+        if (isMarkerRow) {
+            val enc = runCatching { JSONObject(row.first).optInt("enc", 31) }.getOrDefault(31)
+            val raw = row.second ?: ""
+            val payload = runCatching { JSONObject(KakaoDecrypt.decrypt(enc, raw, row.third)) }
+                .getOrElse { runCatching { JSONObject(raw) }.getOrNull() }
+                ?: return null
+            val info = deletedInfoFromMarker(origin, payload.toString()) ?: return null
+            who = info["who"].toString()
+            originalLogId = info["log_id"].toString().toLong()
+            markerId = id.toString()
+        } else {
+            val marker = deletedByOriginal(id) ?: return null
+            who = marker["who"].toString()
+            originalLogId = id
+            markerId = marker["marker_id"]?.toString()
+        }
+
+        val original = frameForLogId(originalLogId)
+        val out = LinkedHashMap<String, Any?>()
+        out["deleted"] = true
+        out["who"] = who
+        out["log_id"] = originalLogId.toString()
+        if (markerId != null) out["marker_id"] = markerId
+        out["original_exists"] = original != null
+        if (original != null) out["original"] = original
+        return out
     }
 
     /**
@@ -265,21 +390,20 @@ class ObserverHelper(
         userId: Long,
         chatId: Long,
         type: Int,
-        origin: String
+        origin: String,
+        deletedAt: Long = 0L
     ): Map<String, Any?>? {
         val out = LinkedHashMap<String, Any?>()
         out["type_code"] = type
         out["type_base"] = KakaoMessageType.baseType(type)
         out["is_openchat"] = KakaoMessageType.isOpenChat(type)
-        out["type_name"] = KakaoMessageType.classify(type, origin)
+        out["type_name"] = KakaoMessageType.classify(type, origin, deletedAt)
         if (userId == AppConfig.botId) out["is_mine"] = true
 
-        // 소프트 삭제로 남은(삭제된) 메시지 여부. deleted_at > 0 는 삭제 마크이므로
-        // 폴링 필터에서 origin=MCHATLOGS/SYNCMODMSG 로 걸러진 삭제건을 식별하는 수단.
-        val delIdx = columnNames.indexOf("deleted_at")
-        if (delIdx != -1) {
-            val deletedAt = cursor.getString(delIdx)?.toLongOrNull() ?: 0L
-            if (deletedAt > 0) out["is_deleted"] = true
+        // 삭제 마크(SYNCDLMSG/SYNCMODMSG & deleted_at>0) 여부. SYNCREWR 등 다른 deleted_at 행은 제외.
+        if (KakaoMessageType.isDeletionEvent(origin, deletedAt)) {
+            out["is_deleted"] = true
+            deletionBy(origin).let { out["deleted_by"] = it }
         }
 
         val logIdIdx = columnNames.indexOf("id")
