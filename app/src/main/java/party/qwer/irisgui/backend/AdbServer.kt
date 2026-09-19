@@ -1,5 +1,6 @@
 package party.qwer.irisgui.backend
 
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
 import io.ktor.serialization.kotlinx.json.json
@@ -10,6 +11,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -462,6 +464,19 @@ object AdbServer {
                                 call.respond(DecryptResponse(plain_text = "Error: ${e.message}"))
                             }
                         }
+                    }
+
+                    // ── API 명세 (Swagger UI / OpenAPI JSON) ────────────
+                    // 명세는 OpenApiSpec 에서 코드로 생성 → 리소스 로더 없이 동작.
+                    // UI 번들만 브라우저가 CDN 에서 읽고, 없으면 JSON 링크로 대체된다.
+                    get("/openapi.json") {
+                        call.respondText(
+                            OpenApiSpec.render(AdbConfig.serverPort),
+                            ContentType.Application.Json
+                        )
+                    }
+                    get("/swagger") {
+                        call.respondText(OpenApiSpec.html(), ContentType.Text.Html)
                     }
 
                     // /aot — AOT 토큰
