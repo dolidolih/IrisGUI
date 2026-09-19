@@ -20,14 +20,21 @@ object OpenApiSpec {
     }
 
     /**
-     * 서버 주소는 요청 Host(Host 헤더)에서 만든다. 명세에 127.0.0.1 를 박으면 Swagger UI 의
-     * "Try it out" 이 반드시 접속자 본인만 바라보게 되어 기기 IP 로 접속한 테스트가 전부 실패한다.
+     * 서버 주소는 요청 Host(Host 헤더)에서 만든다. Host 헤더는 클라이언트가 URL 에 입력한
+     * host:port 그 자체이며, 서버가 바인드한 인터페이스 주소(redroid 는 자기 IP 로
+     * 172.17.x.x 가 보인다) 나 loopback 을 읽는 것이 아니다 — 따라서 그쪽 값이 명세에
+     * 들어올 일은 없다. 명세에 127.0.0.1 를 박으면 "Try it out" 이 접속자 본인만 바라보게
+     * 되어 기기 IP 로 접속한 테스트가 전부 실패하므로 Host 기준으로 한다.
      *
      * 포트는 Host 가 지정한 값만 쓴다 — 붙여넣거나 만들지 않는다. Host 에 포트가 없는 것은
      * 클라이언트가 기본 포트(80/443, 프록시 경유 등)로 도달했다는 뜻이므로, 여기에 바인드
      * 포트를 덧붙이면 사용자가 쓰지 않는 포트를 명세가 bogus 하게 된다. `port` 는 Host 를
      * 전혀 받지 못한 경우(예: Host 없이 접근)의 폴백에만 쓰인다.
      * Host 는 JSON 에 그대로 들어가는 값이므로 허용 문자만 남긴다.
+     *
+     * 한계: 프록시 경유 시 Host 가 프로토콜/포트 없이 내부 주소로 오거나 헤더 자체가
+     * 없을 수 있다. 이 경우 명세 alone 은 부정확해질 수 있는데, Swagger UI 는 별도 fetch 로
+     * window.location.origin 을 우선하므로 UI 에서는 영향을 받지 않는다.
      */
     fun baseUrls(port: Int, host: String?): List<String> {
         val authority = host?.replace(Regex("[^A-Za-z0-9.:\\-\\[\\]]"), "")
@@ -59,7 +66,20 @@ window.addEventListener('DOMContentLoaded', function () {
       '<a href="openapi.json">openapi.json</a> 을 직접 조회하거나, 아래 명세를 사용하세요.</div>';
     return;
   }
-  SwaggerUIBundle({ url: 'openapi.json', dom_id: '#swagger-ui', deepLinking: true });
+  fetch('openapi.json').then(function (r) {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(function (doc) {
+    // 서버는 자신의 주소를 알 수 없다 (redroid는 자기 IP로 172.17.x.x 가 보인다).
+    // 브라우저에 접속된 주소야말로 사용자 IP·포트의 정답이므로 서버 주소로 덮어쓴다.
+    var origin = window.location.origin;
+    if (/^https?:/i.test(origin)) {
+      doc.servers = [{ url: origin, description: '브라우저 접속 주소' }];
+    }
+    SwaggerUIBundle({ spec: doc, dom_id: '#swagger-ui', deepLinking: true });
+  }).catch(function () {
+    SwaggerUIBundle({ url: 'openapi.json', dom_id: '#swagger-ui', deepLinking: true });
+  });
 });
 </script>
 </body>
