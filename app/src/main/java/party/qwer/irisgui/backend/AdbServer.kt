@@ -353,6 +353,20 @@ object AdbServer {
                                 call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
                             }
                         }
+                        // 삭제된/original 메시지 회수 조회. id 는 삭제 마크 id 또는 원본 id 어느쪽을
+                        // 넣어도 동일하게 동작한다.
+                        get("/{id}/deleted") {
+                            val id = call.parameters["id"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid log id"))
+                            try {
+                                val db = kakaoDb ?: return@get call.respond(ApiResponse(false, "db not ready"))
+                                val out = readHelper(db).deletedRecoveryFor(id)
+                                    ?: return@get call.respond(ApiResponse(false, "not a deleted message"))
+                                call.respond(JsonPayloadResponse(payload = toJsonElement(out)))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
                         // n번째 이전 메시지
                         get("/{id}/prev/{n}") {
                             val (id, n) = parseChatOffset(call) ?: return@get call.respond(
