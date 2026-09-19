@@ -21,14 +21,18 @@ object OpenApiSpec {
 
     /**
      * 서버 주소는 요청 Host(Host 헤더)에서 만든다. 명세에 127.0.0.1 를 박으면 Swagger UI 의
-     * "Try it out" 이 반드시 보는 주체가 되어 기기 IP 로 접속한 테스트가 전부 실패한다.
-     * Host 는JSON 에 직접 들어가는 값이므로 허용 문자만 남긴다.
+     * "Try it out" 이 반드시 접속자 본인만 바라보게 되어 기기 IP 로 접속한 테스트가 전부 실패한다.
+     *
+     * 포트는 Host 가 지정한 값만 쓴다 — 붙여넣거나 만들지 않는다. Host 에 포트가 없는 것은
+     * 클라이언트가 기본 포트(80/443, 프록시 경유 등)로 도달했다는 뜻이므로, 여기에 바인드
+     * 포트를 덧붙이면 사용자가 쓰지 않는 포트를 명세가 bogus 하게 된다. `port` 는 Host 를
+     * 전혀 받지 못한 경우(예: Host 없이 접근)의 폴백에만 쓰인다.
+     * Host 는 JSON 에 그대로 들어가는 값이므로 허용 문자만 남긴다.
      */
     fun baseUrls(port: Int, host: String?): List<String> {
-        val authority = host?.replace(Regex("[^A-Za-z0-9.:\\-]"), "")
+        val authority = host?.replace(Regex("[^A-Za-z0-9.:\\-\\[\\]]"), "")
         if (authority.isNullOrEmpty()) return listOf("http://127.0.0.1:$port")
-        // Host 헤더에 포트가 없으면(희소한 경우) 실제 바인드 포트를 붙인다.
-        return listOf("http://" + if (authority.contains(":")) authority else "$authority:$port")
+        return listOf("http://$authority")
     }
 
     /** Swagger UI 셸. CDN 로드 실패 시에도 `/openapi.json` 링크는 보이도록 폴백 포함. */
