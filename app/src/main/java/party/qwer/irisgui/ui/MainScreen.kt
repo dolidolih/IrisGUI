@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
@@ -94,13 +95,14 @@ fun MainScreen() {
 
 
     val tabs = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구", "권한")
-        AppMode.NON_ROOT -> listOf("상태", "로그", "권한")
+        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구", "스크립트", "권한")
+        AppMode.NON_ROOT -> listOf("상태", "로그", "스크립트", "권한")
     }
     val icons = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Shield)
-        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Shield)
+        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Description, Icons.Default.Shield)
+        AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Description, Icons.Default.Shield)
     }
+    val selectedTabName = tabs.getOrNull(selectedTabIndex)
 
 
     Scaffold(
@@ -151,13 +153,12 @@ fun MainScreen() {
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            when (selectedTabIndex) {
-                0 -> StatusScreen(permission)
-                1 -> LogsScreen()
-                else -> {
-                    if (currentMode == AppMode.ROOT_ADB && selectedTabIndex == 2) ToolsScreen()
-                    else PermissionScreen(permission)
-                }
+            when (selectedTabName) {
+                "상태" -> StatusScreen(permission)
+                "로그" -> LogsScreen()
+                "도구" -> ToolsScreen()
+                "스크립트" -> ScriptScreen()
+                else -> PermissionScreen(permission)
             }
         }
     }
