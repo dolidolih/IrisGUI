@@ -5,6 +5,7 @@ Python 스크립트 소스 전문은 source 로 넘기고(파일 아님), 런타
 """
 from __future__ import annotations
 
+import sys
 import threading
 import typing as t
 
@@ -17,11 +18,15 @@ _lock = threading.Lock()
 _default_url = "http://127.0.0.1:3000"
 
 
-def configure(url: str = "", default_workers: int = 4) -> None:
+def configure(url: str = "", default_workers: int = 4,
+              libdir: str = "") -> None:
+    """url: 로컬 IRIS 엔드포인트, libdir: 런타임 wheel unpack 디렉토리 (sys.path 추가)."""
     global _default_url, _workers
     if url:
         _default_url = url
     _workers = default_workers
+    if libdir and libdir not in sys.path:
+        sys.path.append(libdir)
 
 
 _workers = 4

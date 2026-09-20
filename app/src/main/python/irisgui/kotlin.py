@@ -39,6 +39,6 @@ def logs(script_id: str, limit: int) -> str:
                       ensure_ascii=False, default=str)
 
 
-def configure(url: str, workers: int) -> str:
-    manager.configure(url, workers)
+def configure(url: str, workers: int, libdir: str = "") -> str:
+    manager.configure(url, workers, libdir)
     return "true"

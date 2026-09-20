@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.scripting.ScriptManager
 import party.qwer.irisgui.scripting.ScriptStore
+import party.qwer.irisgui.scripting.WheelInstaller
 
 /**
  * ScriptScreen — Python 스크립트 편집/실행 탭.
@@ -173,6 +174,80 @@ fun ScriptScreen() {
                     }
                 }
             )
+        }
+
+        item {
+            PackagesSection(
+                busy = busy,
+                onChanged = { message = it },
+                setBusy = { busy = it }
+            )
+        }
+    }
+}
+
+/**
+ * PackagesSection — 앱에 설치된 순수 파이썬 wheel 과 추가 설치.
+ * C 확장(numpy 등) 은 설치되지 않으며, 그 경우 메시지로 안내한다.
+ */
+@Composable
+private fun PackagesSection(
+    busy: Boolean,
+    onChanged: (String) -> Unit,
+    setBusy: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var spec by remember { mutableStateOf("") }
+    var installed by remember { mutableStateOf<List<String>>(emptyList()) }
+    val load = suspend {
+        installed = withContext(Dispatchers.Default) {
+            ScriptManager.installedPackages(context).installed
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { load() } }
+
+    SurfaceCard {
+        Text("패키지 (pip)", fontWeight = FontWeight.SemiBold, color = AppColors.TextMain)
+        Text(
+            "순수 파이썬 wheel 만 설치됩니다. (numpy 등 C 확장은 Chaquopy 설정 필요)",
+            color = AppColors.TextSub,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = spec,
+            onValueChange = { spec = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("rich  또는 rich==13.7.1") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                enabled = !busy && spec.isNotBlank(),
+                onClick = {
+                    setBusy(true)
+                    scope.launch {
+                        val r = runCatching {
+                            withContext(Dispatchers.Default) {
+                                ScriptManager.installPackage(context, spec.trim())
+                            }
+                        }.getOrElse { WheelInstaller.Result(false, it.message ?: "실패") }
+                        onChanged(r.message)
+                        runCatching { load() }
+                        setBusy(false)
+                    }
+                }
+            ) { Text("설치") }
+            if (installed.isNotEmpty()) {
+                Text(
+                    installed.joinToString(", "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.TextSub
+                )
+            }
         }
     }
 }
