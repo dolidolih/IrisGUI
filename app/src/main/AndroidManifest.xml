@@ -75,5 +75,11 @@
             </intent-filter>
         </receiver>
 
+        <!-- 스파이크용: UI 없이 CPython 임베딩/selftest 을 adb 로 트리거 (추후 제거 예정) -->
+        <receiver
+            android:name=".scripting.PySelfTestReceiver"
+            android:enabled="true"
+            android:exported="true" />
+
     </application>
 </manifest>
