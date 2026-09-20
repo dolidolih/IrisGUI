@@ -135,6 +135,22 @@ object ScriptManager {
         PythonRuntime.call("stop_all", 5.0)
     }
 
+    // ── 런타임 pip (순수 파이썬 wheel) ─────────────────────────────
+
+    data class PackageState(val installed: List<String>, val libDir: String)
+
+    fun installedPackages(context: Context): PackageState =
+        PackageState(WheelInstaller.installed(context), WheelInstaller.libDir(context).absolutePath)
+
+    // UI 의 Dispatchers.Default 블럭에서 호출. wheel 은 blocking 네트워킹을 수행.
+    fun installPackage(context: Context, spec: String): WheelInstaller.Result =
+        runCatching { WheelInstaller.install(context, spec) }
+            .getOrElse { WheelInstaller.Result(false, it.message ?: "설치 실패") }
+
+    fun uninstallPackage(context: Context, name: String): WheelInstaller.Result =
+        runCatching { WheelInstaller.uninstall(context, name) }
+            .getOrElse { WheelInstaller.Result(false, it.message ?: "제거 실패") }
+
     /** 실행 중 스크립트 수. force=false — 파이썬 미기동 시 0. */
     fun runningCount(context: Context): Int =
         statusMap(context, force = false).values.count {

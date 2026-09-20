@@ -32,7 +32,9 @@ object PythonRuntime {
                 Python.start(AndroidPlatform(context))
             }
             val py = Python.getInstance()
-            py.getModule("irisgui.kotlin").callAttr("configure", urlFor(context), 4)
+            py.getModule("irisgui.kotlin").callAttr(
+                "configure", urlFor(context), 4, WheelInstaller.libDir(context).absolutePath
+            )
             ready = true
             initError = null
             true
