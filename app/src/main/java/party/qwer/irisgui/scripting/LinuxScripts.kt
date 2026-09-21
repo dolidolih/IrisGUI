@@ -129,6 +129,9 @@ object LinuxScripts {
         if (venv.isDirectory && File(dir, VENV_DONE).exists() &&
             File(venv, "bin/python").isFile
         ) return UserlandRuntime.Result(true, "venv 이미 있음")
+        // pip 의 TLS 는 CA 번들이 있어야 동작한다. (base 이미지엔 없음)
+        val trust = UserlandRuntime.ensureTrustStore(context)
+        if (!trust.ok) return trust
         File(dir, VENV_DONE).delete()
         // 생성 진행 표시 — 로그는 완료 시 덮어쓰므로 진행 중 표식으로 미리 touch.
         File(dir, VENV_LOG).writeText(VENV_PROGRESS + "\n")
@@ -153,6 +156,7 @@ object LinuxScripts {
     private fun createVenv(context: Context, name: String) {
         runCatching { ensureVenv(context, name) }
             .onFailure { RuntimeLog.error(TAG, "venv 스레드 실패 $name: ${it.message}") }
+            .onSuccess { if (!it.ok) RuntimeLog.error(TAG, "venv 생성 실패 $name: ${it.message}") }
     }
 
     /** main.py 실행. 이미 실행 중이면 멱등. blocking. */
@@ -264,12 +268,21 @@ object LinuxScripts {
                     .replace('\u0000', ' ').trim()
             }.getOrDefault("")
             if (cmd.isBlank() || !cmd.contains("python")) continue
+            // proot 는 host /proc cwd 를 / 에 두고 guest 만 가상 cwd 로 만든다.
+            // 그래서 cwd 는 보조 수단에 지나 않고, proot wrapper cmdline 의
+            // "-w <guest 프로젝트 경로>" 마커가 primary 키다. (python 재실행 시엔
+            // exec 가 cwd 를 이어받으므로 host cwd 도 드물게 유효하다.)
+            val fromCmd = Regex("-w " + Regex.escape(UserlandRuntime.GUEST_PROJECTS + "/") +
+                "(?<n>[^ ]+)").find(cmd)?.groupValues?.getOrNull(1)
+            if (fromCmd != null) {
+                val pname = fromCmd.trim('/').substringBefore('/')
+                if (pname.isNotBlank()) out.putIfAbsent(pname, pid)
+                continue
+            }
             val cwd = runCatching {
                 java.nio.file.Files.readSymbolicLink(d.toPath().resolve("cwd")).toString()
             }.getOrNull()
             if (cwd.isNullOrEmpty()) continue
-            // proot 의 chdir 경로변환에 따라 host real path 로 떨어지지만, guest
-            // bind 경로 그대로 나타날 수도 있어 둘 다 허용.
             val real = runCatching { File(cwd).canonicalFile.absolutePath }.getOrDefault(cwd)
             val rest = when {
                 real.startsWith(base) -> real.substringAfter(base)
