@@ -78,5 +78,6 @@ dependencies {
     implementation(libs.org.json)
     implementation("net.zetetic:sqlcipher-android:4.13.0")
     implementation("androidx.sqlite:sqlite:2.7.0")
+    implementation(libs.androidx.webkit)
     testImplementation(libs.junit)
 }
