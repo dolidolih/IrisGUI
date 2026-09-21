@@ -1,12 +1,15 @@
 package party.qwer.irisgui.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -15,7 +18,9 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +57,9 @@ private class ScriptUi(
     val error: String?
 )
 
+/** code 편집 화면 활성 여부 — MainScreen 이 하단 내비게이션 바를 숨기는 데 참조한다. */
+internal val codeEditorOpen = androidx.compose.runtime.mutableStateOf(false)
+
 @Composable
 fun ScriptScreen() {
     val context = LocalContext.current
@@ -65,6 +73,13 @@ fun ScriptScreen() {
     var editor by remember { mutableStateOf<EditorState?>(null) }
     var showCreate by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
+
+    // 편집 화면이 뜨면(탭 이탈 포함) 전역 플래그를 항상 일치시킨다 — MainScreen 의
+    // 바 숨김/복원을 정확히 동기화하기 위해.
+    LaunchedEffect(editor) { codeEditorOpen.value = editor != null }
+    DisposableEffect(Unit) {
+        onDispose { codeEditorOpen.value = false }
+    }
 
     val envReady = env.state == UserlandRuntime.State.READY ||
         env.state == UserlandRuntime.State.RUNNING
@@ -326,56 +341,87 @@ fun ScriptScreen() {
     }
 }
 
-/** code-server 편집 화면. main.py 가 있는 project 폴더에 열려있는 VS Code 뷰. */
+/**
+ * code-server 편집 화면 — 화면 전체를 WebView 로 채운다 (상/하단 크롬 없음).
+ *
+ * 모바일 화면에서 VS Code UI 를 쓸 만하게 보기 위해 페이지 zoom 을 0.5 로 낮추고
+ * (폰 화면이 약 devicePixelRatio≈2 배 넓은 캔버스로 보이게 함), 빠져나오기 위한
+ * 플로팅 원형 버튼만 오버레이 한다. 브라우저 열기/새로고침은 FAB 의 롱프레스로 대체.
+ */
 @android.annotation.SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun CodeEditorView(state: EditorState, onBack: () -> Unit) {
     val context = LocalContext.current
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = ScreenPadding, vertical = 8.dp)
-    ) {
-        SurfaceCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("← 목록") }
-                Spacer(Modifier.weight(1f))
-                Text(state.name, fontWeight = FontWeight.SemiBold, color = AppColors.TextMain)
-                Spacer(Modifier.weight(1f))
-                TextButton(
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(state.url)
-                                )
+    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xFF1E1E1E))) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { c ->
+                WebView(c).apply {
+                    webViewRef.value = this
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.allowFileAccess = false
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    webViewClient = object : android.webkit.WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String?) {
+                            // VS Code 의 viewport meta(width=device-width) 가 초기축을
+                            // 고정하므로, meta 를 0.5 스케일로 갈아끼워 pinch-zoom 과 동일하게
+                            // 레이아웃(2× 넓은 캔버스) + 시각 스케일 50% 로 만든다.
+                            view.evaluateJavascript(
+                                """
+                                var m = document.querySelector('meta[name="viewport"]');
+                                var c = 'width=device-width, initial-scale=0.5, minimum-scale=0.35, maximum-scale=2.0';
+                                if (m) { m.setAttribute('content', c); }
+                                else {
+                                    m = document.createElement('meta');
+                                    m.setAttribute('name', 'viewport');
+                                    m.setAttribute('content', c);
+                                    document.head.appendChild(m);
+                                }
+                                """.trimIndent(),
+                                null
                             )
                         }
                     }
-                ) { Text("브라우저") }
-                TextButton(onClick = { webViewRef.value?.reload() }) { Text("새로고침") }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        SurfaceCard(modifier = Modifier.weight(1f), fillHeight = true) {
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(AppColors.GlassFill),
-                factory = { c ->
-                    WebView(c).apply {
-                        webViewRef.value = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.allowFileAccess = false
-                        webViewClient = android.webkit.WebViewClient()
-                        webChromeClient = android.webkit.WebChromeClient()
-                        loadUrl(state.url)
-                    }
+                    webChromeClient = android.webkit.WebChromeClient()
+                    loadUrl(state.url)
+                }
+            },
+            update = { w -> if (w.url == null) w.loadUrl(state.url) }
+        )
+        // 플로팅 원형 백 버튼. 롱프레스 = 시스템 브라우저로 열기.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp)
+                .size(56.dp)
+                .shadow(8.dp, CircleShape, clip = false)
+                .background(AppColors.PrimaryAccent, CircleShape)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onBack() },
+                        onLongPress = {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse(state.url)
+                                    )
+                                )
+                            }
+                        }
+                    )
                 },
-                update = { w -> if (w.url == null) w.loadUrl(state.url) }
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "목록으로",
+                tint = androidx.compose.ui.graphics.Color.White
             )
         }
     }
