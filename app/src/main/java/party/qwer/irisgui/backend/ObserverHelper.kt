@@ -146,6 +146,9 @@ class ObserverHelper(
         val advancedPlainSerialized = mutableMapOf<String, MutableMap<String, Any?>?>()
 
         for ((idx, columnName) in columnNames.withIndex()) {
+            // SELECT_MSG_COLS 의 `__origin` alias 는 classification 필터용일 뿐 raw `json` 에
+            // 넣지 않는다 — `json` 키 집합은 /ws 규격(chat_logs 컬럼)과 동일해야 한다.
+            if (columnName == "__origin") continue
             if (columnName == "message") {
                 raw[columnName] = message
             } else if (columnName == "attachment") {
@@ -346,6 +349,133 @@ class ObserverHelper(
             if (!cursor.moveToNext()) return@use null
             buildFrame(cursor, cursor.columnNames, store = false)
         }
+
+    /**
+     * 방(chat_id) 로그 페이지 select절: `SELECT * FROM chat_logs` 그대로.
+     * 정렬 커서는 `id` 스노우플레이크(단조 증가라 실시간 유입에도 페이지 경계가 흔들리지 않는다).
+     * classification 필터용 `origin` 은 raw `v` 컬럼에서 매 row 파싱으로 얻는다 — SQL alias
+     * (`json_extract(...) AS x`) 는 real 컬럼(`deleted_at` 등)과 이름이 겹쳐 raw 컬럼 인덱싱을
+     * 오염시키므로 피한다.
+     */
+    private val SELECT_MSG_COLS = "SELECT * FROM chat_logs"
+
+    /** `SELECT_MSG_COLS` select절에 붙이는 chat_id/커서 조건을 조립. bind 순서를 함께 반환. */
+    private fun msgConditions(
+        chatId: Long,
+        cursorOp: String,
+        cursorVal: Long,
+        userFilter: Long?,
+        fromTs: Long?,
+        toTs: Long?
+    ): Pair<String, MutableList<String>> {
+        val where = StringBuilder(" WHERE chat_id = ? AND id $cursorOp ?")
+        val bind = mutableListOf(chatId.toString(), cursorVal.toString())
+        userFilter?.let { where.append(" AND user_id = ?"); bind += it.toString() }
+        fromTs?.let { where.append(" AND created_at >= ?"); bind += it.toString() }
+        toTs?.let { where.append(" AND created_at <= ?"); bind += it.toString() }
+        return where.toString() to bind
+    }
+
+    /**
+     * 방 기준 messages 페이지 조회 — /ws 프레임과 동일한 item[] [] 를 순서대로 반환.
+     *
+     * 정렬은 `id` 스노우플레이크(단조 증가라 실시간 유입에도 페이지 경계가 흔들리지 않는다).
+     * `cursorVal`/`cursorOp` 은 anchor 커서(strict 비교라 anchor 자체는 제외). classification
+     * 필터(`types`)가 있으면 `limit+1` 개의 candidate window 를 scan 해 필터 survivors 중
+     * `limit` 개만 페이지에 담는다.
+     *
+     * 반환 Triple(page, nextCursor, hasMore):
+     *  - page        : 최대 `limit` 개의 survivor.
+     *  - nextCursor  : 페이지 마지막(정렬방향 최말단) survivor id. `before=` 커싱과 조합해
+     *                  같은 방향으로 계속 전진한다. 비어 있으면 null.
+     *  - hasMore     : window 가 가득 찼으면(scanned == limit+1, Discord 의 +1-fetch 와
+     *                  동일 규칙) True. 무한루프 없이 항상 앞으로 진행하므로 안전하다.
+     */
+    fun messageFramesPage(
+        chatId: Long,
+        cursorVal: Long,
+        cursorOp: String,
+        limit: Int,
+        orderDesc: Boolean,
+        userFilter: Long?,
+        types: List<String>?,
+        fromTs: Long?,
+        toTs: Long?
+    ): Triple<List<Map<String, Any?>>, Long?, Boolean> {
+        val ord = if (orderDesc) "DESC" else "ASC"
+        val (where, bind) = msgConditions(chatId, cursorOp, cursorVal, userFilter, fromTs, toTs)
+        val filter = types?.takeIf { it.isNotEmpty() }
+        // limit+1 행 window: limit+1 행 자체가 있으면(=more row 존재) has_more. extra 행의
+        // 복호화 비용을 물지 않도록 페이지가 가득 찼으면 더 이상 buildFrame 하지 않는다.
+        val sql = SELECT_MSG_COLS + where +
+            " ORDER BY id $ord LIMIT ${limit + 1}"
+        val page = ArrayList<Map<String, Any?>>(limit)
+        var scanned = 0
+        db.connection.rawQuery(sql, bind.toTypedArray()).use { c ->
+            while (c.moveToNext()) {
+                scanned++
+                if (page.size >= limit) continue
+                if (filter != null && !matchesTypeFilter(c, filter)) continue
+                buildFrame(c, c.columnNames, store = false)?.let { page += it }
+            }
+        }
+        val nextCursor = page.lastOrNull()?.get("json")
+            ?.let { (it as Map<*, *>)["id"]?.toString()?.toLongOrNull() }
+        return Triple(page, nextCursor, scanned > limit)
+    }
+
+    /** classification 필터 일치 여부 (`origin` 은 raw `v` 컬럼에서 전개). */
+    private fun matchesTypeFilter(cursor: Cursor, filter: List<String>): Boolean {
+        val cn = cursor.columnNames
+        val type = cursor.getString(cn.indexOf("type"))?.toIntOrNull() ?: 0
+        val origin = cn.indexOf("v").takeIf { it != -1 }?.let { vOrigin(cursor.getString(it)) }.orEmpty()
+        val deletedAt = cn.indexOf("deleted_at").takeIf { it != -1 }
+            ?.let { cursor.getString(it)?.toLongOrNull() ?: 0L } ?: 0L
+        return filter.contains(KakaoMessageType.classify(type, origin, deletedAt))
+    }
+
+    /** `chat_logs.v`(JSON)에서 `origin` 필드만 추출. 파싱 실패/부재 시 빈 문자열. */
+    private fun vOrigin(vJson: String?): String = try {
+        if (vJson.isNullOrEmpty()) "" else JSONObject(vJson).optString("origin", "")
+    } catch (e: Exception) {
+        ""
+    }
+
+    /** 검색 로그 id를 `chat_logs` 로 되읽어 room/보낸이/시각 필드를 부여한 hit 목록 (요청 id 내림차순 유지). */
+    fun enrichChatHits(hits: List<Pair<Long, String>>): List<Map<String, Any?>> {
+        if (hits.isEmpty()) return emptyList()
+        val previewById = LinkedHashMap<Long, String>()
+        hits.forEach { (id, preview) -> if (id != 0L) previewById[id] = preview }
+        if (previewById.isEmpty()) return emptyList()
+        val sql = "SELECT id, chat_id, user_id, created_at, type," +
+            " json_extract(v, \"$.origin\") AS origin, deleted_at" +
+            " FROM chat_logs WHERE id IN (" + previewById.keys.joinToString(",") + ")"
+        val rows = LinkedHashMap<Long, Map<String, Any?>>()
+        db.connection.rawQuery(sql, emptyArray()).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                val chatId = c.getLong(1)
+                val userId = c.getLong(2)
+                val createdAt = c.getString(3)
+                val type = c.getString(4)?.toIntOrNull() ?: 0
+                val origin = c.getString(5) ?: ""
+                val deletedAt = c.getLong(6)
+                val names = try { db.getChatInfo(chatId, userId) } catch (e: Exception) { arrayOf<String?>(null, null) }
+                rows[id] = linkedMapOf(
+                    "id" to id,
+                    "preview" to previewById[id].orEmpty(),
+                    "chat_id" to chatId.toString(),
+                    "user_id" to userId.toString(),
+                    "created_at" to createdAt,
+                    "type_name" to KakaoMessageType.classify(type, origin, deletedAt),
+                    "room_name" to names[0],
+                    "sender_name" to names[1]
+                )
+            }
+        }
+        // IN () 은 row 순서를 보장하지 않으므로 요청 id 내림차순으로 재배열.
+        return previewById.keys.mapNotNull { rows[it] }
+    }
 
     /**
      * chat_logs 에서 days(0.5 = 12시간)보다 오래된 로그를 삭제한다.

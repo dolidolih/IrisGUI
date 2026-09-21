@@ -237,7 +237,10 @@ object AdbServer {
                     get("/rooms") {
                         try {
                             val db = kakaoDb ?: throw Exception("KakaoDB not initialized")
-                            val rooms = db.getRecentRooms(30).map {
+                            // limit 기본값은 기존 동작과 동일한 30 유지 — 미지정 응답은 그대로.
+                            val limit = (call.request.queryParameters["limit"]?.toIntOrNull()
+                                ?: 30).coerceIn(1, 100)
+                            val rooms = db.getRecentRooms(limit).map {
                                 RoomInfo(
                                     id = it["id"] ?: "",
                                     name = it["name"],
@@ -344,6 +347,61 @@ object AdbServer {
                     // id 는 확장자의 log_id(스노우플레이크)와 같은 계열. /reply 나 /ws 와 동일 포맷이라
                     // 기존 클라이언트가 그대로 파싱할 수 있다.
                     route("/chat") {
+                        // 방(chat_id) 기준 메시지 페이지네이션. item[] 는 `/ws` 프레임과 동일.
+                        // 커서는 log_id 스노우플레이크(단조 증가) 기준이고 before/after/around 는
+                        // 상호배타. `around` 는 anchor 포함(older 방향), before/after 는 exclusive.
+                        get("/{room}/messages") {
+                            val db = kakaoDb
+                                ?: return@get call.respond(ApiResponse(false, "db not ready"))
+                            val room = call.parameters["room"]?.toLongOrNull()
+                                ?: return@get call.respond(ApiResponse(false, "invalid room id"))
+                            val q = call.request.queryParameters
+                            for (name in listOf("limit", "before", "after", "around", "user_id",
+                                                "from_created_at", "to_created_at")) {
+                                if (q[name] != null && q[name]!!.toLongOrNull() == null)
+                                    return@get call.respond(ApiResponse(false, "invalid '$name'"))
+                            }
+                            val anchor = listOfNotNull(
+                                q["before"]?.toLongOrNull()?.let { "before" to it },
+                                q["after"]?.toLongOrNull()?.let { "after" to it },
+                                q["around"]?.toLongOrNull()?.let { "around" to it }
+                            )
+                            if (anchor.size > 1) return@get call.respond(
+                                ApiResponse(false, "before/after/around are mutually exclusive")
+                            )
+                            val (cursorVal, cursorOp, orderDesc) = when (anchor.firstOrNull()?.first) {
+                                "before" -> Triple(anchor.first().second, "<", true)
+                                "after" -> Triple(anchor.first().second, ">", false)
+                                "around" -> Triple(anchor.first().second, "<=", true)
+                                else -> Triple(Long.MAX_VALUE, "<", true)
+                            }
+                            val types = q["types"]?.split(",")?.map { it.trim() }
+                                ?.filter { it.isNotEmpty() }
+                            if (types != null) {
+                                val invalid = types.filter { it !in KakaoMessageType.VALID_FILTERS }
+                                if (invalid.isNotEmpty())
+                                    return@get call.respond(
+                                        ApiResponse(false, "Invalid type(s): $invalid")
+                                    )
+                            }
+                            val limit = (q["limit"]?.toIntOrNull() ?: 50).coerceIn(1, 100)
+                            try {
+                                val (items, nextCursor, hasMore) = readHelper(db).messageFramesPage(
+                                    room, cursorVal, cursorOp, limit, orderDesc,
+                                    q["user_id"]?.toLongOrNull(), types,
+                                    q["from_created_at"]?.toLongOrNull(),
+                                    q["to_created_at"]?.toLongOrNull()
+                                )
+                                call.respond(JsonPayloadResponse(payload = buildJsonObject {
+                                    putJsonArray("items") { items.forEach { add(toJsonElement(it)) } }
+                                    put("next_cursor",
+                                        nextCursor?.let { JsonPrimitive(it.toString()) } ?: JsonNull)
+                                    put("has_more", hasMore)
+                                }))
+                            } catch (e: Exception) {
+                                call.respond(JsonPayloadResponse(payload = JsonNull, error = e.message))
+                            }
+                        }
                         get("/{id}") {
                             val id = call.parameters["id"]?.toLongOrNull()
                                 ?: return@get call.respond(ApiResponse(false, "invalid log id"))
@@ -441,8 +499,41 @@ object AdbServer {
                         post {
                             val req = call.receive<SearchRequest>()
                             try {
-                                val hits = CryptoDatabaseReader.searchMessages(req.query, req.limit)
-                                    .map { SearchHit(id = it.first, preview = it.second) }
+                                val hasFilter = req.room != null || req.user_id != null ||
+                                    !req.types.isNullOrEmpty() || req.from_created_at != null ||
+                                    req.to_created_at != null
+                                val db = kakaoDb
+                                val window = if (hasFilter && db != null)
+                                    minOf(req.limit * 8, 500) else req.limit
+                                // chat_log_search(crypto_database) 에는 방/보낸이/시각 컬럼이 없고
+                                // db1 SQL 로 조인도 불가 → id 만 뽑아 db1.chat_logs 에서 되읽는다.
+                                val raw = CryptoDatabaseReader.searchMessages(req.query, window)
+                                val hits = if (!hasFilter || db == null) {
+                                    raw.map { SearchHit(id = it.first, preview = it.second) }
+                                } else {
+                                    readHelper(db).enrichChatHits(raw)
+                                        .filter { row ->
+                                            val ts = (row["created_at"] as? String)?.toLongOrNull() ?: 0L
+                                            (req.room == null || row["chat_id"] == req.room.toString()) &&
+                                                (req.user_id == null || row["user_id"] == req.user_id.toString()) &&
+                                                (req.types.isNullOrEmpty() || row["type_name"] in req.types!!) &&
+                                                (req.from_created_at == null || ts >= req.from_created_at!!) &&
+                                                (req.to_created_at == null || ts <= req.to_created_at!!)
+                                        }
+                                        .take(req.limit)
+                                        .map { row ->
+                                            SearchHit(
+                                                id = row["id"] as Long,
+                                                preview = row["preview"] as String,
+                                                chat_id = row["chat_id"] as String?,
+                                                user_id = row["user_id"] as String?,
+                                                created_at = row["created_at"] as String?,
+                                                type_name = row["type_name"] as String?,
+                                                room_name = row["room_name"] as String?,
+                                                sender_name = row["sender_name"] as String?
+                                            )
+                                        }
+                                }
                                 call.respond(SearchResponse(hits = hits))
                             } catch (e: Exception) {
                                 call.respond(SearchResponse(hits = emptyList(), error = e.message))

@@ -147,7 +147,10 @@ private const val JSON = """
     },
     "/rooms": {
       "get": {
-        "tags": ["lookup"], "summary": "최근 채팅방 목록 (최신 30건)", "operationId": "getRooms",
+        "tags": ["lookup"], "summary": "최근 채팅방 목록 (기본 최신 30건)", "operationId": "getRooms",
+        "parameters": [ { "name": "limit", "in": "query", "required": false,
+          "description": "0 < limit <= 100. 미지정 시 30 (기존 동작 유지).",
+          "schema": { "type": "integer", "default": 30, "minimum": 1, "maximum": 100 } } ],
         "responses": { "200": { "description": "방 목록. DB 준비 실패 시 빈 배열.",
           "content": { "application/json": { "schema": { "@@REF@@": "#/components/schemas/RoomListResponse" } } } },
           "default": { "@@REF@@": "#/components/responses/ApiError" } }
@@ -220,6 +223,40 @@ private const val JSON = """
           "default": { "@@REF@@": "#/components/responses/ApiError" } }
       }
     },
+    "/chat/{room}/messages": {
+      "get": {
+        "tags": ["chat"], "summary": "방 기준 메시지 페이지네이션 (id 커서)", "operationId": "getRoomMessages",
+        "description": "방(chat_id)의 messages[][] 를 /ws 프레임과 동일한 item[] [] 로 반환. 정렬은 `id` 스노우플레이크(단조 증가). 커서는 before/after/around 중 하나(상호배타) 또는 none(최신부터). 커서 anchor 는 exclusive (around 는 inclusive). item[] 의 각 element 는 msg/room/sender/json 필드를 가지며 `json` 은 /ws 동일. next_cursor 는 `before=` 와 조합해 다음 과거 페이지로 이동한다. `types` 는 comma-separated classification 토큰(text,photo,…) — broadcast_types 와 동일 토큰. invalid 토큰은 400 처리.",
+        "parameters": [
+          { "name": "room", "in": "path", "required": true, "schema": { "@@REF@@": "#/components/schemas/BigInt" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "default": 50, "minimum": 1, "maximum": 100 } },
+          { "name": "before", "in": "query", "required": false, "description": "id < before, desc. anchor exclusive.", "schema": { "@@REF@@": "#/components/schemas/BigInt" } },
+          { "name": "after", "in": "query", "required": false, "description": "id > after, asc. anchor exclusive.", "schema": { "@@REF@@": "#/components/schemas/BigInt" } },
+          { "name": "around", "in": "query", "required": false, "description": "around 기준 desc, anchor inclusive.", "schema": { "@@REF@@": "#/components/schemas/BigInt" } },
+          { "name": "user_id", "in": "query", "required": false, "schema": { "@@REF@@": "#/components/schemas/BigInt" } },
+          { "name": "types", "in": "query", "required": false, "description": "comma-separated classification 토큰", "schema": { "type": "string" } },
+          { "name": "from_created_at", "in": "query", "required": false, "description": "epoch seconds, created_at >= ? ", "schema": { "type": "integer", "format": "int64" } },
+          { "name": "to_created_at", "in": "query", "required": false, "description": "epoch seconds, created_at <= ?", "schema": { "type": "integer", "format": "int64" } }
+        ],
+        "responses": {
+          "200": { "description": "items[] [] + next_cursor + has_more. 각 item 은 /ws frame 과 동일 필드.",
+            "content": { "application/json": {
+              "schema": { "type": "object", "properties": {
+                "payload": { "type": "object", "properties": {
+                  "items": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                          "msg": { "type": "string" },
+                          "room": { "type": "string" },
+                          "sender": { "type": "string" },
+                          "json": { "type": "object", "additionalProperties": true } },
+                        "additionalProperties": true } },
+                  "next_cursor": { "type": ["string", "null"], "format": "int64" },
+                  "has_more": { "type": "boolean" } } },
+                "error": { "type": ["string", "null"] } } } } } },
+          "default": { "@@REF@@": "#/components/responses/ApiError" }
+        }
+      }
+    },
     "/chat/{id}": {
       "get": {
         "tags": ["chat"], "summary": "로그 한 건 (`/ws` 프레임과 동일 구조)", "operationId": "getChat",
@@ -287,7 +324,7 @@ private const val JSON = """
     "/search": {
       "post": {
         "tags": ["data"], "summary": "암호 DB 전문(full-text) 검색", "operationId": "postSearch",
-        "description": "`crypto_database.chat_log_search.searchable_text` 검색.",
+        "description": "`crypto_database.chat_log_search.searchable_text` 검색. `query`/`limit` 만 보내면 동작은 기존과 동일. 선택 필터(`room`, `user_id`, `types`, `from_created_at`, `to_created_at`)를 넣으면 검색 id를 `db1.chat_logs` 로 되읽어 room/보낸이/시각 필드를 enrichment 한 hits[] 를 반환. (searchable_text 에는 방/보낸이/시각 컬럼이 없어 별도 batch 조인.)",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "@@REF@@": "#/components/schemas/SearchRequest" } } } },
         "responses": { "200": { "description": "검색 결과", "content": { "application/json": { "schema": { "@@REF@@": "#/components/schemas/SearchResponse" } } } },
           "default": { "@@REF@@": "#/components/responses/ApiError" } }
@@ -474,12 +511,24 @@ private const val JSON = """
         }
       },
       "SearchRequest": { "type": "object", "required": ["query"], "properties": {
-        "query": { "type": "string" }, "limit": { "type": "integer", "default": 50 } } },
+        "query": { "type": "string" }, "limit": { "type": "integer", "default": 50 },
+        "room": { "type": "integer", "format": "int64", "nullable": true },
+        "user_id": { "type": "integer", "format": "int64", "nullable": true },
+        "types": { "type": "array", "items": { "type": "string" }, "nullable": true },
+        "from_created_at": { "type": "integer", "format": "int64", "nullable": true },
+        "to_created_at": { "type": "integer", "format": "int64", "nullable": true } } },
       "SearchResponse": {
         "type": "object", "required": ["hits"],
         "properties": {
           "hits": { "type": "array", "items": { "type": "object", "required": ["id", "preview"],
-            "properties": { "id": { "type": "integer", "format": "int64" }, "preview": { "type": "string" } } } },
+            "properties": {
+              "id": { "type": "integer", "format": "int64" }, "preview": { "type": "string" },
+              "chat_id": { "type": "string", "nullable": true },
+              "user_id": { "type": "string", "nullable": true },
+              "created_at": { "type": "string", "nullable": true },
+              "type_name": { "type": "string", "nullable": true },
+              "room_name": { "type": "string", "nullable": true },
+              "sender_name": { "type": "string", "nullable": true } } } },
           "error": { "type": ["string", "null"] } }
       },
       "DecryptRequest": {
