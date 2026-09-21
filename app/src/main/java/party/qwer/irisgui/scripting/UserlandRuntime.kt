@@ -228,6 +228,27 @@ object UserlandRuntime {
         return Result(true, "python 준비됨")
     }
 
+    /**
+     * ubuntu base 이미지에는 CA 번들이 없어 pip 의 TLS 가 죽는다. 파일 존재는 exec
+     * 하나, 없으면 apt 로 설치. 멱등.
+     */
+    fun ensureTrustStore(context: Context): Result {
+        val probe = exec(context, "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK",
+            20_000)
+        if (probe.output.contains("CA_OK")) return Result(true, "CA 준비됨")
+        // base 이미지엔 apt lists 가 비어있다 -> update 먼저. keyring 실패(NO_PUBKEY)로
+        // update 가 warn 을 낸해도 다른 컴포넌트는 남아 install 은 동작한다.
+        val (_, out) = exec(context, APT_PREP + APT +
+            "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
+            "update -q 2>&1 | tail -3; " + APT +
+            "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
+            "install -y -q --no-install-recommends ca-certificates 2>&1 | tail -5", 600_000)
+        val after = exec(context,
+            "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK", 20_000)
+        return if (after.output.contains("CA_OK")) Result(true, "CA 인증서 설치됨")
+        else Result(false, "CA 인증서 설치 실패: " + out.take(200))
+    }
+
     /** code-server standalone 다운로드+언팩. 멱등. host tar 로 빠르게. blocking. */
     fun ensureCodeServer(context: Context): Result {
         if (codeServerInstalled(context)) return Result(true, "code-server 이미 설치됨")
@@ -254,6 +275,8 @@ object UserlandRuntime {
         if (!base.ok) return base
         val py = ensurePython(context)
         if (!py.ok) return py
+        val trust = ensureTrustStore(context)
+        if (!trust.ok) return trust
         return ensureCodeServer(context)
     }
 
