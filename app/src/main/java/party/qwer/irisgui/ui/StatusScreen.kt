@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -194,9 +196,13 @@ fun StatusScreen(permission: PermissionStatus) {
         })
     }
 
-    // 상태 탭은 스크롤 없이 화면 전체를 채우도록 블록을 벌린다 (LazyColumn → 가변 Column).
+    // 위 블록(서비스 카드 + 권한 안내 행)이 늘어나도 설정 카드가 잘리지 않도록
+    // 화면 전체를 스크롤 가능하게 둔다. 콘텐츠가 남을 때는 그냥 위부터 쌓인다.
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SectionTitle("서비스 상태", icon = Icons.Default.PowerSettingsNew)
@@ -242,11 +248,7 @@ fun StatusScreen(permission: PermissionStatus) {
             }
         )
         SectionTitle("설정", icon = Icons.Default.Tune)
-        ValueGridCard(
-            values = values,
-            modifier = Modifier.weight(1f),
-            fillHeight = true
-        )
+        ValueGridCard(values = values)
     }
 
     editor?.let { ed ->
@@ -461,14 +463,13 @@ private fun ServiceCard(
     }
 }
 
-/** 행3: 값 카드 — 2×2 그리드. */
+/** 행3: 값 카드 — 2×2 그리드. 스크롤 가능한 스크린에서 콘텐츠 높이 그대로 배치된다. */
 @Composable
 private fun ValueGridCard(
     values: List<GridValue>,
-    modifier: Modifier = Modifier,
-    fillHeight: Boolean = false
+    modifier: Modifier = Modifier
 ) {
-    SurfaceCard(modifier = modifier, fillHeight = fillHeight, contentPadding = PaddingValues(16.dp)) {
+    SurfaceCard(modifier = modifier, contentPadding = PaddingValues(16.dp)) {
         StatTiles(
             *values.map {
                 StatItem(
@@ -481,8 +482,6 @@ private fun ValueGridCard(
                 )
             }.toTypedArray(),
             columns = 2,
-            modifier = Modifier.weight(1f),
-            fillHeight = fillHeight,
             compact = true
         )
     }

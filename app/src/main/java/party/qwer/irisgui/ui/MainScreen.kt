@@ -112,6 +112,8 @@ fun MainScreen() {
                 detectTapGestures(onTap = { focusManager.clearFocus() })
             },
         bottomBar = {
+            // code 편집 화면(WebView) 중에는 탭 바를 완전히 감춘다 — 화면 전체를 코딩에 쓴다.
+            if (!codeEditorOpen.value) {
             NavigationBar(
                 containerColor = AppColors.BottomNavBg,
                 contentColor = AppColors.TextSub,
@@ -147,6 +149,7 @@ fun MainScreen() {
                         )
                     )
                 }
+            }
             }
         },
         containerColor = Color.Transparent,
