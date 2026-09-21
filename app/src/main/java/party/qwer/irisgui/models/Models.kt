@@ -222,13 +222,26 @@ data class AdbProcessCommandRequest(
 @Serializable
 data class SearchRequest(
     val query: String,
-    val limit: Int = 50
+    val limit: Int = 50,
+    // 선택 필터 — 미지정 시 동작/응답은 `{"query","limit"}` 만 보낸 현행과 동일.
+    val room: Long? = null,
+    val user_id: Long? = null,
+    val types: List<String>? = null,
+    val from_created_at: Long? = null,
+    val to_created_at: Long? = null
 )
 
 @Serializable
 data class SearchHit(
     val id: Long,
-    val preview: String
+    val preview: String,
+    // 필터 적용 시에만 채워지는 enrichment 필드 (미지정 경로는 null 유지 → 기존 클라이언트 무영향).
+    val chat_id: String? = null,
+    val user_id: String? = null,
+    val created_at: String? = null,
+    val type_name: String? = null,
+    val room_name: String? = null,
+    val sender_name: String? = null
 )
 
 @Serializable

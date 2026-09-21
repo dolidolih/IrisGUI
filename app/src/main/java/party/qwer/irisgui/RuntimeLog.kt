@@ -27,10 +27,12 @@ object RuntimeLog {
     fun error(source: String, message: String) = log("ERROR", source, message)
 
     fun log(level: String, source: String, message: String) {
+        android.util.Log.i("IRISGUI", source + " " + level + " " + message)
         synchronized(lock) {
             entries.add(Entry(System.currentTimeMillis(), level, source, message))
             while (entries.size > MAX_ENTRIES) entries.removeAt(0)
         }
+
     }
 
     /** 가장 최신이 앞에 오도록. [limit] 으로_recent 건만 잘라낼 수 있다(HTTP 전송용). */

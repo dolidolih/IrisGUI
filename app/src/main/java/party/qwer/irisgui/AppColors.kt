@@ -42,6 +42,8 @@ object AppColors {
     val TextMainSolid = Color(0xFFFFFFFF)
     val TextSubSolid = Color(0xBFFFFFFF)
 
+    val SuccessSoft = Color(0x332E8B63)
+    val WarnSoft = Color(0x33CE8A2E)
     val SuccessVivid = Color(0xFF2E8B63)
     val ErrorVivid = Color(0xFFD5656E)
     val WarningVivid = Color(0xFFCE8A2E)
