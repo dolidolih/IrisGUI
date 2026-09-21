@@ -404,13 +404,13 @@ class IrisService : Service() {
 
     private fun cleanup() {
         IrisServer.stop()
-        // 실행 중 스크립트가 백그라운드 파이썬 스레드로 남아있으면 서비스만 stop
-        // 해도 이벤트 처리가 계속된다 — IO 에서 먼저 전부 정지한다.
-        // (main thread 블로킹 방지. force=false 로 파이썬이 이미 떠있을 때만 동작.)
+        // proot 로 도는 python 스크립트와 code-server 는 서비스 종료와 별개로 살아
+        // 남을 수 있으므로 IO 에서 먼저 전부 정지한다.
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
-                party.qwer.irisgui.scripting.ScriptManager.stopAll(applicationContext)
+                party.qwer.irisgui.scripting.LinuxScripts.stopAll(applicationContext)
             }
+            runCatching { party.qwer.irisgui.scripting.CodeServer.stop() }
         }
         AppConfig.isServiceEnabled = false
         cancelHeartbeat()

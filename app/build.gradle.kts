@@ -3,7 +3,6 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-    id("com.chaquo.python")
 }
 
 android {
@@ -80,24 +79,4 @@ dependencies {
     implementation("net.zetetic:sqlcipher-android:4.13.0")
     implementation("androidx.sqlite:sqlite:2.7.0")
     testImplementation(libs.junit)
-}
-
-chaquopy {
-    defaultConfig {
-        version = "3.12"
-        // 시스템 python3 은 3.14 → 앱 버전과 불일치하므로 명시 지정.
-        buildPython("/home/dolidoli/.local/bin/python3.12")
-        pyc {
-            src = false
-        }
-        pip {
-            // 순수 파이썬은 pypi.org, C 확장 네이티브 wheel 은 chaquopy 가 미리
-            // 빌드해둔 인덱스에서 각각 받는다. irispy-client 실행에 필요한 것만.
-            options("--extra-index-url", "https://chaquo.com/pypi-13.1/")
-            install("requests")
-            install("websockets")
-            install("httpx")
-            install("pillow")
-        }
-    }
 }
