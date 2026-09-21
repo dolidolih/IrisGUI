@@ -370,6 +370,7 @@ private fun CodeEditorView(state: EditorState, onBack: () -> Unit) {
             factory = { c ->
                 WebView(c).apply {
                     webViewRef.value = this
+                    WebViewGpuGuard.harden(this)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.allowFileAccess = false
