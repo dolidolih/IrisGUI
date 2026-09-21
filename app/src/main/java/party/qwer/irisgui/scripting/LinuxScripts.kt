@@ -1,6 +1,7 @@
 package party.qwer.irisgui.scripting
 
 import android.content.Context
+import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.RuntimeLog
 import java.io.File
 
@@ -84,7 +85,7 @@ object LinuxScripts {
             Script(
                 name = name,
                 running = running.containsKey(name),
-                pid = running[name],
+                pid = running[name]?.firstOrNull(),
                 hasVenv = venv,
                 venvPending = pending,
                 error = if (!done && !pending) "가상환경 준비 실패 — code-server 터미널에서 직접 설치하세요"
@@ -175,7 +176,8 @@ object LinuxScripts {
             val r = ensureVenv(context, name)
             if (!r.ok) return r
         }
-        val inner = "exec $py ${q(MAIN)} 2>&1"
+        val inner = "export IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) +
+            "\nexec $py ${q(MAIN)} 2>&1"
         val logFile = File(dir, LOG)
         val p = UserlandRuntime.spawnBackground(context, inner,
             UserlandRuntime.guestProject(context, name), logFile)
@@ -185,30 +187,41 @@ object LinuxScripts {
         return UserlandRuntime.Result(true, "$name 실행됨")
     }
 
-    /** 정지: host 프로세스 kill + proot 안 잔여 프로세스 pattern kill. */
+    /**
+     * 정지. 대상은 그 프로젝트 dir 를 기준으로 도는 모든 프로세스 — proot wrapper,
+     * python, 그리고 wrapper 가 죽고 init 에 떠려 살아남는 orphan python 전부.
+     * host kill 은 same uid 라 non-root(NLS) 에서도 별돈 privilege 없는 동작.
+     */
     fun stop(context: Context, name: String): UserlandRuntime.Result {
-        var stopped = false
         synchronized(this) {
             val p = processes.remove(name)
-            if (p?.isAlive == true) { runCatching { p.destroy() }; stopped = true }
+            if (p?.isAlive == true) runCatching { p.destroy() }
         }
-        val pid = runningPidsByProject(context)[name]
-        if (pid != null) {
-            runCatching { killPid(pid) }
-            stopped = true
+        // 확인 포함 쵘대 4 라운드: kill → 재스컹. 스캩서는 cmdline-venv 경로로 orphan
+        // python 까지 잡베 라운드 사이에 살아남으면 다음 라운드에서 짓힌다.
+        var remaining = pidsOf(context, name)
+        var rounds = 0
+        while (rounds < 4 && remaining.isNotEmpty()) {
+            remaining.forEach { runCatching { killPid(it) } }
+            Thread.sleep(150)
+            remaining = pidsOf(context, name)
+            rounds++
         }
-        // proot destroy 와 무관하게 살아남을 수 있는 잔여 python 정리. guest venv
-        // python 경로의 첫 글자만 클래스 표기로 바꿔 pkill/sh 자신의 cmdline 은
-        // 매칭되지 않게 한다.
-        val guestPy = UserlandRuntime.guestProject(context, name) + "/.venv/bin/python"
-        val pat = "[h]" + guestPy.substring(1)
-        runCatching {
-            UserlandRuntime.exec(context, "pkill -9 -f " + q(pat) + " 2>/dev/null; true", 15_000)
+        // 보험: proot 안 guest pkill sweep (host pid ns 공유라 실효은 같지만
+        // host kill 권한 이상 시에도 정리된다).
+        if (remaining.isNotEmpty()) {
+            val guestPy = UserlandRuntime.guestProject(context, name) + "/.venv/bin/python"
+            val pat = "[h]" + guestPy.substring(1)
+            runCatching {
+                UserlandRuntime.exec(context, "pkill -9 -f " + q(pat) + " 2>/dev/null; true", 15_000)
+            }
+            remaining = pidsOf(context, name)
         }
-        return if (stopped) {
-            RuntimeLog.info(TAG, "스크립트 정지: $name")
-            UserlandRuntime.Result(true, "$name 정지됨")
-        } else UserlandRuntime.Result(true, "$name 정지 (이미 멈춤)")
+        val ok = remaining.isEmpty()
+        RuntimeLog.info(TAG, if (ok) "스크립트 정지: $name"
+            else "스크립트 정지 실패: $name (pids=$remaining)")
+        return UserlandRuntime.Result(ok, if (ok) "$name 정지됨"
+            else "$name 정지 실패 — code-server 터미널에서 kill 로 정리 ($remaining)")
     }
 
     /** 서비스 종료 시 전체 정지. */
@@ -250,14 +263,20 @@ object LinuxScripts {
         UserlandRuntime.guestProject(context, name) + "/.venv/bin/python"
 
     /**
-     * /proc/<pid>/cwd 가 filesDir/linux/home/projects/<name> 아래인 python 프로세스
-     * 스캔. proot 는 host pid ns 를 그대로 쓰기 때문에 host /proc 에서 바로 보인다.
-     * cwd 는 바인드 경로(/home/projects/<name>) 도 host real path 도 아니다: proot 는
-     * ptrace 로 chdir 시 guest 경로를 host real path 로 매핑해서 실행한다.
+     * 프로젝트별 실행 python pid 집합. proot 는 host pid ns 를 그대로 쓰기 때문에
+     * host /proc 에서 전부 보인다. 식별 우선순위:
+     *   1) cmdline 의 venv python 경로 — guest 바인드(/home/projects/<n>/.venv/...)든
+     *      host real path 든, 재실행/orphan 까지 잡는다. proot 는 host /proc cwd 를
+     *      / 에 고정하므로 cwd 는 primary 로 못 쓴다(wrapper 가 죽으면 python 자식은
+     *      init 에 딸려 살아남고 cmdline 만 남는다 — 실제 멈춤 실패의 원인).
+     *   2) proot wrapper cmdline 의 "-w <projects>/<name>" 마커.
+     *   3) host /proc cwd 가 프로젝트 안인 경우 (마지막 수단).
      */
-    private fun runningPidsByProject(context: Context): Map<String, Int> {
-        val base = UserlandRuntime.projectsHostDir(context).canonicalFile.absolutePath + "/"
-        val out = HashMap<String, Int>()
+    private fun runningPidsByProject(context: Context): Map<String, MutableSet<Int>> {
+        val hostBase = UserlandRuntime.projectsHostDir(context).canonicalFile.absolutePath + "/"
+        val guestBase = UserlandRuntime.GUEST_PROJECTS + "/"
+        val venvRe = Regex("(?:home/projects/)([^ /]+)/\\.venv/bin/python")
+        val out = HashMap<String, MutableSet<Int>>()
         val dirs = runCatching {
             File("/proc").listFiles { f -> f.isDirectory && f.name.all { c -> c.isDigit() } }
         }.getOrNull() ?: return out
@@ -267,16 +286,20 @@ object LinuxScripts {
                 String(File(d, "cmdline").readBytes(), Charsets.ISO_8859_1)
                     .replace('\u0000', ' ').trim()
             }.getOrDefault("")
-            if (cmd.isBlank() || !cmd.contains("python")) continue
-            // proot 는 host /proc cwd 를 / 에 두고 guest 만 가상 cwd 로 만든다.
-            // 그래서 cwd 는 보조 수단에 지나 않고, proot wrapper cmdline 의
-            // "-w <guest 프로젝트 경로>" 마커가 primary 키다. (python 재실행 시엔
-            // exec 가 cwd 를 이어받으므로 host cwd 도 드물게 유효하다.)
-            val fromCmd = Regex("-w " + Regex.escape(UserlandRuntime.GUEST_PROJECTS + "/") +
-                "(?<n>[^ ]+)").find(cmd)?.groupValues?.getOrNull(1)
-            if (fromCmd != null) {
-                val pname = fromCmd.trim('/').substringBefore('/')
-                if (pname.isNotBlank()) out.putIfAbsent(pname, pid)
+            if (cmd.isBlank()) continue
+            if (cmd.contains("python")) {
+                val m = venvRe.find(cmd)
+                if (m != null) {
+                    val n = m.groupValues[1]
+                    if (n.isNotBlank()) out.getOrPut(n) { mutableSetOf() }.add(pid)
+                    continue
+                }
+            }
+            val fromW = Regex("-w " + Regex.escape(guestBase) + "([^ ]+)")
+                .find(cmd)?.groupValues?.getOrNull(1)
+            if (fromW != null) {
+                val pname = fromW.trim('/').substringBefore('/')
+                if (pname.isNotBlank()) out.getOrPut(pname) { mutableSetOf() }.add(pid)
                 continue
             }
             val cwd = runCatching {
@@ -285,16 +308,19 @@ object LinuxScripts {
             if (cwd.isNullOrEmpty()) continue
             val real = runCatching { File(cwd).canonicalFile.absolutePath }.getOrDefault(cwd)
             val rest = when {
-                real.startsWith(base) -> real.substringAfter(base)
-                real.startsWith(UserlandRuntime.GUEST_PROJECTS + "/") ->
-                    real.substringAfter(UserlandRuntime.GUEST_PROJECTS + "/")
+                real.startsWith(hostBase) -> real.substringAfter(hostBase)
+                real.startsWith(guestBase) -> real.substringAfter(guestBase)
                 else -> continue
             }
             val name = rest.substringBefore('/')
-            if (name.isNotBlank()) out.putIfAbsent(name, pid)
+            if (name.isNotBlank()) out.getOrPut(name) { mutableSetOf() }.add(pid)
         }
         return out
     }
+
+    /** 프로젝트에 딸린 실행 pid 전부 — proot wrapper + python + 고독(orphan) 포함. */
+    fun pidsOf(context: Context, name: String): Set<Int> =
+        runningPidsByProject(context)[name] ?: emptySet()
 
     private fun killPid(pid: Int) {
         // /proc/<pid>/task/*/kill 로 시그널을 보낼 권한은 same uid 라 존재.

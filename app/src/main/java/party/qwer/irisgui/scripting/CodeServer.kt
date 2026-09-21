@@ -113,6 +113,14 @@ object CodeServer {
             val p = pb.start()
             process = p; startedPort = port; startedFocus = focusPath
             if (waitForUp(port, 60_000)) {
+                // provision 으로 온 적 없는 기기(구버전 설치본)도 편집 화면에서 자동으로
+                // 설정/확장을 챙긴다. 마커가 있으면 즉시 반환하므로 낭비가 없다.
+                Thread {
+                    runCatching { UserlandRuntime.ensureEditorDefaults(context) }
+                        .onFailure { RuntimeLog.info(TAG, "editor setup: " + it.message) }
+                    runCatching { UserlandRuntime.ensurePythonExtensions(context) }
+                        .onFailure { RuntimeLog.info(TAG, "pyext setup: " + it.message) }
+                }.start()
                 RuntimeLog.info(TAG, "code-server 실행 :$port ${focusPath ?: "(root)"}")
                 Result(true, "code-server 실행됨 http://127.0.0.1:$port")
             } else Result(false, "기동 타임아웃 — userland/code-server.log 확인")
