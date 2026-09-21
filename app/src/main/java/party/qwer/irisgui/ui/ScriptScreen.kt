@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.shadow
@@ -103,6 +104,10 @@ fun ScriptScreen() {
 
     when {
         logs != null -> {
+            BackHandler {
+                scope.launch { runCatching { refresh() } }
+                logs = null
+            }
             ScriptLogs(
                 name = logs!!.name,
                 onBack = {
@@ -114,6 +119,12 @@ fun ScriptScreen() {
             return
         }
         editor != null -> {
+            // 시스템 백 = 목록으로. (에디터가 뜨면 MainScreen 의 바가 숨겨지므로
+            // 백이 곧 이 화면의 "← 목록" 과 동일 동작해야 앱 종료가 안 된다.)
+            BackHandler {
+                scope.launch { runCatching { refresh() } }
+                editor = null
+            }
             CodeEditorView(
                 state = editor!!,
                 onBack = {

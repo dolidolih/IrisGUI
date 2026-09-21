@@ -269,6 +269,69 @@ object UserlandRuntime {
         return Result(true, "code-server $csVersion 설치 완료")
     }
 
+    /**
+     * code-server 전역User 설정: 다크 테마 + python 자동완성/린트 활성 기본값.
+     * settings.json 은 code-server User 디렉터리에 두고, 존재하면 넘긴다 (사용자
+     * 커스텀 덮어쓰기 방지). 언어서버는 Pylance 미설치 시 basedpyright 로 대체된다.
+     */
+    internal fun ensureEditorDefaults(context: Context): Result {
+        if (ready2(context, "editor")) return Result(true, "설정 준비됨")
+        if (!codeServerInstalled(context)) return Result(false, "code-server 미설치")
+        val settings = "/root/.local/share/code-server/User/settings.json"
+        // languageServer 는 비워둔다: Pylance(open-vsx 미게재) 대신 ms-python 이
+        // 내장 Jedi 로 IntelliSense 를 넣고, basedpyright 가 타입진단을 겹친다. None 으로
+        // 박으면 Jedi 마저 꺼져 자동완성이 통째로 죽는다.
+        val json = "{" +
+            "\n  \"workbench.colorTheme\": \"Default Dark Modern\"," +
+            "\n  \"window.autoDetectColorScheme\": false," +
+            "\n  \"security.workspace.trust.untrustedFiles\": \"open\"," +
+            "\n  \"editor.tabSize\": 4," +
+            "\n  \"editor.renderWhitespace\": \"boundary\"," +
+            "\n  \"python.analysis.typeCheckingMode\": \"standard\"," +
+            "\n  \"python.venvPath\": \"/home/projects\"," +
+            "\n  \"terminal.integrated.env.linux\": {" +
+            "\n    \"IRISGUI_API_URL\": \"http://127.0.0.1:" + AppConfig.serverPort + "\"" +
+            "\n  }" +
+            "\n}\n"
+        val (_, out) = exec(context,
+            "test -f " + q(settings) + " && echo EXISTS || {" +
+                " mkdir -p $(dirname " + q(settings) + ") && printf '%s' " + q(json) +
+                " > " + q(settings) + " && echo WRITTEN; }", 30_000)
+        if (!out.contains("EXISTS") && !out.contains("WRITTEN"))
+            return Result(false, "설정 기록 실패: " + out.take(200))
+        markReady(context, "editor")
+        RuntimeLog.info(TAG, "code-server 기본 설정 완료")
+        return Result(true, "설정 준비됨")
+    }
+
+    /**
+     * Python 코딩 지원 확장 설치 (open-vsx): ms-python.python(언어/디버그/환결정),
+     * detachhead.basedpyright(타체크·자동완성 — Pylance 는 open-vsx 미공개라 대체),
+     * ms-python.autopep8(린트). 실패해도 설치 자체를 막지 않는다 — UI 로그로만.
+     */
+    internal fun ensurePythonExtensions(context: Context): Result {
+        if (ready2(context, "pyext")) return Result(true, "확장 설치됨")
+        if (!codeServerInstalled(context)) return Result(false, "code-server 미설치")
+        val cs = "/codeserver/current/bin/code-server"
+        val extDir = "/root/.local/share/code-server/extensions"
+        val exts = listOf("ms-python.python", "detachhead.basedpyright", "ms-python.autopep8")
+        var failed = listOf<String>()
+        for (e in exts) {
+            val (_, out) = exec(context,
+                cs + " --install-extension " + q(e) + " --extensions-dir " + q(extDir) +
+                    " 2>&1", 300_000)
+            val ok = out.contains("successfully") || out.contains("already installed") ||
+                out.contains("is already")
+            if (!ok) failed += e
+        }
+        if (failed.isEmpty()) {
+            markReady(context, "pyext")
+            RuntimeLog.info(TAG, "Python 확장 설치 완료")
+            return Result(true, "확장 설치됨")
+        }
+        RuntimeLog.info(TAG, "확장 일부 실패: " + failed.joinToString())
+        return Result(false, "확장 일부 설치 실패: " + failed.joinToString())
+    }
     /** 전체 준비: rootfs + python + code-server. 멱등. blocking. */
     fun provision(context: Context): Result {
         val base = ensureBase(context)
@@ -277,7 +340,12 @@ object UserlandRuntime {
         if (!py.ok) return py
         val trust = ensureTrustStore(context)
         if (!trust.ok) return trust
-        return ensureCodeServer(context)
+        val cs = ensureCodeServer(context)
+        if (!cs.ok) return cs
+        // 코딩 기능(자동완성/린트/다크 테마)는 code-server 트리 이후 setup 스텝.
+        runCatching { ensureEditorDefaults(context) }
+        runCatching { ensurePythonExtensions(context) }
+        return cs
     }
 
     /** code-server host 루프백 리스너. */
