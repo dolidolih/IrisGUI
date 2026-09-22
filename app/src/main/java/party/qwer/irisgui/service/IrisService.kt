@@ -410,7 +410,7 @@ class IrisService : Service() {
             runCatching {
                 party.qwer.irisgui.scripting.LinuxScripts.stopAll(applicationContext)
             }
-            runCatching { party.qwer.irisgui.scripting.CodeServer.stop() }
+            runCatching { party.qwer.irisgui.scripting.CodeServer.stop(applicationContext) }
         }
         AppConfig.isServiceEnabled = false
         cancelHeartbeat()

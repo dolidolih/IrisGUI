@@ -73,7 +73,7 @@ object CodeServer {
 
     private fun inner(port: Int, focusPath: String?): String =
         "export PATH=" + UserlandRuntime.q("/usr/local/sbin:/usr/local/bin:/usr/sbin:" +
-            "/usr/bin:/sbin:/bin") + "\nexport HOME=/root\n" +
+            "/usr/bin:/sbin:/bin") + "\nexport HOME=/root\nexport TMPDIR=/tmp\n" +
             "exec /codeserver/current/bin/code-server --auth none --bind-addr 0.0.0.0:" +
             port + " " + UserlandRuntime.q(guestTarget(focusPath)) + " 2>&1"
 
@@ -105,7 +105,9 @@ object CodeServer {
         if (process?.isAlive == true && startedPort == port && startedFocus == focusPath &&
             UserlandRuntime.isPortOpen(port)
         ) return Result(true, "이미 실행 중 :$port")
-        stop()
+        stop(context, port)
+        if (UserlandRuntime.isPortOpen(port))
+            return Result(false, "포트 $port 에 죽지 않은 code-server 남음 — 재시작 후 정리 필요")
         return try {
             val pb = ProcessBuilder(command(context, port, focusPath).toList())
             pb.redirectErrorStream(true)
@@ -131,13 +133,22 @@ object CodeServer {
         }
     }
 
-    fun stop() {
-        // 살아있는 WS tunnel 은 업스트림과 함께 죽인다. 재기동 전이라 stale socket 누수 방지.
+    /** 인스턴스 정리. proot wrapper 를 destroy 해도 node 자식이 init 에 살아남아
+     * 포트를 물는 경우가 있다(관측됨) — guest pkill sweep + 포트 해제 확인까지. */
+    fun stop(context: Context, port: Int = DEFAULT_PORT) {
         runCatching { CodeServerProxy.closeTunnels() }
         runCatching { process?.destroy() }
         runCatching { process?.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        runCatching { process?.destroyForcibly() }
         process = null
         startedFocus = null
+        if (UserlandRuntime.prootReady(context)) runCatching {
+            UserlandRuntime.exec(context,
+                "pkill -9 -f /codeserver/current >/dev/null 2>&1; true", 15_000)
+        }
+        val deadline = System.currentTimeMillis() + 5000
+        while (UserlandRuntime.isPortOpen(port) && System.currentTimeMillis() < deadline)
+            Thread.sleep(150)
     }
 
     /** 프로젝트 편집: code-server 를该项目 폴더 워크스페이스로 연다 (explorer + terminal). */
