@@ -9,7 +9,7 @@ import java.io.File
  * LinuxScripts — proot userland 의 home/projects 아래 프로젝트 단위 스크립트 관리.
  *
  * 저장 구조: filesDir/linux/home/projects/<name>/main.py + .venv + .log
- *   (guest 에는 /home/projects/<name>/ 로 바인드. code-server 워크스페이스와 동일.)
+ *   (guest 에는 /home/projects/<name>/ 로 바인드. 편집 워크스페이스와 동일.)
  *
  * 수명주기:
  *   create(name) = 프로젝트 디렉터리 + main.py(샘플) + 백그라운드 venv 생성.
@@ -91,7 +91,7 @@ object LinuxScripts {
                 pid = running[name]?.firstOrNull(),
                 hasVenv = venv,
                 venvPending = pending,
-                error = if (!done && !pending) "가상환경 준비 실패 — code-server 터미널에서 직접 설치하세요"
+                error = if (!done && !pending) "가상환경 준비 실패 — 편집기 터미널에서 직접 설치하세요"
                 else null
             )
         }
@@ -224,7 +224,7 @@ object LinuxScripts {
         RuntimeLog.info(TAG, if (ok) "스크립트 정지: $name"
             else "스크립트 정지 실패: $name (pids=$remaining)")
         return UserlandRuntime.Result(ok, if (ok) "$name 정지됨"
-            else "$name 정지 실패 — code-server 터미널에서 kill 로 정리 ($remaining)")
+            else "$name 정지 실패 — 편집기 터미널에서 kill 로 정리 ($remaining)")
     }
 
     /** 서비스 종료 시 전체 정지. */
@@ -242,7 +242,7 @@ object LinuxScripts {
         return if (all.size <= limit) all else all.takeLast(limit)
     }
 
-    /** main.py 원문 (UI 편집용 아니고 status 표시 정도). code-server 가 편집한다. */
+    /** main.py 원문 (status 표시 정도; 편집은 편집기 화면). */
     fun readMain(context: Context, name: String): String? =
         File(projectDir(context, name), MAIN).takeIf { it.isFile }?.readText()
 
@@ -340,7 +340,7 @@ object LinuxScripts {
     private val SAMPLE_MAIN = """
         # main.py — IrisGUI 스크립트
         #
-        # irispy-client 를 사용합니다. 필요하면 code-server 터미널에서
+        # irispy-client 를 사용합니다. 필요하면 편집기 터미널에서
         # `pip install <패키지>` 로 추가로 설치하세요.
         #
         # 주의: reply() 는 실제 대화방에 메시지가 전송됩니다.

@@ -404,13 +404,12 @@ class IrisService : Service() {
 
     private fun cleanup() {
         IrisServer.stop()
-        // proot 로 도는 python 스크립트와 code-server 는 서비스 종료와 별개로 살아
-        // 남을 수 있으므로 IO 에서 먼저 전부 정지한다.
+        // proot 로 도는 python 스크립트는 서비스 종료와 별개로 살아남을 수 있으므로
+        // IO 에서 먼저 전부 정지한다.
         serviceScope.launch(Dispatchers.IO) {
             runCatching {
                 party.qwer.irisgui.scripting.LinuxScripts.stopAll(applicationContext)
             }
-            runCatching { party.qwer.irisgui.scripting.CodeServer.stop(applicationContext) }
         }
         AppConfig.isServiceEnabled = false
         cancelHeartbeat()

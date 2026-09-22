@@ -29,13 +29,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.webkit.WebView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import party.qwer.irisgui.AppColors
-import party.qwer.irisgui.scripting.CodeServer
 import party.qwer.irisgui.scripting.LinuxScripts
 import party.qwer.irisgui.scripting.UserlandRuntime
 
@@ -43,14 +41,14 @@ import party.qwer.irisgui.scripting.UserlandRuntime
  * ScriptScreen — proot 리눅스 환경 기반 스크립트/코딩 탭.
  *
  * 환경 미설치면 설치 게이트만 보인다. 설치되면 home/projects 의 프로젝트(=스크립트)
- * 목록과 각각의 실행/정지/편집/로그/삭제 버튼 + 상태 badge. 편집은 code-server 를
- *该项目 폴더(main.py) 에 연 뒤 in-app WebView 로 렌더 (브라우저 오픈 버튼 포함).
+ * 목록과 각각의 실행/정지/편집/로그/삭제 버튼 + 상태 badge. 편집은 in-app Monaco
+ * 화면(파일 트리 + 터미널 포함)을 연다.
  *
  * 각 main.py 는 이 앱의 ws 포트에 접속하므로 여러 스크립트가 같은 이벤트를 같은 시기에
  * 받는다. 상태는 proot 안에서 도는 python 프로세스의 cwd(=프로젝트 dir) 로 추적.
  */
 private data class LogsState(val name: String)
-private data class EditorState(val name: String, val url: String)
+private data class EditorState(val name: String)
 private class ScriptUi(
     val name: String,
     val running: Boolean,
@@ -125,8 +123,8 @@ fun ScriptScreen() {
                 scope.launch { runCatching { refresh() } }
                 editor = null
             }
-            CodeEditorView(
-                state = editor!!,
+            MonacoEditorScreen(
+                name = editor!!.name,
                 onBack = {
                     scope.launch { runCatching { refresh() } }
                     editor = null
@@ -174,7 +172,6 @@ fun ScriptScreen() {
                     )
                     val label = when (env.state) {
                         UserlandRuntime.State.READY -> "준비됨"
-                        UserlandRuntime.State.RUNNING -> "준비됨 (코딩 실행 중)"
                         UserlandRuntime.State.NOT_INSTALLED -> "미설치"
                         UserlandRuntime.State.DISABLED -> "미지원 기기"
                         else -> "— "
@@ -187,7 +184,7 @@ fun ScriptScreen() {
                 }
                 if (!envReady) {
                     Text(
-                        "Ubuntu + python + VS Code(code-server). 다운로드는 한 번 (~280MB).",
+                        "Ubuntu + python + venv. 다운로드는 한 번 (~250MB).",
                         style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
                     )
                 }
@@ -208,9 +205,9 @@ fun ScriptScreen() {
                             scope.launch {
                                 val r = runCatching {
                                     withContext(Dispatchers.Default) {
-                                        CodeServer.install(context)
+                                        UserlandRuntime.provision(context)
                                     }
-                                }.getOrElse { CodeServer.Result(false, it.message ?: "설치 실패") }
+                                }.getOrElse { UserlandRuntime.Result(false, it.message ?: "설치 실패") }
                                 if (r.ok) runCatching {
                                     withContext(Dispatchers.Default) {
                                         LinuxScripts.bootstrapDefault(context)
@@ -288,34 +285,9 @@ fun ScriptScreen() {
                 s = s,
                 busy = busy,
                 onEdit = {
-                    busy = true
-                    scope.launch {
-                        val r = runCatching {
-                            withContext(Dispatchers.Default) {
-                                CodeServer.openProject(context, s.name)
-                            }
-                        }.getOrElse { CodeServer.Result(false, it.message ?: "편집 실패") }
-                        if (r.ok) {
-                            // ?folder= 명시 — code-server 는 브라우저 저장소에
-                            // 마지막 워크스페이스를 기억해서 CLI 인자보다 우선한다.
-                            // URL 로만 강제로 그 프로젝트가 열린다.
-                            val proj = UserlandRuntime.guestProject(context, s.name)
-                            editor = EditorState(
-                                s.name,
-                                "http://127.0.0.1:" + CodeServer.DEFAULT_PORT +
-                                    "/?folder=" + java.net.URLEncoder.encode(proj, "UTF-8") +
-                                    "&file=" + java.net.URLEncoder.encode(
-                                        proj + "/main.py", "UTF-8"
-                                    )
-                            )
-                            runCatching { refresh() }
-                            busy = false
-                            return@launch
-                        }
-                        message = r.message
-                        runCatching { refresh() }
-                        busy = false
-                    }
+                    // code-server 없이 — 화면 전환만으로 Monaco 편집기가 열린다.
+                    // 파일 IO 는 에디터 화면이 host filesDir 를 직접 읽는다.
+                    editor = EditorState(s.name)
                 },
                 onLogs = { logs = LogsState(s.name) },
                 onRun = {
@@ -362,96 +334,6 @@ fun ScriptScreen() {
     }
 }
 
-/**
- * code-server 편집 화면 — 화면 전체를 WebView 로 채운다 (상/하단 크롬 없음).
- *
- * 모바일 화면에서 VS Code UI 를 쓸 만하게 보기 위해 페이지 zoom 을 0.5 로 낮추고
- * (폰 화면이 약 devicePixelRatio≈2 배 넓은 캔버스로 보이게 함), 빠져나오기 위한
- * 플로팅 원형 버튼만 오버레이 한다. 브라우저 열기/새로고침은 FAB 의 롱프레스로 대체.
- */
-@android.annotation.SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun CodeEditorView(state: EditorState, onBack: () -> Unit) {
-    val context = LocalContext.current
-    val webViewRef = remember { mutableStateOf<WebView?>(null) }
-    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xFF1E1E1E))) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { c ->
-                WebView(c).apply {
-                    if ((c.applicationInfo.flags and
-                            android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                    ) WebView.setWebContentsDebuggingEnabled(true)
-                    webViewRef.value = this
-                    WebViewGpuGuard.harden(this)
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.allowFileAccess = false
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    settings.builtInZoomControls = true
-                    settings.displayZoomControls = false
-                    webViewClient = object : android.webkit.WebViewClient() {
-                        override fun onPageFinished(view: WebView, url: String?) {
-                            // VS Code 의 viewport meta(width=device-width) 가 초기축을
-                            // 고정하므로, meta 를 0.5 스케일로 갈아끼워 pinch-zoom 과 동일하게
-                            // 레이아웃(2× 넓은 캔버스) + 시각 스케일 50% 로 만든다.
-                            view.evaluateJavascript(
-                                """
-                                var m = document.querySelector('meta[name="viewport"]');
-                                var c = 'width=device-width, initial-scale=0.5, minimum-scale=0.35, maximum-scale=2.0';
-                                if (m) { m.setAttribute('content', c); }
-                                else {
-                                    m = document.createElement('meta');
-                                    m.setAttribute('name', 'viewport');
-                                    m.setAttribute('content', c);
-                                    document.head.appendChild(m);
-                                }
-                                """.trimIndent(),
-                                null
-                            )
-                        }
-                    }
-                    webChromeClient = android.webkit.WebChromeClient()
-                    loadUrl(state.url)
-                }
-            },
-            update = { w -> if (w.url == null) w.loadUrl(state.url) }
-        )
-        // 플로팅 원형 백 버튼. 롱프레스 = 시스템 브라우저로 열기.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(20.dp)
-                .size(56.dp)
-                .shadow(8.dp, CircleShape, clip = false)
-                .background(AppColors.PrimaryAccent, CircleShape)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { onBack() },
-                        onLongPress = {
-                            runCatching {
-                                context.startActivity(
-                                    android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        android.net.Uri.parse(state.url)
-                                    )
-                                )
-                            }
-                        }
-                    )
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "목록으로",
-                tint = androidx.compose.ui.graphics.Color.White
-            )
-        }
-    }
-}
-
 @Composable
 private fun ScriptCard(
     s: ScriptUi,
@@ -479,7 +361,7 @@ private fun ScriptCard(
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
-            // venv 생성 중에는 실행/편집 불가 — 프로비저닝 중 code-server/venv racing 차단.
+            // venv 생성 중에는 실행/편집 불가 — 프로비저닝 중 venv racing 차단.
             if (s.running) {
                 FilledIconButton(onClick = onStop, enabled = !busy) {
                     Icon(Icons.Default.Stop, contentDescription = "정지")
@@ -507,7 +389,7 @@ private fun ScriptCard(
 
 /**
  * ScriptLogs — 프로젝트 main.py stdout/stderr 로그. 폴링(1.5s) 갱신.
- * code-server 의 pip/터미널 로그는 code-server 안터미널에서 직접 본다.
+ * pip/터미널 로그는 편집기의 내장 터미널에서 직접 확인할 수 있다.
  */
 @Composable
 private fun ScriptLogs(
@@ -569,7 +451,7 @@ private fun ScriptLogs(
             val lines = logLines
             if (lines.isEmpty()) {
                 Text(
-                    "로그 없음. 실행 버튼, 또는 code-server 터미널에서 python main.py 로 실행.",
+                    "로그 없음. 실행 버튼, 또는 편집기 터미널에서 python main.py 로 실행.",
                     color = AppColors.TextSub,
                     style = MaterialTheme.typography.bodySmall
                 )
