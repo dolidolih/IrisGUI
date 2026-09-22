@@ -246,11 +246,16 @@ internal class CodeEditorBridge(
     @JavascriptInterface
     fun termStart(cols: Int, rows: Int): String = try {
         val guest = UserlandRuntime.guestProject(context, project)
+        // script(script util) 가 PTY 를 잡아 대화가 유지된다. script 를 못 쓰면
+        // bash -i(pipe 모드라 echo만 되는 반쪽)라도 살려둔다. exec 금지: 마지막
+        // exec 가 죽으면 폴백 없이 세션이 종결된다.
         val inner =
-            "cd " + UserlandRuntime.q(guest) + " && " +
-                "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }; " +
-                "export PS1='" + UserlandRuntime.q("$ ") + "'; " +
-                "exec script -qc bash /dev/null 2>&1 || exec bash -i"
+            "cd " + UserlandRuntime.q(guest) + " || cd ~\n" +
+                "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }\n" +
+                "export PS1=" + UserlandRuntime.q("$ ") + "\n" +
+                "stty rows 24 cols 120 2>/dev/null\n" +
+                "script -qc bash /dev/null 2>&1\n" +
+                "exec bash -i 2>&1"
         val p = UserlandRuntime.spawnBackground(context, inner, guest, null)
             ?: return err("터미널 시작 실패")
         val id = ++termSeq
@@ -268,8 +273,10 @@ internal class CodeEditorBridge(
                     }
                 }
             }.onFailure {
-                if (!closed) emit("window.Term.onExit($id)")
+                if (!closed) emit("window.Term.onExit($id, 'io')")
             }
+            val code = runCatching { p.waitFor() }.getOrNull()
+            RuntimeLog.info("Editor", "$project: terminal $id exited code=$code")
             runCatching { emit("window.Term.onExit($id)") }
             terms.remove(id)
         }.apply { isDaemon = true }.start()

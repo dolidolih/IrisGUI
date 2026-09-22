@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>IrisGUI Editor</title>
+<base href="/assets/editor/">
 <link rel="stylesheet" href="vs/editor/editor.main.css">
 <link rel="stylesheet" href="terminal/xterm.css">
 <style>
@@ -141,8 +142,8 @@
   <div class="acts"><div class="btn" id="dlgCancel">취소</div><div class="btn primary" id="dlgOk">확인</div></div>
 </div></div>
 
-<script src="vs/loader.js"></script>
 <script src="terminal/xterm.js"></script>
+<script src="vs/loader.js"></script>
 <script>
 (function () {
 'use strict';
@@ -208,7 +209,7 @@ const IRIS_API = [
 ];
 
 /* ── monaco boot ───────────────────────────────────────── */
-require.config({ paths: { vs: 'vs' } });
+require.config({ paths: { vs: '/assets/editor/vs' } });
 require(['vs/editor/editor.main'], function () {
   editor = monaco.editor.create($('editor'), {
     value: '', language: 'python', theme: 'vs-dark',
@@ -225,9 +226,13 @@ require(['vs/editor/editor.main'], function () {
   });
   editor.onDidChangeModelContent(() => setDirty(true));
   registerPythonCompletions();
-  monaco.editor.addKeybindingRule
-    && monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-      command: { id: '__save__', run: save }, when: undefined });
+  try {
+    monaco.editor.addCommand({ id: '__save__', run: () => save() });
+    monaco.editor.addKeybindingRule({
+      keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      command: '__save__', when: undefined,
+    });
+  } catch (e) { B.log('kbd: ' + e); }
 
   initTerminal();
   Promise.all([refreshRun(), loadPip()])
@@ -466,7 +471,11 @@ function initTerminal() {
   });
   term.onData(d => { if (termId != null) B.termInput(termId, b64e(d)); });
   window.Term = {
-    onData(b) { term && term.write(b64d(b)); },
+    onData(id, b) {
+      if (id !== termId) return;
+      try { term && term.write(b64d(b)); }
+      catch (e) { B.log('b64 fail len=' + (b || '').length + ' head=' + String(b).slice(0, 80) + ' err=' + e); }
+    },
     onExit(id) { if (id === termId) { termId = null;
       term && term.writeln('\r\n\x1b[38;5;203m[세션 종료 — restart 로 다시 여세요]\x1b[0m'); } }
   };
@@ -476,13 +485,25 @@ function termStart() {
   const j = JSON.parse(B.termStart(80, 24));
   if (j.id) termId = j.id; else if (j.message) toast('터미널: ' + j.message);
 }
+function fitTerm() {
+  try {
+    const el = $('term');
+    if (!term || !el.clientWidth) return;
+    const cw = 12.5 * 0.602, ch = 20 * 0.999;
+    const cols = Math.max(20, Math.floor((el.clientWidth - 8) / cw));
+    const rows = Math.max(6, Math.floor((el.clientHeight - 8) / ch));
+    if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+    B.termResize && termId != null && B.termResize(termId, cols, rows);
+    term.scrollLines ? term.scrollLines(0) : 0;
+  } catch (e) {}
+}
 function termAttach() {
   if (!termOpened) {
     term.open($('term')); termOpened = true;
     term.write('\x1b[90m$ \x1b[0m');
   }
   termStart();
-  setTimeout(() => { try { term.fit && term.fit(); } catch (e) {} term.focus(); }, 350);
+  setTimeout(() => { fitTerm(); term.focus(); }, 350);
 }
 function termKill() {
   if (termId != null) { B.termStop(termId); termId = null; }
@@ -502,7 +523,7 @@ function showPane(code) {
   else {
     save(true);
     termAttach();
-    termTimer = setInterval(() => { if (term) try { term.scrollLines(0); } catch (e) {} }, 3000);
+    termTimer = setInterval(fitTerm, 1500);
   }
 }
 $('tabCode').onclick = () => showPane(true);
@@ -515,7 +536,7 @@ document.querySelectorAll('#termbio [data-key]').forEach(b => {
   };
 });
 $('btnKill').onclick = termKill;
-window.addEventListener('resize', () => { try { term && term.fit && term.fit(); } catch (e) {} });
+window.addEventListener('resize', fitTerm);
 
 /* ── ⋮ menu ────────────────────────────────────────────── */
 let menuEl = null;

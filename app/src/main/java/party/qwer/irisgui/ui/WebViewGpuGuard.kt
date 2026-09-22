@@ -6,11 +6,11 @@ import androidx.webkit.WebViewCompat
 import party.qwer.irisgui.RuntimeLog
 
 /**
- * VS Code(code-server) 를 WebView 로 띄울 때의 ANGLE 렌더링 크래시(SIGSEGV in
+ * in-app 에디션(Monaco/xterm) 을 WebView 로 띄울 때의 ANGLE 렌더링 크래시(SIGSEGV in
  * libGLESv2_angle.so sh::TranslatorSPIRV) 회피.
  *
  * root 없는 기기: 문서-시작 JS 로 canvas 의 WebGL 컨텍스트 생성을 무력화하면 WebView 가
- * ANGLE(GLSL→SPIRV) 컴파일러 경로를 탈 수 없어서 크래시가 유발되지 않는다. VS Code/xterm.js
+ * ANGLE(GLSL→SPIRV) 컴파일러 경로를 탈 수 없어서 크래시가 유발되지 않는다. Monaco/xterm.js
  * 는 컨텍스트 null 을 정상 폴백(2D 도메인 렌더러)으로 처리하므로 편집 기능은 그대로 동작한다.
  *
  * root 가능한 기기: /data/local/tmp/webview-command-line 에 --disable-3d-apis 등 원본
