@@ -17,7 +17,7 @@
   html, body { height: 100%; background: var(--bg); color: var(--ink);
     font-family: ui-sans-serif, system-ui, Roboto, sans-serif;
     -webkit-user-select: none; user-select: none; }
-  #app { display: flex; flex-direction: column; height: 100%; }
+  #app { display: flex; flex-direction: column; position: fixed; inset: 0; }
 
   #bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px;
     background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
@@ -39,8 +39,13 @@
   .seg .btn.on { background: var(--accent); color: #10121A; font-weight: 600; }
 
   #main { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
-  #tree { flex: 0 0 150px; background: var(--panel2); border-right: 1px solid var(--line);
+  #tree { flex: 0 0 150px; background: var(--panel2); border-right: none;
     overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 6px 0 60px; }
+  #split { flex: 0 0 10px; cursor: col-resize; touch-action: none; position: relative; z-index: 5; }
+  #split::after { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px;
+    background: var(--line); }
+  #split:active::after { background: var(--accent); }
+  body.term #tree, body.term #split { display: none; }
   #tree .head { color: var(--sub); font-size: 10.5px; letter-spacing: .8px;
     text-transform: uppercase; padding: 8px 12px 4px; }
   .row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 8px;
@@ -112,6 +117,7 @@
 
   <div id="main">
     <div id="tree"><div class="head">탐 찾기</div><div id="treeBody"></div></div>
+    <div id="split" title="너비 조절"></div>
     <div id="editor"></div>
     <div id="termwrap">
       <div id="term"></div>
@@ -463,7 +469,7 @@ let term = null, termOpened = false, termId = null, termTimer = null;
 function initTerminal() {
   const T = window.Terminal;
   term = new T({
-    fontFamily: 'ui-monospace, Roboto Mono, monospace', fontSize: 12.5,
+    fontFamily: 'ui-monospace, Roboto Mono, monospace', fontSize: 12.5, lineHeight: 1.2,
     theme: { background: '#161821', foreground: '#E6E8F0', cursor: '#7AA2F7',
       black: '#3B3E4E', blue: '#7AA2F7', green: '#9ECE9E', cyan: '#89DCEB',
       red: '#F28779', magenta: '#C792EA', yellow: '#E6C896', white: '#D0D4E1' },
@@ -480,27 +486,46 @@ function initTerminal() {
       term && term.writeln('\r\n\x1b[38;5;203m[세션 종료 — restart 로 다시 여세요]\x1b[0m'); } }
   };
 }
+const TERM_FS = 12.5, TERM_LH = 1.2, TERM_PAD = 8;
+let cellW = 0;
+function measureChar() {
+  try {
+    const c = document.createElement('canvas').getContext('2d');
+    c.font = TERM_FS + 'px ui-monospace, "Roboto Mono", monospace';
+    cellW = c.measureText('M').width;
+  } catch (e) { cellW = TERM_FS * 0.602; }
+  if (!cellW) cellW = TERM_FS * 0.602;
+}
+function termSize() {
+  const el = $('term');
+  if (!cellW) measureChar();
+  const cols = Math.max(20, Math.floor((el.clientWidth - TERM_PAD) / cellW));
+  const rows = Math.max(4, Math.floor((el.clientHeight - 4) / (TERM_FS * TERM_LH)));
+  return [cols, rows];
+}
 function termStart() {
   if (termId != null) return;
-  const j = JSON.parse(B.termStart(80, 24));
+  const s = termOpened ? [term.cols, term.rows] : termSize();
+  const j = JSON.parse(B.termStart(s[0], s[1]));
   if (j.id) termId = j.id; else if (j.message) toast('터미널: ' + j.message);
 }
 function fitTerm() {
   try {
-    const el = $('term');
-    if (!term || !el.clientWidth) return;
-    const cw = 12.5 * 0.602, ch = 20 * 0.999;
-    const cols = Math.max(20, Math.floor((el.clientWidth - 8) / cw));
-    const rows = Math.max(6, Math.floor((el.clientHeight - 8) / ch));
-    if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-    B.termResize && termId != null && B.termResize(termId, cols, rows);
-    term.scrollLines ? term.scrollLines(0) : 0;
+    if (!term || !$('term').clientHeight) return;
+    const s = termSize();
+    if (term.cols !== s[0] || term.rows !== s[1]) term.resize(s[0], s[1]);
+    if (termId != null) B.termResize(termId, s[0], s[1]);
   } catch (e) {}
 }
 function termAttach() {
   if (!termOpened) {
+    const s = termSize();
+    
     term.open($('term')); termOpened = true;
+    term.resize(s[0], s[1]);
     term.write('\x1b[90m$ \x1b[0m');
+    measureChar();
+    setTimeout(() => { fitTerm(); }, 50);
   }
   termStart();
   setTimeout(() => { fitTerm(); term.focus(); }, 350);
@@ -514,13 +539,15 @@ function termKill() {
 
 /* ── panes / tabs ──────────────────────────────────────── */
 function showPane(code) {
+  document.body.classList.toggle('term', !code);
   $('editor').style.display = code ? '' : 'none';
-  $('tree').style.display = code ? '' : 'none';
   $('termwrap').style.display = code ? 'none' : 'flex';
   $('tabCode').classList.toggle('on', code);
   $('tabTerm').classList.toggle('on', !code);
-  if (code) { if (termTimer) { clearInterval(termTimer); termTimer = null; } editor && editor.focus(); }
-  else {
+  if (code) {
+    if (termTimer) { clearInterval(termTimer); termTimer = null; }
+    editor && editor.layout(); editor && editor.focus();
+  } else {
     save(true);
     termAttach();
     termTimer = setInterval(fitTerm, 1500);
@@ -536,7 +563,28 @@ document.querySelectorAll('#termbio [data-key]').forEach(b => {
   };
 });
 $('btnKill').onclick = termKill;
+/* tree ↔ editor splitter (드래그로 너비 조절; 세션 중 유지) */
+(function () {
+  const sp = $('split'), tree = $('tree');
+  let dragging = false, startX = 0, startW = 0;
+  const apply = w => { tree.style.flex = '0 0 ' + w + 'px'; editor && editor.layout(); fitTerm(); };
+  sp.addEventListener('pointerdown', e => {
+    dragging = true; startX = e.clientX; startW = tree.offsetWidth;
+    sp.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  sp.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const w = Math.min(Math.max(startW + e.clientX - startX, 96), Math.max(160, innerWidth * 0.55));
+    apply(w);
+  });
+  const stop = () => { dragging = false; };
+  sp.addEventListener('pointerup', stop);
+  sp.addEventListener('pointercancel', stop);
+  sp.addEventListener('dblclick', () => apply(150));
+})();
+
 window.addEventListener('resize', fitTerm);
+window.addEventListener('resize', () => { if (editor) editor.layout(); });
 
 /* ── ⋮ menu ────────────────────────────────────────────── */
 let menuEl = null;

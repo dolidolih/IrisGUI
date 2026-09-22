@@ -33,7 +33,17 @@ internal class CodeEditorBridge(
         val process: Process,
         val input: java.io.BufferedOutputStream,
         val id: Int
-    )
+    ) {
+        @Volatile var lastInput = 0L
+        @Volatile var pending: Pair<Int, Int>? = null
+    }
+
+    private fun Term.applyResize(cols: Int, rows: Int) {
+        runCatching {
+            input.write(("stty rows $rows cols $cols" + "\r").toByteArray())
+            input.flush()
+        }
+    }
 
     private val terms = ConcurrentHashMap<Int, Term>()
     private var termSeq = 0
@@ -253,7 +263,7 @@ internal class CodeEditorBridge(
             "cd " + UserlandRuntime.q(guest) + " || cd ~\n" +
                 "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }\n" +
                 "export PS1=" + UserlandRuntime.q("$ ") + "\n" +
-                "stty rows 24 cols 120 2>/dev/null\n" +
+                "stty rows " + rows + " cols " + cols + " 2>/dev/null\n" +
                 "script -qc bash /dev/null 2>&1\n" +
                 "exec bash -i 2>&1"
         val p = UserlandRuntime.spawnBackground(context, inner, guest, null)
@@ -289,14 +299,26 @@ internal class CodeEditorBridge(
     fun termInput(id: Int, b64: String) {
         val t = terms[id] ?: return
         runCatching {
-            t.input.write(Base64.getDecoder().decode(b64))
+            val d = Base64.getDecoder().decode(b64)
+            t.input.write(d)
             t.input.flush()
+            t.lastInput = System.currentTimeMillis()
+            if (d.isNotEmpty() && (d.last() == '\r'.code.toByte() || d.last() == '\n'.code.toByte())) {
+                t.pending?.let { t.pending = null; t.applyResize(it.first, it.second) }
+            }
         }
     }
 
-    /** script/bash 는 SIGWINCH 를 안 쓰므로 초기 size 로 고정. no-op 로 두면 창 크기 변화에 무관. */
+    /** stty 로 창 크기 반영. 입력 중인 프롬프트에 끼어들지 않도록 유휴(>600ms) 일 때만
+     *  즉시 적용하고, 그 외에는 Enter 를 기다려 pending 으로 처리한다. */
     @JavascriptInterface
-    fun termResize(id: Int, cols: Int, rows: Int) = Unit
+    fun termResize(id: Int, cols: Int, rows: Int) {
+        val t = terms[id] ?: return
+        val alive = runCatching { t.process.exitValue() }.isFailure
+        if (!alive) return
+        if (System.currentTimeMillis() - t.lastInput > 600) t.applyResize(cols, rows)
+        else t.pending = cols to rows
+    }
 
     @JavascriptInterface
     fun termStop(id: Int) {
