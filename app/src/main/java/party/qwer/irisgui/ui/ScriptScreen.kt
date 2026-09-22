@@ -34,6 +34,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import party.qwer.irisgui.AppConfig
+import party.qwer.irisgui.backend.CodeServerProxy
 import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.scripting.CodeServer
 import party.qwer.irisgui.scripting.LinuxScripts
@@ -296,7 +298,7 @@ fun ScriptScreen() {
                         if (r.ok) {
                             editor = EditorState(
                                 s.name,
-                                "http://127.0.0.1:" + CodeServer.DEFAULT_PORT
+                                "http://127.0.0.1:" + AppConfig.serverPort + CodeServerProxy.PATH + "/"
                             )
                             runCatching { refresh() }
                             busy = false
