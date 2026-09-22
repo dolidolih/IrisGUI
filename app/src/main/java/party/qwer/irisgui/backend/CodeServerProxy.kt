@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import party.qwer.irisgui.RuntimeLog
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -189,6 +190,7 @@ object CodeServerProxy {
             val ws = client.newWebSocket(Request.Builder().url(url).build(),
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
+                        RuntimeLog.info("CodeServerProxy", "ws upstream open #" + id)
                         sockets[id] = webSocket
                         cont.resume(webSocket)
                     }
@@ -198,7 +200,8 @@ object CodeServerProxy {
                     }
 
                     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                        frames.trySend(Frame.Binary(false, bytes.toByteArray()))
+                        RuntimeLog.info("CodeServerProxy", "ws bin< #$id len=" + bytes.size)
+                        frames.trySend(Frame.Binary(true, bytes.toByteArray()))
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -210,6 +213,7 @@ object CodeServerProxy {
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        RuntimeLog.info("CodeServerProxy", "ws upstream fail #$id: " + t.message + " " + response?.code)
                         frames.trySend(Frame.Close(CloseReason(1011,
                             ("upstream: " + (t.message ?: t.javaClass.simpleName)).take(100))))
                         if (!cont.isCompleted) {
