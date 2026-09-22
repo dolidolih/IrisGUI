@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>IrisGUI Editor</title>
+<link rel="stylesheet" href="vs/editor/editor.main.css">
+<link rel="stylesheet" href="terminal/xterm.css">
+<style>
+  :root {
+    --bg: #1B1D27; --panel: #23252F; --panel2: #1F212B; --line: #2C2F3E;
+    --ink: #E6E8F0; --sub: #8A8FA5; --accent: #7AA2F7; --green: #2E8B63;
+    --orange: #CE8A2E; --red: #C85A5A;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink);
+    font-family: ui-sans-serif, system-ui, Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  #bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+  #bar .title { font-weight: 600; font-size: 14px; margin-right: 6px;
+    max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sub);
+    display: inline-block; margin-right: 5px; }
+  .dot.run { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .spacer { flex: 1; }
+  .btn { border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
+    border-radius: 7px; padding: 6px 10px; font-size: 12.5px; line-height: 1;
+    cursor: pointer; -webkit-tap-highlight-color: transparent; white-space: nowrap; }
+  .btn:active { transform: scale(0.96); background: var(--line); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #10121A; font-weight: 600; }
+  .btn.stop { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn.ghost { background: transparent; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg .btn { border: none; border-radius: 0; padding: 7px 12px; }
+  .seg .btn.on { background: var(--accent); color: #10121A; font-weight: 600; }
+
+  #main { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
+  #tree { flex: 0 0 150px; background: var(--panel2); border-right: 1px solid var(--line);
+    overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 6px 0 60px; }
+  #tree .head { color: var(--sub); font-size: 10.5px; letter-spacing: .8px;
+    text-transform: uppercase; padding: 8px 12px 4px; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 8px;
+    cursor: pointer; white-space: nowrap; position: relative; }
+  .row:hover { background: #2A2D3A; }
+  .row.sel { background: #2F3648; }
+  .row.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 2px; background: var(--accent); }
+  .row .chev { width: 13px; flex: 0 0 13px; text-align: center; color: var(--sub);
+    font-size: 9px; transition: transform .15s; }
+  .row.open .chev { transform: rotate(90deg); }
+  .row .ic { width: 15px; flex: 0 0 15px; text-align: center; font-size: 12px; }
+  .row .nm { overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { margin-left: auto; color: var(--sub); font-size: 10px; padding-left: 8px; flex: 0 0 auto; }
+  .kid { display: none; }
+  .kid.open { display: block; }
+  .indent { border-left: 1px solid #2A2D3A; margin-left: 14px; }
+  .py { color: #9ECEFF; } .txt { color: var(--ink); } .diric { color: var(--orange); }
+  #editor { flex: 1 1 auto; min-width: 0; }
+  #editor .view-line { -webkit-user-select: text; user-select: text; }
+
+  #termwrap { display: none; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+  #term { flex: 1 1 auto; min-height: 0; background: #161821; padding: 6px 4px 0; }
+  #termbio { padding: 7px 10px; background: var(--panel2); border-top: 1px solid var(--line);
+    display: flex; gap: 6px; align-items: center; flex: 0 0 auto; flex-wrap: wrap; }
+  #termbio .hint { color: var(--sub); font-size: 10.5px; margin-right: auto;
+    max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .keycap { font-family: monospace; font-size: 12px; padding: 7px 10px; }
+
+  #status { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 12px;
+    background: var(--panel); border-top: 1px solid var(--line); font-size: 11px; color: var(--sub); }
+  #status .dirty { color: var(--orange); }
+  #status b { color: var(--ink); font-weight: 500; }
+
+  #toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 76px;
+    background: #000C; color: var(--ink); border: 1px solid var(--line); padding: 8px 14px;
+    border-radius: 9px; font-size: 12.5px; display: none; z-index: 50; max-width: 86vw; }
+  #busy { position: fixed; inset: 0; background: #0009; display: none; z-index: 60;
+    align-items: center; justify-content: center; flex-direction: column; gap: 10px; }
+  #busy .spin { width: 34px; height: 34px; border: 3px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: sp .9s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  #dlg { position: fixed; inset: 0; background: #0008; display: none; z-index: 80;
+    align-items: center; justify-content: center; }
+  #dlg .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; width: min(86vw, 340px); }
+  #dlg .box h3 { font-size: 14px; margin-bottom: 10px; }
+  #dlg input { width: 100%; background: var(--panel2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; font-size: 13px;
+    -webkit-user-select: text; user-select: text; }
+  #dlg .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <span class="title"><span class="dot" id="runDot"></span><span id="pname">…</span></span>
+    <div class="seg">
+      <div class="btn on" id="tabCode">코드</div>
+      <div class="btn" id="tabTerm">터미널</div>
+    </div>
+    <span class="spacer"></span>
+    <div class="btn primary" id="btnRun">▶ 실행</div>
+    <div class="btn stop" id="btnStop" style="display:none">■ 정지</div>
+    <div class="btn ghost" id="btnMore">⋮</div>
+    <div class="btn" id="btnClose">닫기</div>
+  </div>
+
+  <div id="main">
+    <div id="tree"><div class="head">탐 찾기</div><div id="treeBody"></div></div>
+    <div id="editor"></div>
+    <div id="termwrap">
+      <div id="term"></div>
+      <div id="termbio">
+        <span class="hint" id="termHint">cwd: 프로젝트 루트 · venv 자동</span>
+        <div class="btn keycap" data-key="ctrlc">^C</div>
+        <div class="btn keycap" data-key="up">↑</div>
+        <div class="btn keycap" data-key="down">↓</div>
+        <div class="btn keycap" data-key="tab">tab</div>
+        <div class="btn keycap" id="btnKill">restart</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="status">
+    <span id="stFile">—</span>
+    <span class="spacer"></span>
+    <span id="stPip"></span>
+    <span id="stSaved"></span>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="busy"><div class="spin"></div><div id="busyTxt">불러오는 중…</div></div>
+<div id="dlg"><div class="box">
+  <h3 id="dlgTitle"></h3>
+  <input id="dlgInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <div class="acts"><div class="btn" id="dlgCancel">취소</div><div class="btn primary" id="dlgOk">확인</div></div>
+</div></div>
+
+<script src="vs/loader.js"></script>
+<script src="terminal/xterm.js"></script>
+<script>
+(function () {
+'use strict';
+const B = window.AndroidBridge;
+const $ = id => document.getElementById(id);
+
+/* ── helpers ───────────────────────────────────────────── */
+function toast(m) { const t = $('toast'); t.textContent = m; t.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.style.display = 'none'), 2600); }
+function busy(on, txt) { $('busy').style.display = on ? 'flex' : 'none';
+  if (txt) $('busyTxt').textContent = txt; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function ext(p) { const m = /\.([a-z0-9]+)$/i.exec(p || ''); return m ? m[1].toLowerCase() : ''; }
+function base(p) { return String(p).split('/').pop(); }
+function human(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB'
+  : b > 1024 ? (b / 1024).toFixed(0) + ' KB' : b + ' B'; }
+function b64e(s) { const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255;
+  const c = []; for (let i = 0; i < u.length; i += 1024)
+    c.push(String.fromCharCode.apply(null, u.subarray(i, i + 1024)));
+  return btoa(c.join('')); }
+function b64d(b) { const r = atob(b), u = new Uint8Array(r.length);
+  for (let i = 0; i < r.length; i++) u[i] = r.charCodeAt(i); return u; }
+
+function dlg(title, value, cb) {
+  $('dlgTitle').textContent = title;
+  const inp = $('dlgInput');
+  inp.value = value || '';
+  $('dlg').style.display = 'flex';
+  setTimeout(() => inp.focus(), 60);
+  const ok = () => { $('dlg').style.display = 'none'; cb(inp.value.trim()); },
+        no = () => { $('dlg').style.display = 'none'; cb(null); };
+  $('dlgOk').onclick = ok; $('dlgCancel').onclick = no;
+  inp.onkeydown = e => { if (e.key === 'Enter') ok(); };
+}
+
+/* ── state ─────────────────────────────────────────────── */
+let editor = null, MODEL_PATH = null, DIRTY = false;
+const MODELS = {};
+let pipModules = [], pipPackages = [];
+let runningState = false;
+
+const LANG_BY_EXT = { py: 'python', js: 'javascript', mjs: 'javascript', json: 'json',
+  html: 'html', htm: 'html', css: 'css', md: 'markdown', txt: 'plaintext', sh: 'shell',
+  bash: 'shell', yaml: 'yaml', yml: 'yaml', toml: 'ini', xml: 'xml', ini: 'ini',
+  cfg: 'ini', log: 'plaintext' };
+
+const PY_KEYWORDS = ['and', 'elif', 'import', 'except', 'lambda', 'async', 'else', 'for',
+  'global', 'nonlocal', 'yield', 'break', 'in', 'return', 'class', 'finally', 'if', 'try',
+  'continue', 'from', 'while', 'def', 'with', 'pass', 'raise', 'del', 'is', 'not', 'or',
+  'None', 'True', 'False', 'await', '__name__', '__init__', '__main__'];
+const IRIS_API = [
+  ['Bot()', 'function', 'bot = Bot(os.environ["IRISGUI_API_URL"])'],
+  ['bot.on_event("message")', 'decorator', '@bot.on_event("message") def h(ctx): …'],
+  ['bot.on_event("room")', 'decorator', '입장 이벤트'],
+  ['bot.run()', 'method', ' 이벤트 루프 시작'],
+  ['ctx.reply(text)', 'method', '받은 대화방에 답장 (전송 발생!)'],
+  ['ctx.room_id', 'property', '현재 대화방 id'],
+  ['ctx.sender_id', 'property', '보낸 사람 id'],
+  ['ctx.text', 'property', '메시지 원문'],
+  ['ctx.command', 'property', '"!" 로 시작하면 커맨드 이름'],
+];
+
+/* ── monaco boot ───────────────────────────────────────── */
+require.config({ paths: { vs: 'vs' } });
+require(['vs/editor/editor.main'], function () {
+  editor = monaco.editor.create($('editor'), {
+    value: '', language: 'python', theme: 'vs-dark',
+    fontSize: 13, lineHeight: 20, minimap: { enabled: false },
+    automaticLayout: true, scrollBeyondLastLine: false,
+    tabSize: 4, insertSpaces: true, renderWhitespace: 'boundary',
+    fontFamily: 'ui-monospace, Roboto Mono, monospace',
+    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8, useShadows: false },
+    padding: { top: 10, bottom: 30 },
+    contextmenu: false, smoothScrolling: false, mouseWheelZoom: false,
+    quickSuggestions: { other: true, comments: false, strings: true },
+    guides: { indentation: true }, cursorBlinking: 'smooth',
+    unicodeHighlight: { ambiguousCharacters: false },
+  });
+  editor.onDidChangeModelContent(() => setDirty(true));
+  registerPythonCompletions();
+  monaco.editor.addKeybindingRule
+    && monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      command: { id: '__save__', run: save }, when: undefined });
+
+  initTerminal();
+  Promise.all([refreshRun(), loadPip()])
+    .then(loadTree)
+    .then(() => openInitialFile())
+    .catch(e => toast('초기화 오류: ' + (e && e.message || e)))
+    .finally(() => busy(false));
+}, function (err) { toast('모니터 로드 실패: ' + err); });
+
+/* ── python completions (pip-aware) ────────────────────── */
+function mk(label, kind, detail, docs) {
+  const K = monaco.languages.CompletionItemKind;
+  const map = { module: K.Module, package: K.Package, method: K.Method, function: K.Function,
+    keyword: K.Keyword, property: K.Property, snippet: K.Snippet };
+  return { label, kind: map[kind] || K.Text, insertText: label, detail: detail || '',
+    documentation: docs ? { value: docs } : undefined };
+}
+function rngOf(word, fromCol) {
+  return { startLineNumber: word.lineNumber, endLineNumber: word.lineNumber,
+    startColumn: Math.max(1, fromCol == null ? word.startColumn : fromCol),
+    endColumn: word.endColumn };
+}
+function registerPythonCompletions() {
+  monaco.languages.registerCompletionItemProvider('python', {
+    triggerCharacters: ['.', '"', "'"],
+    provideCompletionItems(model, pos) {
+      if (MODEL_PATH && ext(MODEL_PATH) !== 'py') return { suggestions: [] };
+      const line = model.getValueInRange({ startLineNumber: pos.lineNumber, startColumn: 1,
+        endLineNumber: pos.lineNumber, endColumn: pos.column });
+      const word = model.getWordUntilPosition(pos);
+      const items = [];
+
+      const im = /^\s*import\s+([\w.]*)$/.exec(line);
+      if (im) { pipModules.forEach(m => items.push(mk(m, 'module', 'venv 설치 모듈')));
+        pipPackages.forEach(p => { if (!pipModules.includes(p)) items.push(mk(p, 'package', 'pip 설치됨')); });
+        return { suggestions: items }; }
+
+      const fm = /^\s*from\s+([\w.]*)\s*(import\s+([\w, \s]*))?$/.exec(line);
+      if (fm) {
+        if (fm[3] != null) {
+          const part = (fm[3].split(',').pop() || '').trim();
+          ['os', 'sys', 'json', 'time', 're', 'threading', 'traceback'].forEach(m =>
+            items.push(mk(m, 'module', 'standard library')));
+          for (const m of pipModules) items.push(mk(m, 'module', 'venv 모듈'));
+          return { suggestions: items };
+        }
+        pipModules.forEach(m => items.push(mk(m, 'module', 'venv 모듈')));
+        pipPackages.forEach(p => items.push(mk(p, 'package', 'pip 설치됨')));
+        return { suggestions: items };
+      }
+
+      const dot = /(\w+)\.$/.exec(line);
+      if (dot && dot[1] in { ctx: 1, bot: 1, iris: 1 }) {
+        const who = dot[1];
+        const src = who === 'bot' || who === 'iris'
+          ? IRIS_API.filter(i => i[1] !== 'decorator' || true)
+          : IRIS_API;
+        const from = who === 'ctx'
+          ? IRIS_API.filter(i => i[0].startsWith('ctx'))
+          : IRIS_API.filter(i => /^(bot|Bot)/.test(i[0]) || !/\./.test(i[0]));
+        for (const i of from) items.push(mk(i[0].split('.').pop(), i[1] === 'property' ? 'property'
+          : i[1] === 'method' || i[1] === 'function' ? 'function' : 'snippet', i[1], i[2]));
+      }
+
+      for (const k of PY_KEYWORDS) items.push(mk(k, 'keyword', ''));
+      const out = items.filter(i => {
+        const w = word.word;
+        return !w || i.label.toLowerCase().startsWith(w.toLowerCase());
+      });
+      if (!out.length) return null;
+      const r = rngOf(word);
+      out.forEach(i => (i.range = r));
+      return { suggestions: out };
+    },
+  });
+}
+
+/* ── pip 목록: host venv 트리 + pip list 폴백 ──────────── */
+function loadPip() {
+  const j = JSON.parse(B.pipPackages());
+  pipModules = j.modules || [];
+  pipPackages = (j.packages || []).map(p => p.name);
+  $('stPip').innerHTML = '설치 <b>' + pipPackages.length + '</b> pkg · 터미널에서 <b>pip install</b>';
+  return Promise.resolve();
+}
+function reloadPipSoon() { clearTimeout(reloadPipSoon.t); reloadPipSoon.t = setTimeout(loadPip, 2500); }
+
+/* ── file tree ─────────────────────────────────────────── */
+const ICONS = { py: ['P', 'py'], json: ['{}', 'json'], md: ['M', 'md'], txt: ['T', 'txt'],
+  sh: ['$>', 'sh'], yml: ['⚙', 'yml'], yaml: ['⚙', 'yml'], html: ['<>', 'html'], css: ['#', 'css'] };
+
+function loadTree() {
+  return new Promise(res => {
+    const data = JSON.parse(B.listDir());
+    renderTree($('treeBody'), data);
+    restoreSel();
+    res();
+  });
+}
+
+function renderTree(host, nodes) {
+  host.textContent = '';
+  for (const n of nodes) {
+    const row = document.createElement('div');
+    row.className = 'row'; row.dataset.path = n.path;
+    const isDir = !!n.dir;
+    const isVenv = /(^|\/)\.venv(\/|$)/.test(n.path) || n.path === '.venv';
+    let chevron = isDir ? '<span class="chev">▸</span>' : '<span class="chev"></span>';
+    let icon = isDir ? '<span class="ic diric">▤</span>'
+      : '<span class="ic ' + (ext(n.name) === 'py' ? 'py' : 'txt') + '">' +
+        (ICONS[ext(n.name)] ? ICONS[ext(n.name)][0] : '·') + '</span>';
+    const label = isVenv ? '<span class="nm" style="opacity:.6">' + esc(n.name) + '</span>'
+      : '<span class="nm">' + esc(n.name) + '</span>';
+    const sub = !isDir && n.size != null ? '<span class="sub">' + human(n.size) + '</span>'
+      : isVenv ? '<span class="sub">venv</span>' : '';
+    row.innerHTML = chevron + icon + label + sub;
+    row.addEventListener('click', () => {
+      if (isDir) {
+        row.classList.toggle('open');
+        const kid = row.nextElementSibling;
+        if (kid && kid.classList.contains('kid')) kid.classList.toggle('open', row.classList.contains('open'));
+      } else openFile(n.path);
+    });
+    host.appendChild(row);
+    if (n.children) {
+      const kid = document.createElement('div');
+      kid.className = 'kid indent';
+      renderTree(kid, n.children);
+      host.appendChild(kid);
+    }
+  }
+}
+function restoreSel() {
+  document.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+  if (!MODEL_PATH) return;
+  const r = [...document.querySelectorAll('.row')].find(x => x.dataset.path === MODEL_PATH);
+  if (r) { r.classList.add('sel'); r.scrollIntoView({ block: 'nearest' });
+    let p = r.parentElement;
+    while (p && p.id !== 'treeBody') {
+      if (p.classList.contains('kid')) p.classList.add('open');
+      const prev = p.previousElementSibling;
+      if (prev && prev.classList.contains('row')) prev.classList.add('open');
+      p = p.parentElement;
+    }
+  }
+}
+
+/* ── model / open file / autosave ──────────────────────── */
+function modelFor(path) {
+  if (!MODELS[path]) {
+    const uri = monaco.Uri.parse('inmemory://irisgui/' + path.replace(/[^a-z0-9._/-]+/gi, '_')
+      .replace(/\//g, '__'));
+    MODELS[path] = monaco.editor.createModel('', LANG_BY_EXT[ext(path)] || 'plaintext', uri);
+  }
+  return MODELS[path];
+}
+
+function currentPath() { return MODEL_PATH; }
+
+function openFile(path) {
+  const m = modelFor(path);
+  if (m.getValue() === '' && !(m.__loaded)) {
+    const txt = B.read(path);
+    if (txt === null || txt === undefined) { toast('텍스트로 보기 어려운 파일입니다'); return; }
+    m.__loaded = true;
+    m.setValue(txt || '');
+  }
+  editor.setModel(m);
+  MODEL_PATH = path;
+  setDirty(false);
+  $('stFile').textContent = path;
+  restoreSel();
+}
+
+function openInitialFile() {
+  const pick = (function pickPy(nodes) {
+    let main = null;
+    for (const n of nodes) {
+      if (n.path === 'main.py') main = n.path;
+      if (!n.dir && ext(n.name) === 'py') return n.path;
+    }
+    for (const n of nodes) if (n.children) { const c = pickPy(n.children); if (c) return c; }
+    return main || 'main.py';
+  })(JSON.parse(B.listDir()));
+  openFile(pick);
+  const pn = JSON.parse(B.projectInfo());
+  $('pname').textContent = pn.name;
+  $('termHint').textContent = 'cwd ' + pn.guest + ' · venv 자동';
+}
+
+let autoSaveT = null;
+function setDirty(v) {
+  DIRTY = v;
+  $('stSaved').innerHTML = v ? '<span class="dirty">● 저장 안 됨</span>' : '✓ 저장됨';
+  clearTimeout(autoSaveT);
+  if (v && MODEL_PATH) autoSaveT = setTimeout(save, 1500);
+}
+
+function save(silent) {
+  if (!MODEL_PATH || !editor) return;
+  const r = JSON.parse(B.write(MODEL_PATH, editor.getValue()));
+  if (r.ok) { setDirty(false); if (!silent) toast(MODEL_PATH + ' 저장'); reloadPipSoon(); }
+  else toast('저장 실패: ' + r.message);
+}
+
+/* ── run/stop ──────────────────────────────────────────── */
+function refreshRun() {
+  return new Promise(res => {
+    setTimeout(() => {
+      const j = JSON.parse(B.scriptRunning());
+      runningState = !!j.running;
+      $('btnRun').style.display = runningState ? 'none' : '';
+      $('btnStop').style.display = runningState ? '' : 'none';
+      $('runDot').classList.toggle('run', runningState);
+      res();
+    }, 15);
+  });
+}
+$('btnRun').onclick = () => { save(true); busy(true, '실행 중…');
+  const r = JSON.parse(B.runScript()); busy(false);
+  toast(r.ok ? '실행됨 — 로그 탭에서 확인' : '실행 실패: ' + r.message); refreshRun(); };
+$('btnStop').onclick = () => { const r = JSON.parse(B.stopScript());
+  toast(r.ok ? '정지됨' : '정지 실패: ' + r.message); refreshRun(); };
+setInterval(() => { if (!document.hidden) refreshRun(); }, 5000);
+
+/* ── terminal ──────────────────────────────────────────── */
+let term = null, termOpened = false, termId = null, termTimer = null;
+function initTerminal() {
+  const T = window.Terminal;
+  term = new T({
+    fontFamily: 'ui-monospace, Roboto Mono, monospace', fontSize: 12.5,
+    theme: { background: '#161821', foreground: '#E6E8F0', cursor: '#7AA2F7',
+      black: '#3B3E4E', blue: '#7AA2F7', green: '#9ECE9E', cyan: '#89DCEB',
+      red: '#F28779', magenta: '#C792EA', yellow: '#E6C896', white: '#D0D4E1' },
+    cursorBlink: true, scrollback: 1000, convertEol: false,
+  });
+  term.onData(d => { if (termId != null) B.termInput(termId, b64e(d)); });
+  window.Term = {
+    onData(b) { term && term.write(b64d(b)); },
+    onExit(id) { if (id === termId) { termId = null;
+      term && term.writeln('\r\n\x1b[38;5;203m[세션 종료 — restart 로 다시 여세요]\x1b[0m'); } }
+  };
+}
+function termStart() {
+  if (termId != null) return;
+  const j = JSON.parse(B.termStart(80, 24));
+  if (j.id) termId = j.id; else if (j.message) toast('터미널: ' + j.message);
+}
+function termAttach() {
+  if (!termOpened) {
+    term.open($('term')); termOpened = true;
+    term.write('\x1b[90m$ \x1b[0m');
+  }
+  termStart();
+  setTimeout(() => { try { term.fit && term.fit(); } catch (e) {} term.focus(); }, 350);
+}
+function termKill() {
+  if (termId != null) { B.termStop(termId); termId = null; }
+  if (termOpened) term.clear ? term.clear() : term.reset();
+  termStart();
+  toast('터미널 재시작');
+}
+
+/* ── panes / tabs ──────────────────────────────────────── */
+function showPane(code) {
+  $('editor').style.display = code ? '' : 'none';
+  $('tree').style.display = code ? '' : 'none';
+  $('termwrap').style.display = code ? 'none' : 'flex';
+  $('tabCode').classList.toggle('on', code);
+  $('tabTerm').classList.toggle('on', !code);
+  if (code) { if (termTimer) { clearInterval(termTimer); termTimer = null; } editor && editor.focus(); }
+  else {
+    save(true);
+    termAttach();
+    termTimer = setInterval(() => { if (term) try { term.scrollLines(0); } catch (e) {} }, 3000);
+  }
+}
+$('tabCode').onclick = () => showPane(true);
+$('tabTerm').onclick = () => showPane(false);
+document.querySelectorAll('#termbio [data-key]').forEach(b => {
+  b.onclick = () => {
+    termStart();
+    const m = { ctrlc: '\x03', up: '\x1b[A', down: '\x1b[B', tab: '\t' };
+    if (termId != null) B.termInput(termId, b64e(m[b.dataset.key] || b.dataset.key));
+  };
+});
+$('btnKill').onclick = termKill;
+window.addEventListener('resize', () => { try { term && term.fit && term.fit(); } catch (e) {} });
+
+/* ── ⋮ menu ────────────────────────────────────────────── */
+let menuEl = null;
+function menuToggle() {
+  if (menuEl) { menuEl.remove(); menuEl = null; return; }
+  menuEl = document.createElement('div');
+  menuEl.style.cssText = 'position:fixed;right:10px;top:50px;z-index:90;background:#23252F;' +
+    'border:1px solid #2C2F3E;border-radius:10px;padding:4px;font-size:13px;box-shadow:0 8px 28px #000a';
+  [['새 파일', actNew], ['새 폴더', actMkDir], ['이름 변경', actRename], ['삭제', actDel],
+   ['메인만 열기', () => openFile('main.py')]].forEach(([txt, fn]) => {
+    const i = document.createElement('div');
+    i.textContent = txt;
+    i.style.cssText = 'padding:9px 16px;border-radius:7px;cursor:pointer';
+    i.onmouseenter = () => (i.style.background = '#2F323F');
+    i.onmouseleave = () => (i.style.background = '');
+    i.onclick = () => { menuEl.remove(); menuEl = null; fn(); };
+    menuEl.appendChild(i);
+  });
+  document.body.appendChild(menuEl);
+  setTimeout(() => document.addEventListener('click', function once(ev) {
+    if (menuEl && !menuEl.contains(ev.target) && ev.target.id !== 'btnMore') {
+      menuEl.remove(); menuEl = null; document.removeEventListener('click', once);
+    }
+  }, true), 5);
+}
+$('btnMore').onclick = menuToggle;
+
+function selPath() {
+  const s = document.querySelector('.row.sel');
+  return MODEL_PATH || (s ? s.dataset.path : 'main.py');
+}
+function actNew() {
+  dlg('만들 파일 이름', 'util.py', v => {
+    if (!v) return;
+    const r = JSON.parse(B.create(v, false));
+    toast(r.message);
+    if (r.ok) { loadTreeSoon(); if (!/\.png$|\.jpg$|\.zip$/i.test(v)) openFile(v); }
+  });
+}
+function actMkDir() {
+  dlg('만들 폴더 이름', 'src', v => {
+    if (!v) return;
+    const r = JSON.parse(B.create(v + '/', true));
+    toast(r.message); if (r.ok) loadTreeSoon();
+  });
+}
+function actRename() {
+  const p = selPath();
+  dlg('‘' + base(p) + '‘ → 새 이름', base(p), v => {
+    if (!v || v === base(p)) return;
+    const to = p.replace(/[^/]+$/, v);
+    const r = JSON.parse(B.rename(p, to));
+    toast(r.message);
+    if (r.ok) {
+      if (p === MODEL_PATH) { MODELS[to] = MODELS[p]; delete MODELS[p];
+        MODEL_PATH = to; $('stFile').textContent = to; }
+      loadTreeSoon();
+    }
+  });
+}
+function actDel() {
+  const p = selPath();
+  if (p === 'main.py') return toast('main.py 는 삭제할 수 없습니다 (실행 진입점)');
+  if (p === '.venv') return toast('venv 는 삭제 불가');
+  dlg('‘' + p + '‘ 삭제할까요?', '', v => {
+    if (v === null) return;
+    const r = JSON.parse(B.remove(p));
+    toast(r.message);
+    if (r.ok) {
+      if (p === MODEL_PATH) { openFile('main.py'); }
+      loadTreeSoon();
+    }
+  });
+}
+let treeT = null;
+function loadTreeSoon() { clearTimeout(treeT); treeT = setTimeout(loadTree, 300); }
+
+/* ── close / keys ──────────────────────────────────────── */
+$('btnClose').onclick = () => { save(true); B.closeEditor ? B.closeEditor() : B.log('close requested'); };
+window.IrisEditor = {
+  flush() { save(true); },
+  back() { save(true); if (B.closeEditor) B.closeEditor(); },
+};
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); save(); }
+});
+window.addEventListener('resize', () => editor && editor.layout());
+window.onerror = (m) => { try { B.log('js: ' + m); } catch (e) {} };
+})();
+</script>
+</body>
+</html>

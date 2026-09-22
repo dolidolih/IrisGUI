@@ -140,8 +140,6 @@ object AdbServer {
                         }
                     }
 
-                    // ── code-server (/code/*) 프록시 ─────────────
-                    CodeServerProxy.attach(this)
 
                     // ── 공통: /reply ───────────────────────────
                     post("/reply") {

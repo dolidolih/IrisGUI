@@ -11,14 +11,14 @@ import java.util.concurrent.TimeUnit
 /**
  * UserlandRuntime — proot(Ubuntu userland) 기반 리눅스 환경 하나.
  *
- * 스크립팅/코딩 런타임 전부: Ubuntu rootfs+python+pip+venv, code-server, 스크립트 프로젝트.
- * root 불필요: proot 는 ptrace 로 경로를 붙이므로 일반 앱 uid 로 동작. proot 는 host net ns 를
- * 그대로 공유하므로 guest 의 루프백 리스너는 host 루프백에서 그대로 도달 가능.
+ * Ubuntu rootfs+python+pip+venv + 스크립트 프로젝트. 편집/터미널 UI 는 앱 내장 화면이
+ * exec/spawn API 위에서만 동작하고, userland 에 별도 서버(code-server)를 두지 않는다.
+ * root 불필요: proot 는 ptrace 로 경로를 붙이므로 일반 앱 uid 로 동작. proot 는 host net
+ * ns 를 그대로 공유하므로 guest 의 루프백 리스너는 host 루프백에서 그대로 도달 가능.
  *
  * 프로비저닝(멱등, 단계별 .ready_* 마커로 건너뜀):
  *   base    = ubuntu rootfs 언팩 + proot 바이너리 + DNS
- *   python  = apt python3/pip/venv
- *   code    = code-server standalone 언팩
+ *   python  = apt python3/pip/venv (+ ca-certificates)
  *
  * 프로젝트는 userland/home/projects. host 의 filesDir/linux/home/projects 를 guest
  * /home/projects 로 바인드하므로 host 에서 읽고 쓰면서 guest 에서 실행/편집 가능.
@@ -71,17 +71,6 @@ object UserlandRuntime {
 
     private const val ENV_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-    /** code-server 가 host 에 바인드하는 기본 포트 (AdbServer.serverPort 와 별개). */
-    const val DEFAULT_PORT = 8080
-
-    /** code-server 정식 릴리즈(standalone). lib/node 를 같이 담는다 (glibc ELF). */
-    const val CS_VERSION = "4.138.0"
-
-    /** standalone tar.gz다운로드 주소. %ARCH% 는 amd64 / arm64. */
-    const val RELEASE_URL =
-        "https://github.com/coder/code-server/releases/download/v$CS_VERSION/" +
-            "code-server-$CS_VERSION-linux-%ARCH%.tar.gz"
-
     enum class State { DISABLED, NOT_INSTALLED, INSTALLING, READY, RUNNING, ERROR }
 
     data class Status(
@@ -95,7 +84,7 @@ object UserlandRuntime {
     data class Result(val ok: Boolean, val message: String)
     data class Exec(val exitCode: Int, val output: String)
 
-    /** filesDir/linux. rootfs+proot+code-server+projects 의 공통 루트. */
+    /** filesDir/linux. rootfs+proot+projects 의 공통 루트. */
     fun rootDir(context: Context): File = File(context.filesDir, DIR_NAME)
 
     internal fun prootPath(context: Context): File = File(rootDir(context), ".proot")
@@ -110,38 +99,26 @@ object UserlandRuntime {
     /** host 프로젝트 디렉터리 → guest 경로. */
     fun guestProject(context: Context, name: String): String = "$GUEST_PROJECTS/$name"
 
-    /** code-server standalone 언팩 위치 (rootDir/codeserver/current). */
-    fun codeServerDir(context: Context): File = File(rootDir(context), "codeserver/current")
-
-    /** 코드서버 트리 자리잡았는지. */
-    fun codeServerInstalled(context: Context): Boolean =
-        File(codeServerDir(context), "bin/code-server").isFile &&
-            File(codeServerDir(context), "out/node/entry.js").isFile
-
     /** proot 로 guest 명령을 실행할 수 있는지. python 유무는 보지 않는다. */
     fun prootReady(context: Context): Boolean =
         abiTag() != null && prootPath(context).exists() && baseOk(rootDir(context))
 
-    /** 전체 준비(프로젝트 실행/편집/코딩) 가능 여부: proot+python+code-server. */
+    /** 전체 준비(프로젝트 실행/편집) 가능 여부: proot+python. */
     fun ready(context: Context): Boolean =
-        prootReady(context) && ready2(context, "python") && codeServerInstalled(context)
+        prootReady(context) && ready2(context, "python")
 
     /** cheap 준비 상태 — UI 가 polling. 설치 진행/미설치를 구분. */
     fun status(context: Context): Status {
         val dir = rootDir(context)
-        val running = isCodeServerRunning(context)
         return when {
-            abiTag() == null -> Status(State.DISABLED, false, false, DEFAULT_PORT, "미지원 ABI")
-            running -> Status(State.RUNNING, ready2(context, "python"), true, DEFAULT_PORT,
-                "실행 중 :$DEFAULT_PORT")
+            abiTag() == null -> Status(State.DISABLED, false, false, 0, "미지원 ABI")
             !baseOk(dir) ->
                 if (File(dir, "rootfs.tar.gz").length() > 0)
-                    Status(State.NOT_INSTALLED, false, false, DEFAULT_PORT, "리눅스 이미지 다운로드 중")
-                else Status(State.NOT_INSTALLED, false, false, DEFAULT_PORT, "미설치")
-            !ready2(context, "python") || !codeServerInstalled(context) ->
-                Status(State.NOT_INSTALLED, false, running, DEFAULT_PORT, "구성요소 설치 중")
-            else -> Status(State.READY, true, running, DEFAULT_PORT,
-                if (running) "실행 중 :$DEFAULT_PORT" else "준비됨")
+                    Status(State.NOT_INSTALLED, false, false, 0, "리눅스 이미지 다운로드 중")
+                else Status(State.NOT_INSTALLED, false, false, 0, "미설치")
+            !ready2(context, "python") ->
+                Status(State.NOT_INSTALLED, false, false, 0, "구성요소 설치 중")
+            else -> Status(State.READY, true, false, 0, "준비됨")
         }
     }
 
@@ -167,7 +144,7 @@ object UserlandRuntime {
 
     // ── 프로비저닝 ────────────────────────────────────────────────────────
 
-    /** rootfs+proot+DNS. python/code-server 는 설치하지 않는다. */
+    /** rootfs+proot+DNS. python 등 추가 패키지는 설치하지 않는다. */
     fun ensureBase(context: Context): Result {
         val abi = abiTag() ?: return Result(false, "미지원 ABI (proot/rootfs 없음)")
         val dir = rootDir(context)
@@ -251,107 +228,14 @@ object UserlandRuntime {
         else Result(false, "CA 인증서 설치 실패: " + out.take(200))
     }
 
-    /** code-server standalone 다운로드+언팩. 멱등. host tar 로 빠르게. blocking. */
-    fun ensureCodeServer(context: Context): Result {
-        if (codeServerInstalled(context)) return Result(true, "code-server 이미 설치됨")
-        val base = ensureBase(context)
-        if (!base.ok) return base
-        val dir = rootDir(context); dir.mkdirs()
-        val csVersion = CS_VERSION
-        val url = RELEASE_URL.replace("%ARCH%", archTag())
-        RuntimeLog.info(TAG, "code-server $csVersion standalone 설치 시작 (${archTag()})")
-        val tar = File(dir, "code-server-$csVersion.tar.gz")
-        if (tar.length() < 100L * 1024 * 1024) {
-            if (!download(url, tar, 900_000))
-                return Result(false, "code-server 다운로드 실패 (네트워크?)")
-        }
-        if (!unpackCodeServer(context, tar)) return Result(false, "code-server 언팩 실패")
-        runCatching { tar.delete() }
-        if (!codeServerInstalled(context)) return Result(false, "code-server 트리가 완전하지 않음")
-        return Result(true, "code-server $csVersion 설치 완료")
-    }
-
-    /**
-     * code-server 전역User 설정: 다크 테마 + python 자동완성/린트 활성 기본값.
-     * settings.json 은 code-server User 디렉터리에 두고, 존재하면 넘긴다 (사용자
-     * 커스텀 덮어쓰기 방지). 언어서버는 Pylance 미설치 시 basedpyright 로 대체된다.
-     */
-    internal fun ensureEditorDefaults(context: Context): Result {
-        if (ready2(context, "editor")) return Result(true, "설정 준비됨")
-        if (!codeServerInstalled(context)) return Result(false, "code-server 미설치")
-        val settings = "/root/.local/share/code-server/User/settings.json"
-        // languageServer 는 비워둔다: Pylance(open-vsx 미게재) 대신 ms-python 이
-        // 내장 Jedi 로 IntelliSense 를 넣고, basedpyright 가 타입진단을 겹친다. None 으로
-        // 박으면 Jedi 마저 꺼져 자동완성이 통째로 죽는다.
-        val json = "{" +
-            "\n  \"workbench.colorTheme\": \"Default Dark Modern\"," +
-            "\n  \"window.autoDetectColorScheme\": false," +
-            "\n  \"security.workspace.trust.untrustedFiles\": \"open\"," +
-            "\n  \"editor.tabSize\": 4," +
-            "\n  \"editor.renderWhitespace\": \"boundary\"," +
-            "\n  \"python.analysis.typeCheckingMode\": \"standard\"," +
-            "\n  \"python.venvPath\": \"/home/projects\"," +
-            "\n  \"terminal.integrated.env.linux\": {" +
-            "\n    \"IRISGUI_API_URL\": \"http://127.0.0.1:" + AppConfig.serverPort + "\"" +
-            "\n  }" +
-            "\n}\n"
-        val (_, out) = exec(context,
-            "test -f " + q(settings) + " && echo EXISTS || {" +
-                " mkdir -p $(dirname " + q(settings) + ") && printf '%s' " + q(json) +
-                " > " + q(settings) + " && echo WRITTEN; }", 30_000)
-        if (!out.contains("EXISTS") && !out.contains("WRITTEN"))
-            return Result(false, "설정 기록 실패: " + out.take(200))
-        markReady(context, "editor")
-        RuntimeLog.info(TAG, "code-server 기본 설정 완료")
-        return Result(true, "설정 준비됨")
-    }
-
-    /**
-     * Python 코딩 지원 확장 설치 (open-vsx): ms-python.python(언어/디버그/환결정),
-     * detachhead.basedpyright(타체크·자동완성 — Pylance 는 open-vsx 미공개라 대체),
-     * ms-python.autopep8(린트). 실패해도 설치 자체를 막지 않는다 — UI 로그로만.
-     */
-    internal fun ensurePythonExtensions(context: Context): Result {
-        if (ready2(context, "pyext")) return Result(true, "확장 설치됨")
-        if (!codeServerInstalled(context)) return Result(false, "code-server 미설치")
-        val cs = "/codeserver/current/bin/code-server"
-        val extDir = "/root/.local/share/code-server/extensions"
-        val exts = listOf("ms-python.python", "detachhead.basedpyright", "ms-python.autopep8")
-        var failed = listOf<String>()
-        for (e in exts) {
-            val (_, out) = exec(context,
-                cs + " --install-extension " + q(e) + " --extensions-dir " + q(extDir) +
-                    " 2>&1", 300_000)
-            val ok = out.contains("successfully") || out.contains("already installed") ||
-                out.contains("is already")
-            if (!ok) failed += e
-        }
-        if (failed.isEmpty()) {
-            markReady(context, "pyext")
-            RuntimeLog.info(TAG, "Python 확장 설치 완료")
-            return Result(true, "확장 설치됨")
-        }
-        RuntimeLog.info(TAG, "확장 일부 실패: " + failed.joinToString())
-        return Result(false, "확장 일부 설치 실패: " + failed.joinToString())
-    }
-    /** 전체 준비: rootfs + python + code-server. 멱등. blocking. */
+    /** 전체 준비: rootfs + python + ca. 멱등. blocking. */
     fun provision(context: Context): Result {
         val base = ensureBase(context)
         if (!base.ok) return base
         val py = ensurePython(context)
         if (!py.ok) return py
-        val trust = ensureTrustStore(context)
-        if (!trust.ok) return trust
-        val cs = ensureCodeServer(context)
-        if (!cs.ok) return cs
-        // 코딩 기능(자동완성/린트/다크 테마)는 code-server 트리 이후 setup 스텝.
-        runCatching { ensureEditorDefaults(context) }
-        runCatching { ensurePythonExtensions(context) }
-        return cs
+        return ensureTrustStore(context)
     }
-
-    /** code-server host 루프백 리스너. */
-    internal fun isCodeServerRunning(context: Context): Boolean = isPortOpen(DEFAULT_PORT)
 
     /** host 루프백 포트가 열려있는지. */
     internal fun isPortOpen(port: Int): Boolean = runCatching {
@@ -360,25 +244,6 @@ object UserlandRuntime {
         }
         true
     }.getOrDefault(false)
-
-    private fun unpackCodeServer(context: Context, tar: File): Boolean = try {
-        val dest = File(rootDir(context), "codeserver")
-        runCatching { dest.deleteRecursively() }
-        dest.mkdirs()
-        val p = ProcessBuilder("/system/bin/tar", "xzf", tar.absolutePath, "-C", dest.absolutePath)
-            .redirectErrorStream(true).start()
-        val o = if (!p.waitFor(300_000, TimeUnit.MILLISECONDS)) {
-            p.destroyForcibly(); ""
-        } else p.inputStream.bufferedReader().use { it.readText() }
-        if (o.isNotBlank()) RuntimeLog.warn(TAG, "tar: " + o.take(200))
-        val unpacked = File(dest, "code-server-$CS_VERSION-linux-${archTag()}")
-        if (!unpacked.isDirectory) false
-        else runCatching { unpacked.renameTo(File(dest, "current")); codeServerInstalled(context) }
-            .getOrDefault(false)
-    } catch (e: Exception) {
-        RuntimeLog.error(TAG, "unpackCodeServer 실패: ${e.message}")
-        false
-    }
 
     // ── proot 실행 ────────────────────────────────────────────────────────
 
@@ -426,7 +291,7 @@ object UserlandRuntime {
     }
 
     /**
-     * proot 로 guest 셸 명령을 백그라운드로 띄움 (code-server, python script 등).
+     * proot 로 guest 셸 명령을 백그라운드로 띄움 (python script 등).
      * proot 는 종료 시 ptrace 중인 자식을 강제종료하므로, 자식이 살아있게 하려면 이
      * proot 프로세스를 Kotlin 쪽에서 붙잡고 있어야 한다. stdout 은 host logFile 에
      * redirection (null 시 파이프).
@@ -467,9 +332,9 @@ object UserlandRuntime {
         return File(dir, "usr/bin/bash").exists() || File(dir, "bin/bash").exists()
     }
 
-    /** distro 교체/깨짐으로 rootfs 트리만 비운다. proot/code-server/마커/아카이브는 남긴다. */
+    /** distro 교체/깨짐으로 rootfs 트리만 비운다. proot/마커/아카이브/프로젝트는 남긴다. */
     private fun wipeRootfs(dir: File) {
-        val keep = setOf(".proot", ".ready", "codeserver", "rootfs.tar.gz", "home", "code")
+        val keep = setOf(".proot", ".ready", "rootfs.tar.gz", "home")
         dir.listFiles()?.forEach { f ->
             if (keep.any { f.name.startsWith(it) }) return@forEach
             runCatching { f.deleteRecursively() }
