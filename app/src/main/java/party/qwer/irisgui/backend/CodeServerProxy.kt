@@ -43,7 +43,7 @@ import kotlin.coroutines.resumeWithException
 /**
  * code-server 를 IrisGUI 서빙 포트(3000) 의 `/code/` 아래 리버스 프록시로 노출한다.
  *
- * code-server 는 proot userland(host loopback) 의 127.0.0.1:[DEFAULT_PORT=13080] 에만 바인딩되어
+ * code-server 는 proot userland(host loopback) 의 127.0.0.1:[DEFAULT_PORT=8080] 에만 바인딩되어
  * 기기 LAN 에서 직접 도달 불가. 이 경로 덕분에 `http://<기기IP>:3000/code/...` 만 열리면
  * 편집·터미널·WebSocket 전부 동작한다. ROOT_ADB(AdbServer)·NON_ROOT(IrisServer) 모두 포트 3000 이라
  * 모드 무관.
@@ -58,7 +58,7 @@ object CodeServerProxy {
 
     /** WS/HTTP 업스트림. 기본 code-server 게속 Port; 서버 등록 시 인자로 전달. */
     @Volatile
-    var upstreamPort: Int = 13080
+    var upstreamPort: Int = 8080
 
     private const val UPSTREAM_HOST = "127.0.0.1"
 

@@ -82,9 +82,12 @@ object LinuxScripts {
             val stale = File(dir, VENV_LOG).lastModified() <
                 System.currentTimeMillis() - STALE_AFTER_MS
             val pending = !done && (logTxt.isBlank() || logTxt.contains(VENV_PROGRESS)) && !stale
+            // venv 생성 스레드의 python/pip 도 cwd 가 프로젝트라 cwd 스캔이면 "실행
+            // 중"으로 읽힌다. done 마커가 없으면 무조건 준비 중 — 이 순서가 깨지면
+            // recém 생성 카드가 바로 running 배지를 단다.
             Script(
                 name = name,
-                running = running.containsKey(name),
+                running = running.containsKey(name) && !pending,
                 pid = running[name]?.firstOrNull(),
                 hasVenv = venv,
                 venvPending = pending,

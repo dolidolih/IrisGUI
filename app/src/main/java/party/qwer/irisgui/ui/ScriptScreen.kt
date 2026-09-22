@@ -34,8 +34,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import party.qwer.irisgui.AppConfig
-import party.qwer.irisgui.backend.CodeServerProxy
 import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.scripting.CodeServer
 import party.qwer.irisgui.scripting.LinuxScripts
@@ -187,10 +185,12 @@ fun ScriptScreen() {
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
-                Text(
-                    "Ubuntu + python + VS Code(code-server). 다운로드는 한 번 (~280MB).",
-                    style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
-                )
+                if (!envReady) {
+                    Text(
+                        "Ubuntu + python + VS Code(code-server). 다운로드는 한 번 (~280MB).",
+                        style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
+                    )
+                }
                 if (!message.isNullOrBlank()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -296,9 +296,17 @@ fun ScriptScreen() {
                             }
                         }.getOrElse { CodeServer.Result(false, it.message ?: "편집 실패") }
                         if (r.ok) {
+                            // ?folder= 명시 — code-server 는 브라우저 저장소에
+                            // 마지막 워크스페이스를 기억해서 CLI 인자보다 우선한다.
+                            // URL 로만 강제로 그 프로젝트가 열린다.
+                            val proj = UserlandRuntime.guestProject(context, s.name)
                             editor = EditorState(
                                 s.name,
-                                "http://127.0.0.1:" + AppConfig.serverPort + CodeServerProxy.PATH + "/"
+                                "http://127.0.0.1:" + CodeServer.DEFAULT_PORT +
+                                    "/?folder=" + java.net.URLEncoder.encode(proj, "UTF-8") +
+                                    "&file=" + java.net.URLEncoder.encode(
+                                        proj + "/main.py", "UTF-8"
+                                    )
                             )
                             runCatching { refresh() }
                             busy = false
@@ -371,6 +379,9 @@ private fun CodeEditorView(state: EditorState, onBack: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
             factory = { c ->
                 WebView(c).apply {
+                    if ((c.applicationInfo.flags and
+                            android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                    ) WebView.setWebContentsDebuggingEnabled(true)
                     webViewRef.value = this
                     WebViewGpuGuard.harden(this)
                     settings.javaScriptEnabled = true
@@ -457,8 +468,8 @@ private fun ScriptCard(
                 Text(s.name, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 val (label, color) = when {
+                    s.venvPending -> "준비 중" to AppColors.TextSub
                     s.running -> "running" to AppColors.SuccessVivid
-                    s.venvPending -> "venv 준비 중" to AppColors.TextSub
                     s.error != null -> "venv 실패" to AppColors.ErrorVivid
                     else -> "stopped" to AppColors.TextSub
                 }
@@ -468,17 +479,18 @@ private fun ScriptCard(
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
+            // venv 생성 중에는 실행/편집 불가 — 프로비저닝 중 code-server/venv racing 차단.
             if (s.running) {
                 FilledIconButton(onClick = onStop, enabled = !busy) {
                     Icon(Icons.Default.Stop, contentDescription = "정지")
                 }
             } else {
-                FilledIconButton(onClick = onRun, enabled = !busy) {
+                FilledIconButton(onClick = onRun, enabled = !busy && !s.venvPending) {
                     Icon(Icons.Default.PlayArrow, contentDescription = "실행")
                 }
             }
             Spacer(Modifier.width(4.dp))
-            FilledTonalIconButton(onClick = onEdit, enabled = !busy) {
+            FilledTonalIconButton(onClick = onEdit, enabled = !busy && !s.venvPending) {
                 Icon(Icons.Default.Edit, contentDescription = "편집")
             }
             Spacer(Modifier.width(4.dp))

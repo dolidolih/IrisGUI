@@ -61,16 +61,18 @@ object UserlandRuntime {
         "apt-get -o APT::Sandbox::User=root -o Dpkg::Options::=--force-confdef " +
             "-o Dpkg::Options::=--force-confnew "
 
-    /** policy-rc.d: proot 안 init 시스템이 없어서 invoke-rc.d 를 통과시킨다. */
+    /** policy-rc.d: proot 안 init 시스템이 없어서 invoke-rc.d 를 통과시킨다.
+     * /data/local/tmp: base 이미지에 없어 ca-certificates postinst 의 mktemp 가 실패한다. */
     const val APT_PREP =
         "printf '#!/bin/sh\\nexit 101\\n' > /usr/sbin/policy-rc.d; " +
             "chmod +x /usr/sbin/policy-rc.d 2>/dev/null; " +
+            "mkdir -p /data/local/tmp 2>/dev/null; chmod 777 /data/local/tmp 2>/dev/null; " +
             "export DEBIAN_FRONTEND=noninteractive; "
 
     private const val ENV_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     /** code-server 가 host 에 바인드하는 기본 포트 (AdbServer.serverPort 와 별개). */
-    const val DEFAULT_PORT = 13080
+    const val DEFAULT_PORT = 8080
 
     /** code-server 정식 릴리즈(standalone). lib/node 를 같이 담는다 (glibc ELF). */
     const val CS_VERSION = "4.138.0"
@@ -392,7 +394,7 @@ object UserlandRuntime {
             "-w", (cwdGuest ?: "/root"),
             "/bin/sh", "-c",
             "export PATH=$ENV_PATH\n" +
-                "export HOME=/root\n" +
+                "export HOME=/root\nexport TMPDIR=/tmp\n" +
                 "export IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) + "\n" +
                 inner
         )

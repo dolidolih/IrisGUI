@@ -1,6 +1,7 @@
 package party.qwer.irisgui.ui
 
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,5 +35,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 편집 화면(WebView)에서 백 반복(롱프레스)을 삼킨다. 시스템 롱프레스 백은
+     * ASSIST(음성) 를 띄워 편집 화면 밖으로 빠져나간다 — 코드서버 동작이 아니라
+     * 플랫폼 동작이라 입력 단계에서만 막는다. 단일 백은 그대로 통과(BackHandler 로 목록 복귀).
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && codeEditorOpen.value &&
+            (event.repeatCount > 0 || event.isLongPress)
+        ) return true
+        return super.dispatchKeyEvent(event)
     }
 }
