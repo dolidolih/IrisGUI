@@ -2,6 +2,7 @@ package party.qwer.irisgui.scripting
 
 import android.content.Context
 import party.qwer.irisgui.RuntimeLog
+import party.qwer.irisgui.backend.CodeServerProxy
 import java.io.File
 
 /**
@@ -113,6 +114,7 @@ object CodeServer {
             val p = pb.start()
             process = p; startedPort = port; startedFocus = focusPath
             if (waitForUp(port, 60_000)) {
+                CodeServerProxy.upstreamPort = port
                 // provision 으로 온 적 없는 기기(구버전 설치본)도 편집 화면에서 자동으로
                 // 설정/확장을 챙긴다. 마커가 있으면 즉시 반환하므로 낭비가 없다.
                 Thread {
@@ -130,6 +132,8 @@ object CodeServer {
     }
 
     fun stop() {
+        // 살아있는 WS tunnel 은 업스트림과 함께 죽인다. 재기동 전이라 stale socket 누수 방지.
+        runCatching { CodeServerProxy.closeTunnels() }
         runCatching { process?.destroy() }
         runCatching { process?.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS) }
         process = null
