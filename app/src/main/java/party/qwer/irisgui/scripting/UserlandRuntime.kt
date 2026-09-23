@@ -260,7 +260,12 @@ object UserlandRuntime {
             "/bin/sh", "-c",
             "export PATH=$ENV_PATH\n" +
                 "export HOME=/root\nexport TMPDIR=/tmp\n" +
+                "export TERM=xterm-256color\n" +
                 "export IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) + "\n" +
+                // bash.bashrc 의 sudo 힌트가 $(groups) 를 호출한다. proot 는 host 의
+                // android 보조그룹(3003/9997/20090/...) 을 guest /etc/group 에서 못 찾아
+                // 매 셸마다 "cannot find name for group ID" spam 을 만든다. 조건을 끈다.
+                ": > /root/.sudo_as_admin_successful 2>/dev/null\n" +
                 inner
         )
         pb.redirectErrorStream(true)

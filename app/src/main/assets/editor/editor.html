@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>IrisGUI Editor</title>
 <base href="/assets/editor/">
 <link rel="stylesheet" href="vs/editor/editor.main.css">
@@ -19,11 +19,11 @@
     -webkit-user-select: none; user-select: none; }
   #app { display: flex; flex-direction: column; position: fixed; inset: 0; }
 
-  #bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px;
-    flex-wrap: wrap; row-gap: 6px;
+  #bar { display: flex; align-items: center; gap: 5px; padding: 6px 8px;
+    flex-wrap: nowrap;
     background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
-  #bar .title { font-weight: 600; font-size: 14px; margin-right: 6px;
-    max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bar .title { font-weight: 600; font-size: 13.5px; margin-right: 2px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sub);
     display: inline-block; margin-right: 5px; }
   .dot.run { background: var(--green); box-shadow: 0 0 6px var(--green); }
@@ -36,13 +36,19 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #10121A; font-weight: 600; }
   .btn.stop { background: var(--red); border-color: var(--red); color: #fff; }
   .btn.ghost { background: transparent; }
+  .btn.icon { padding: 6px 5px; }
+  .seg .btn.icon { padding: 6px 11px; }
+  .btn.icon.on { background: var(--accent); border-color: var(--accent); color: #10121A; }
+  #bar .btn svg { width: 17px; height: 17px; display: block; fill: none;
+    stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #bar .btn svg.fill * { fill: currentColor; stroke: none; }
   .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: 0 0 auto; }
   .seg .btn { border: none; border-radius: 0; padding: 7px 12px; flex: 0 0 auto; }
   .seg .btn.on { background: var(--accent); color: #10121A; font-weight: 600; }
 
   #main { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
   #tree { flex: 0 0 150px; background: var(--panel2); border-right: none;
-    overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 6px 0 60px; }
+    overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 8px 0 60px; }
   body.treeOff #tree { display: none; }
   body.treeOff #split { flex: 0 0 18px; }
   #split { flex: 0 0 16px; cursor: col-resize; touch-action: none; position: relative; z-index: 5; }
@@ -53,8 +59,6 @@
     background: var(--line); }
   #split:active::before { background: var(--accent); }
   body.term #tree, body.term #split { display: none; }
-  #tree .head { color: var(--sub); font-size: 10.5px; letter-spacing: .8px;
-    text-transform: uppercase; padding: 8px 12px 4px; }
   .row { display: flex; align-items: center; gap: 4px; padding: 6px 10px 6px 8px;
     cursor: pointer; white-space: nowrap; position: relative; overflow: hidden; }
   .row:hover { background: #2A2D3A; }
@@ -64,7 +68,10 @@
   .row .chev { width: 13px; flex: 0 0 13px; text-align: center; color: var(--sub);
     font-size: 9px; transition: transform .15s; }
   .row.open .chev { transform: rotate(90deg); }
-  .row .ic { width: 15px; flex: 0 0 15px; text-align: center; font-size: 12px; }
+  .row .ic { width: 17px; flex: 0 0 17px; display: flex; align-items: center;
+    justify-content: center; }
+  .ti { width: 14px; height: 14px; display: block; stroke: none; }
+  .row .muted { opacity: .55; }
   .row .nm { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; max-width: 16ch; }
   .row .sub { display: none; }
   .row .sub.venvtag { display: inline; margin-left: 6px; color: var(--sub); font-size: 9px;
@@ -72,24 +79,22 @@
   .kid { display: none; }
   .kid.open { display: block; }
   .indent { border-left: 1px solid #2A2D3A; margin-left: 14px; }
-  .py { color: #9ECEFF; } .txt { color: var(--ink); } .diric { color: var(--orange); }
   #editor { flex: 1 1 auto; min-width: 0; }
   #editor .view-line { -webkit-user-select: text; user-select: text; }
 
   #termwrap { display: none; flex: 1 1 auto; flex-direction: column; min-height: 0; }
   #term { flex: 1 1 auto; min-height: 0; background: #161821; padding: 6px 4px 0; }
-  #termbio { padding: 7px 10px; background: var(--panel2); border-top: 1px solid var(--line);
-    display: flex; gap: 6px; align-items: center; flex: 0 0 auto; flex-wrap: wrap; }
+  #termbio { position: fixed; left: 0; right: 0; bottom: 54px; z-index: 30;
+    margin: 0 8px; border-radius: 10px;
+    padding: 6px 6px; background: var(--panel2); border: 1px solid var(--line);
+    display: flex; gap: 5px; align-items: center; flex-wrap: nowrap;
+    justify-content: center; box-shadow: 0 2px 10px #0008; }
   #termbio .hint { color: var(--sub); font-size: 10.5px; margin-right: auto;
     max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .keycap { font-family: monospace; font-size: 12px; padding: 7px 10px; }
+  .keycap { font-family: monospace; font-size: 11.5px; padding: 7px 7px; flex: 0 0 auto; }
   .keycap.on { background: var(--accent); color: #10121A; border-color: var(--accent);
     font-weight: 700; }
 
-  #status { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 12px;
-    background: var(--panel); border-top: 1px solid var(--line); font-size: 11px; color: var(--sub); }
-  #status .dirty { color: var(--orange); }
-  #status b { color: var(--ink); font-weight: 500; }
 
   #toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 76px;
     background: #000C; color: var(--ink); border: 1px solid var(--line); padding: 8px 14px;
@@ -116,26 +121,26 @@
   <div id="bar">
     <span class="title"><span class="dot" id="runDot"></span><span id="pname">…</span></span>
     <div class="seg">
-      <div class="btn on" id="tabCode">코드</div>
-      <div class="btn" id="tabTerm">터미널</div>
+      <div class="btn icon on" id="tabCode" title="코드"><svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg></div>
+      <div class="btn icon" id="tabTerm" title="터미널"><svg viewBox="0 0 24 24"><path d="M5.5 8l3.5 3.5L5.5 15M12 15.5h6.5"/></svg></div>
     </div>
     <span class="spacer"></span>
-    <div class="btn primary" id="btnRun">▶ 실행</div>
-    <div class="btn stop" id="btnStop" style="display:none">■ 정지</div>
-    <div class="btn ghost" id="btnZoomOut" title="글자 작게">A−</div>
-    <div class="btn ghost" id="btnZoomIn" title="글자 크게">A+</div>
+    <div class="btn primary icon" id="btnRun" title="실행"><svg class="fill" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></div>
+    <div class="btn stop icon" id="btnStop" style="display:none" title="정지"><svg class="fill" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg></div>
+    <div class="btn ghost icon" id="btnZoomOut" title="글자 작게"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M8 10.5h5"/></svg></div>
+    <div class="btn ghost icon" id="btnZoomIn" title="글자 크게"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M8 10.5h5M10.5 8v5"/></svg></div>
     <div class="btn ghost" id="btnMore">⋮</div>
-    <div class="btn" id="btnClose">닫기</div>
+    <div class="btn icon" id="btnKeyboard" title="화면 키보드"><svg viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="10.5" rx="2"/><path d="M6 10.5h.01M9.5 10.5h.01M13 10.5h.01M16.5 10.5h.01M8 14h8"/></svg></div>
+    <div class="btn icon" id="btnClose" title="닫기"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></div>
   </div>
 
   <div id="main">
-    <div id="tree"><div class="head">탐 찾기</div><div id="treeBody"></div></div>
+    <div id="tree"><div id="treeBody"></div></div>
     <div id="split" title="드래그: 너비 / 클릭: 접기"></div>
     <div id="editor"></div>
     <div id="termwrap">
       <div id="term"></div>
       <div id="termbio">
-        <span class="hint" id="termHint">cwd: 프로젝트 루트 · venv 자동</span>
         <div class="btn keycap" data-key="ctrlc">^C</div>
         <div class="btn keycap" data-key="tab">tab</div>
         <div class="btn keycap" id="modCtrl">ctrl</div>
@@ -149,12 +154,6 @@
     </div>
   </div>
 
-  <div id="status">
-    <span id="stFile">—</span>
-    <span class="spacer"></span>
-    <span id="stPip"></span>
-    <span id="stSaved"></span>
-  </div>
 </div>
 
 <div id="toast"></div>
@@ -197,9 +196,10 @@ function dlg(title, value, cb) {
   const inp = $('dlgInput');
   inp.value = value || '';
   $('dlg').style.display = 'flex';
+  try { B.setImeOverride(true); } catch (e) {}
   setTimeout(() => inp.focus(), 60);
-  const ok = () => { $('dlg').style.display = 'none'; cb(inp.value.trim()); },
-        no = () => { $('dlg').style.display = 'none'; cb(null); };
+  const ok = () => { $('dlg').style.display = 'none'; try { B.setImeOverride(false); } catch (e) {} cb(inp.value.trim()); },
+        no = () => { $('dlg').style.display = 'none'; try { B.setImeOverride(false); } catch (e) {} cb(null); };
   $('dlgOk').onclick = ok; $('dlgCancel').onclick = no;
   inp.onkeydown = e => { if (e.key === 'Enter') ok(); };
 }
@@ -395,14 +395,16 @@ function loadPip() {
   const j = JSON.parse(B.pipPackages());
   pipModules = j.modules || [];
   pipPackages = (j.packages || []).map(p => p.name);
-  $('stPip').innerHTML = '설치 <b>' + pipPackages.length + '</b> pkg · 터미널에서 <b>pip install</b>';
   return Promise.resolve();
 }
 function reloadPipSoon() { clearTimeout(reloadPipSoon.t); reloadPipSoon.t = setTimeout(loadPip, 2500); }
 
 /* ── file tree ─────────────────────────────────────────── */
-const ICONS = { py: ['P', 'py'], json: ['{}', 'json'], md: ['M', 'md'], txt: ['T', 'txt'],
-  sh: ['$>', 'sh'], yml: ['⚙', 'yml'], yaml: ['⚙', 'yml'], html: ['<>', 'html'], css: ['#', 'css'] };
+const ICON_SVG = {
+  dir: '<svg class="ti dir" viewBox="0 0 16 16"><path fill="#5b8def" d="M1.5 3.7c0-.66.54-1.2 1.2-1.2h3.3c.35 0 .68.15.9.42l.88 1.08h5.52c.66 0 1.2.54 1.2 1.2v6.9c0 .66-.54 1.2-1.2 1.2H2.7c-.66 0-1.2-.54-1.2-1.2V3.7z"/></svg>',
+  file: '<svg class="ti file" viewBox="0 0 16 16"><path fill="#7d879c" fill-rule="evenodd" d="M5.8.6h4.07L13 4.55v8c0 .55-.45 1-1 1H5.8c-.55 0-1-.45-1-1v-11c0-.55.45-1 1-1zm0 0v3.95h3.95"/></svg>',
+  py: '<svg class="ti py" viewBox="0 0 16 16"><path fill="#3d7bd6" fill-rule="evenodd" d="M5.8.6h4.07L13 4.55v8c0 .55-.45 1-1 1H5.8c-.55 0-1-.45-1-1v-11c0-.55.45-1 1-1zm0 0v3.95h3.95"/><path fill="#fff" fill-rule="evenodd" d="M5.8.6v3.95h3.95" opacity=".45"/></svg>',
+};
 
 function loadTree() {
   return new Promise(res => {
@@ -420,14 +422,12 @@ function renderTree(host, nodes) {
     row.className = 'row'; row.dataset.path = n.path;
     const isDir = !!n.dir;
     const isVenv = /(^|\/)\.venv(\/|$)/.test(n.path) || n.path === '.venv';
-    let chevron = isDir ? '<span class="chev">▸</span>' : '<span class="chev"></span>';
-    let icon = isDir ? '<span class="ic diric">▤</span>'
-      : '<span class="ic ' + (ext(n.name) === 'py' ? 'py' : 'txt') + '">' +
-        (ICONS[ext(n.name)] ? ICONS[ext(n.name)][0] : '·') + '</span>';
-    const label = isVenv ? '<span class="nm" style="opacity:.6">' + esc(n.name) + '</span>'
-      : '<span class="nm">' + esc(n.name) + '</span>';
-    const sub = !isDir && n.size != null ? '<span class="sub">' + human(n.size) + '</span>'
-      : isVenv ? '<span class="sub">venv</span>' : '';
+    const chevron = '<span class="chev">' + (isDir && n.children ? '▸' : '') + '</span>';
+    const icon = '<span class="ic">' +
+      (isDir ? ICON_SVG.dir : ext(n.name) === 'py' ? ICON_SVG.py : ICON_SVG.file) + '</span>';
+    const label = '<span class="nm' + (isVenv ? ' muted' : '') + '">' + esc(n.name) + '</span>';
+    const sub = isVenv ? '<span class="sub venvtag" style="display:inline">venv</span>'
+      : !isDir && n.size != null ? '<span class="sub">' + human(n.size) + '</span>' : '';
     row.innerHTML = chevron + icon + label + sub;
     row.addEventListener('click', () => {
       if (isDir) {
@@ -483,7 +483,6 @@ function openFile(path) {
   editor.setModel(m);
   MODEL_PATH = path;
   setDirty(false);
-  $('stFile').textContent = path;
   restoreSel();
 }
 
@@ -500,13 +499,12 @@ function openInitialFile() {
   openFile(pick);
   const pn = JSON.parse(B.projectInfo());
   $('pname').textContent = pn.name;
-  $('termHint').textContent = 'cwd ' + pn.guest + ' · venv 자동';
+  const hint = $('termHint'); if (hint) hint.textContent = 'cwd ' + pn.guest;
 }
 
 let autoSaveT = null;
 function setDirty(v) {
   DIRTY = v;
-  $('stSaved').innerHTML = v ? '<span class="dirty">● 저장 안 됨</span>' : '✓ 저장됨';
   clearTimeout(autoSaveT);
   if (v && MODEL_PATH) autoSaveT = setTimeout(save, 1500);
 }
@@ -606,12 +604,17 @@ function termAttach() {
     setTimeout(() => { fitTerm(); }, 50);
   }
   termStart();
-  setTimeout(() => { fitTerm(); term.focus(); }, 350);
+  setTimeout(() => { fitTerm(); if (kbOn) term.focus(); }, 350);
 }
 function termKill() {
   if (termId != null) { B.termStop(termId); termId = null; }
   lastSentSize = null;
-  if (termOpened) term.clear ? term.clear() : term.reset();
+  if (termOpened) {
+    try {
+      term.write('\x1b[3J\x1b[H\x1b[2J'); term.clear();
+      term.refresh(0, term.rows - 1);
+    } catch (e) { term.reset(); }
+  }
   termStart();
   toast('터미널 재시작');
 }
@@ -756,7 +759,7 @@ function actRename() {
     toast(r.message);
     if (r.ok) {
       if (p === MODEL_PATH) { MODELS[to] = MODELS[p]; delete MODELS[p];
-        MODEL_PATH = to; $('stFile').textContent = to; }
+        MODEL_PATH = to; }
       loadTreeSoon();
     }
   });
@@ -780,6 +783,32 @@ function loadTreeSoon() { clearTimeout(treeT); treeT = setTimeout(loadTree, 300)
 
 /* ── close / keys ──────────────────────────────────────── */
 $('btnClose').onclick = () => { save(true); B.closeEditor ? B.closeEditor() : B.log('close requested'); };
+
+/* ── 화면 키보드 토글 ─────────────────────────────────────
+ * 방지 모드(off)일 때 Android 네이티브가 IM 요청을 막는다. 다이얼로그 입력만
+ * 예외(setImeOverride)로 키보드를 허용한다. */
+let kbOn = false; try { kbOn = localStorage.getItem('igKb') === '1'; } catch (e) {}
+function kbApply() {
+  $('btnKeyboard').classList.toggle('on', kbOn);
+  try { B.setKeyboardAllowed(kbOn); } catch (e) {}
+}
+$('btnKeyboard').onclick = () => {
+  kbOn = !kbOn;
+  try { localStorage.setItem('igKb', kbOn ? '1' : '0'); } catch (e) {}
+  kbApply();
+  if (kbOn) { try { B.showSoftKeyboard(); } catch (e) {} }
+  toast(kbOn ? '화면 키보드 켬' : '화면 키보드 꺼짐');
+};
+kbApply();
+/* 방지 중이어도 터미널 textarea 포커스는 IM 요청 → 즉시 되감는다. */
+document.addEventListener('focusin', e => {
+  const t = e.target;
+  if (kbOn || !t || !t.classList) return;
+  if (t.classList.contains('xterm-helper-textarea')) {
+    setTimeout(() => { if (!kbOn && document.activeElement === t) t.blur(); }, 0);
+    try { B.hideSoftKeyboard(); } catch (e) {}
+  }
+});
 window.IrisEditor = {
   flush() { save(true); },
   back() { save(true); if (B.closeEditor) B.closeEditor(); },
