@@ -179,7 +179,8 @@ object LinuxScripts {
             val r = ensureVenv(context, name)
             if (!r.ok) return r
         }
-        val inner = "export IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) +
+        val inner = "export IRISGUI_SCRIPT=" + q(name) +
+            "\nexport IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) +
             "\nexec $py ${q(MAIN)} 2>&1"
         val logFile = File(dir, LOG)
         val p = UserlandRuntime.spawnBackground(context, inner,
@@ -301,8 +302,13 @@ object LinuxScripts {
             val fromW = Regex("-w " + Regex.escape(guestBase) + "([^ ]+)")
                 .find(cmd)?.groupValues?.getOrNull(1)
             if (fromW != null) {
-                val pname = fromW.trim('/').substringBefore('/')
-                if (pname.isNotBlank()) out.getOrPut(pname) { mutableSetOf() }.add(pid)
+                // 터미널도 같은 "-w <projects>/<name>" 래퍼를 쓴다. 그걸 스크립트로
+                // 오인하면 터미널 열기만으로도 카드가 "실행 중"이 된다. 실제 실행
+                // 프로세스만 계산: venv python 실행 경로 또는 IRISGUI_SCRIPT 마커.
+                if (cmd.contains("python") || cmd.contains("IRISGUI_SCRIPT")) {
+                    val pname = fromW.trim('/').substringBefore('/')
+                    if (pname.isNotBlank()) out.getOrPut(pname) { mutableSetOf() }.add(pid)
+                }
                 continue
             }
             val cwd = runCatching {
