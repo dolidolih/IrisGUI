@@ -41,6 +41,9 @@
   #main { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
   #tree { flex: 0 0 150px; background: var(--panel2); border-right: none;
     overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 6px 0 60px; }
+  body.treeOff #tree { display: none; }
+  body.treeOff #split { flex: 0 0 14px; }
+  body.treeOff #split::after { left: 6px; }
   #split { flex: 0 0 10px; cursor: col-resize; touch-action: none; position: relative; z-index: 5; }
   #split::after { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px;
     background: var(--line); }
@@ -48,8 +51,8 @@
   body.term #tree, body.term #split { display: none; }
   #tree .head { color: var(--sub); font-size: 10.5px; letter-spacing: .8px;
     text-transform: uppercase; padding: 8px 12px 4px; }
-  .row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 8px;
-    cursor: pointer; white-space: nowrap; position: relative; }
+  .row { display: flex; align-items: center; gap: 4px; padding: 6px 10px 6px 8px;
+    cursor: pointer; white-space: nowrap; position: relative; overflow: hidden; }
   .row:hover { background: #2A2D3A; }
   .row.sel { background: #2F3648; }
   .row.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
@@ -58,8 +61,10 @@
     font-size: 9px; transition: transform .15s; }
   .row.open .chev { transform: rotate(90deg); }
   .row .ic { width: 15px; flex: 0 0 15px; text-align: center; font-size: 12px; }
-  .row .nm { overflow: hidden; text-overflow: ellipsis; }
-  .row .sub { margin-left: auto; color: var(--sub); font-size: 10px; padding-left: 8px; flex: 0 0 auto; }
+  .row .nm { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; max-width: 16ch; }
+  .row .sub { display: none; }
+  .row .sub.venvtag { display: inline; margin-left: 6px; color: var(--sub); font-size: 9px;
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
   .kid { display: none; }
   .kid.open { display: block; }
   .indent { border-left: 1px solid #2A2D3A; margin-left: 14px; }
@@ -74,6 +79,8 @@
   #termbio .hint { color: var(--sub); font-size: 10.5px; margin-right: auto;
     max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .keycap { font-family: monospace; font-size: 12px; padding: 7px 10px; }
+  .keycap.on { background: var(--accent); color: #10121A; border-color: var(--accent);
+    font-weight: 700; }
 
   #status { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 12px;
     background: var(--panel); border-top: 1px solid var(--line); font-size: 11px; color: var(--sub); }
@@ -111,22 +118,28 @@
     <span class="spacer"></span>
     <div class="btn primary" id="btnRun">▶ 실행</div>
     <div class="btn stop" id="btnStop" style="display:none">■ 정지</div>
+    <div class="btn ghost" id="btnZoomOut" title="글자 작게">A−</div>
+    <div class="btn ghost" id="btnZoomIn" title="글자 크게">A+</div>
     <div class="btn ghost" id="btnMore">⋮</div>
     <div class="btn" id="btnClose">닫기</div>
   </div>
 
   <div id="main">
     <div id="tree"><div class="head">탐 찾기</div><div id="treeBody"></div></div>
-    <div id="split" title="너비 조절"></div>
+    <div id="split" title="드래그: 너비 / 클릭: 접기"></div>
     <div id="editor"></div>
     <div id="termwrap">
       <div id="term"></div>
       <div id="termbio">
         <span class="hint" id="termHint">cwd: 프로젝트 루트 · venv 자동</span>
         <div class="btn keycap" data-key="ctrlc">^C</div>
+        <div class="btn keycap" data-key="tab">tab</div>
+        <div class="btn keycap" id="modCtrl">ctrl</div>
+        <div class="btn keycap" id="modAlt">alt</div>
+        <div class="btn keycap" data-key="left">←</div>
         <div class="btn keycap" data-key="up">↑</div>
         <div class="btn keycap" data-key="down">↓</div>
-        <div class="btn keycap" data-key="tab">tab</div>
+        <div class="btn keycap" data-key="right">→</div>
         <div class="btn keycap" id="btnKill">restart</div>
       </div>
     </div>
@@ -189,6 +202,7 @@ function dlg(title, value, cb) {
 
 /* ── state ─────────────────────────────────────────────── */
 let editor = null, MODEL_PATH = null, DIRTY = false;
+let fontPx = 13; try { fontPx = +localStorage.getItem('igFs') || 13; } catch (e) {}
 const MODELS = {};
 let pipModules = [], pipPackages = [];
 let runningState = false;
@@ -219,7 +233,7 @@ require.config({ paths: { vs: '/assets/editor/vs' } });
 require(['vs/editor/editor.main'], function () {
   editor = monaco.editor.create($('editor'), {
     value: '', language: 'python', theme: 'vs-dark',
-    fontSize: 13, lineHeight: 20, minimap: { enabled: false },
+    fontSize: fontPx, lineHeight: Math.round(fontPx * 1.5), minimap: { enabled: false },
     automaticLayout: true, scrollBeyondLastLine: false,
     tabSize: 4, insertSpaces: true, renderWhitespace: 'boundary',
     fontFamily: 'ui-monospace, Roboto Mono, monospace',
@@ -252,7 +266,7 @@ require(['vs/editor/editor.main'], function () {
 function mk(label, kind, detail, docs) {
   const K = monaco.languages.CompletionItemKind;
   const map = { module: K.Module, package: K.Package, method: K.Method, function: K.Function,
-    keyword: K.Keyword, property: K.Property, snippet: K.Snippet };
+    keyword: K.Keyword, property: K.Property, snippet: K.Snippet, class: K.Class };
   return { label, kind: map[kind] || K.Text, insertText: label, detail: detail || '',
     documentation: docs ? { value: docs } : undefined };
 }
@@ -261,8 +275,45 @@ function rngOf(word, fromCol) {
     startColumn: Math.max(1, fromCol == null ? word.startColumn : fromCol),
     endColumn: word.endColumn };
 }
+const memberCache = {};
+function membersOf(mod) {
+  const hit = memberCache[mod];
+  if (hit && Date.now() - hit.at < 30000) return hit.list;
+  let list = [];
+  try {
+    const r = JSON.parse(B.members(mod));
+    if (r && r.members) list = r.members;
+  } catch (e) {}
+  memberCache[mod] = { at: Date.now(), list: list };
+  return list;
+}
+function moduleBindings(doc) {
+  const out = {};
+  const txt = doc.getValue();
+  let m;
+  const reImport = /^\s*(?:import\s+([\w.]+)(?:\s+as\s+(\w+))?|from\s+([\w.]+)\s+import\s+([\w,\s]+))/gm;
+  while ((m = reImport.exec(txt))) {
+    if (m[1]) out[m[2] || m[1].split('.').pop()] = m[1];
+    else {
+      const pkg = m[3];
+      m[4].split(',').forEach(part => {
+        part = part.trim();
+        if (!part) return;
+        const [name, alias] = part.split(/\s+as\s+/);
+        out[alias || name] = pkg + '.' + name;
+      });
+    }
+  }
+  const reAssign = /^\s*(\w+)\s*=\s*([\w.]+)\s*\(/gm;
+  while ((m = reAssign.exec(txt))) {
+    const rhs = m[2].split('.').pop().toLowerCase();
+    if (/bot|iris/.test(rhs)) out[m[1]] = 'IRIS_BOT';
+  }
+  return out;
+}
 function registerPythonCompletions() {
   monaco.languages.registerCompletionItemProvider('python', {
+    triggerCharacters: ['.'],
     triggerCharacters: ['.', '"', "'"],
     provideCompletionItems(model, pos) {
       if (MODEL_PATH && ext(MODEL_PATH) !== 'py') return { suggestions: [] };
@@ -291,16 +342,35 @@ function registerPythonCompletions() {
       }
 
       const dot = /(\w+)\.$/.exec(line);
-      if (dot && dot[1] in { ctx: 1, bot: 1, iris: 1 }) {
+      if (dot) {
         const who = dot[1];
-        const src = who === 'bot' || who === 'iris'
-          ? IRIS_API.filter(i => i[1] !== 'decorator' || true)
-          : IRIS_API;
-        const from = who === 'ctx'
-          ? IRIS_API.filter(i => i[0].startsWith('ctx'))
-          : IRIS_API.filter(i => /^(bot|Bot)/.test(i[0]) || !/\./.test(i[0]));
-        for (const i of from) items.push(mk(i[0].split('.').pop(), i[1] === 'property' ? 'property'
-          : i[1] === 'method' || i[1] === 'function' ? 'function' : 'snippet', i[1], i[2]));
+        if (who === 'ctx') {
+          for (const i of IRIS_API.filter(i => i[0].startsWith('ctx')))
+            items.push(mk(i[0].slice(4), i[1] === 'property' ? 'property' : 'function', i[1], i[2]));
+        } else {
+          const bind = moduleBindings(model)[who]
+            || (who === 'bot' || who === 'iris' ? 'IRIS_BOT' : null);
+          if (bind === 'IRIS_BOT') {
+            items.push(mk('on_event', 'snippet', 'decorator',
+              '@bot.on_event("message") def h(ctx): …'));
+            items.push(mk('run', 'function', 'method', '이벤트 루프 시작'));
+            items.push(mk('api_url', 'property', 'bot 속성', '서비스 URL'));
+          } else if (bind) {
+            const root = bind.split('.')[0];
+            (membersOf(root) || []).forEach(name => items.push(mk(name,
+              /^[A-Z]/.test(name) ? 'class' : name.includes('_') ? 'method' : 'property', bind)));
+            if (!items.length) items.push(mk('<' + root + '>', 'text', ' introspect 불가'));
+          } else {
+            pipModules.slice(0, 30).forEach(m2 => items.push(mk(m2, 'module', 'venv 모듈')));
+          }
+        }
+      }
+
+      if (dot) {
+        // 도트 접근: 필터 없이 전 멤버. 삽입 범위는 점 바로 뒤 ~ 라인 끝.
+        const rng = { startLineNumber: pos.lineNumber, endLineNumber: pos.lineNumber,
+          startColumn: dot.index + dot[1].length + 2, endColumn: pos.column };
+        return { suggestions: items.map(i => { i.range = rng; return i; }) };
       }
 
       for (const k of PY_KEYWORDS) items.push(mk(k, 'keyword', ''));
@@ -469,7 +539,7 @@ let term = null, termOpened = false, termId = null, termTimer = null;
 function initTerminal() {
   const T = window.Terminal;
   term = new T({
-    fontFamily: 'ui-monospace, Roboto Mono, monospace', fontSize: 12.5, lineHeight: 1.2,
+    fontFamily: 'ui-monospace, Roboto Mono, monospace', fontSize: fontPx, lineHeight: 1.2,
     theme: { background: '#161821', foreground: '#E6E8F0', cursor: '#7AA2F7',
       black: '#3B3E4E', blue: '#7AA2F7', green: '#9ECE9E', cyan: '#89DCEB',
       red: '#F28779', magenta: '#C792EA', yellow: '#E6C896', white: '#D0D4E1' },
@@ -486,35 +556,39 @@ function initTerminal() {
       term && term.writeln('\r\n\x1b[38;5;203m[세션 종료 — restart 로 다시 여세요]\x1b[0m'); } }
   };
 }
-const TERM_FS = 12.5, TERM_LH = 1.2, TERM_PAD = 8;
+const TERM_LH = 1.2, TERM_PAD = 8;
 let cellW = 0;
 function measureChar() {
   try {
     const c = document.createElement('canvas').getContext('2d');
-    c.font = TERM_FS + 'px ui-monospace, "Roboto Mono", monospace';
+    c.font = fontPx + 'px ui-monospace, "Roboto Mono", monospace';
     cellW = c.measureText('M').width;
-  } catch (e) { cellW = TERM_FS * 0.602; }
-  if (!cellW) cellW = TERM_FS * 0.602;
+  } catch (e) { cellW = fontPx * 0.602; }
+  if (!cellW) cellW = fontPx * 0.602;
 }
 function termSize() {
   const el = $('term');
   if (!cellW) measureChar();
   const cols = Math.max(20, Math.floor((el.clientWidth - TERM_PAD) / cellW));
-  const rows = Math.max(4, Math.floor((el.clientHeight - 4) / (TERM_FS * TERM_LH)));
+  const rows = Math.max(4, Math.floor((el.clientHeight - 4) / (fontPx * TERM_LH)));
   return [cols, rows];
 }
 function termStart() {
   if (termId != null) return;
   const s = termOpened ? [term.cols, term.rows] : termSize();
   const j = JSON.parse(B.termStart(s[0], s[1]));
-  if (j.id) termId = j.id; else if (j.message) toast('터미널: ' + j.message);
+  if (j.id) { termId = j.id; lastSentSize = [s[0], s[1]]; }
+  else if (j.message) toast('터미널: ' + j.message);
 }
+let lastSentSize = null;
 function fitTerm() {
   try {
     if (!term || !$('term').clientHeight) return;
     const s = termSize();
     if (term.cols !== s[0] || term.rows !== s[1]) term.resize(s[0], s[1]);
-    if (termId != null) B.termResize(termId, s[0], s[1]);
+    if (termId != null && (!lastSentSize || lastSentSize[0] !== s[0] || lastSentSize[1] !== s[1])) {
+      lastSentSize = s; B.termResize(termId, s[0], s[1]);
+    }
   } catch (e) {}
 }
 function termAttach() {
@@ -532,6 +606,7 @@ function termAttach() {
 }
 function termKill() {
   if (termId != null) { B.termStop(termId); termId = null; }
+  lastSentSize = null;
   if (termOpened) term.clear ? term.clear() : term.reset();
   termStart();
   toast('터미널 재시작');
@@ -553,34 +628,71 @@ function showPane(code) {
     termTimer = setInterval(fitTerm, 1500);
   }
 }
+function setFont(px) {
+  fontPx = Math.min(Math.max(px, 9), 22);
+  try { localStorage.setItem('igFs', String(fontPx)); } catch (e) {}
+  if (editor) editor.updateOptions({ fontSize: fontPx, lineHeight: Math.round(fontPx * 1.5) });
+  if (term) { try { term.options.fontSize = fontPx; } catch (e) {} cellW = 0; fitTerm(); }
+}
+$('btnZoomIn').onclick = () => { setFont(fontPx + 1); toast('글자 ' + fontPx + 'px'); };
+$('btnZoomOut').onclick = () => { setFont(fontPx - 1); toast('글자 ' + fontPx + 'px'); };
 $('tabCode').onclick = () => showPane(true);
 $('tabTerm').onclick = () => showPane(false);
+/* ctrl/alt 는 토글 모드: 켜진 다음 화살/문자가 조합 시퀀스로 나간다. */
+let modCtrl = false, modAlt = false;
+function mods() { $('modCtrl').classList.toggle('on', modCtrl);
+  $('modAlt').classList.toggle('on', modAlt); }
+$('modCtrl').onclick = () => { modCtrl = !modCtrl; mods(); toast(modCtrl ? 'ctrl 대기' : 'ctrl 해제'); };
+$('modAlt').onclick = () => { modAlt = !modAlt; mods(); toast(modAlt ? 'alt 대기' : 'alt 해제'); };
+function arrowCode(k) {
+  const base = { left: 'D', up: 'A', down: 'B', right: 'C' }[k];
+  if (modAlt && modCtrl) return '\x1b[1;7' + base;
+  if (modCtrl) return '\x1b[1;5' + base;
+  if (modAlt) return '\x1b[1;3' + base;
+  return '\x1b[' + base;
+}
 document.querySelectorAll('#termbio [data-key]').forEach(b => {
   b.onclick = () => {
     termStart();
-    const m = { ctrlc: '\x03', up: '\x1b[A', down: '\x1b[B', tab: '\t' };
-    if (termId != null) B.termInput(termId, b64e(m[b.dataset.key] || b.dataset.key));
+    let seq;
+    const k = b.dataset.key;
+    if (k === 'ctrlc') { seq = '\x03'; }
+    else if (k === 'tab') { seq = '\t'; }
+    else if (k in { up: 1, down: 1, left: 1, right: 1 }) { seq = arrowCode(k); }
+    else seq = b.dataset.key;
+    if (termId != null) B.termInput(termId, b64e(seq));
+    mods();
   };
 });
+/* 문자 그대로 입력하는 텍스트창용: alt+f/b = 단어 단위 이동 */
 $('btnKill').onclick = termKill;
 /* tree ↔ editor splitter (드래그로 너비 조절; 세션 중 유지) */
 (function () {
   const sp = $('split'), tree = $('tree');
-  let dragging = false, startX = 0, startW = 0;
+  let dragging = false, startX = 0, startW = 0, moved = false;
   const apply = w => { tree.style.flex = '0 0 ' + w + 'px'; editor && editor.layout(); fitTerm(); };
+  const collapse = v => {
+    document.body.classList.toggle('treeOff', v);
+    editor && editor.layout(); fitTerm();
+  };
   sp.addEventListener('pointerdown', e => {
-    dragging = true; startX = e.clientX; startW = tree.offsetWidth;
+    dragging = true; moved = false; startX = e.clientX;
+    startW = document.body.classList.contains('treeOff') ? 150 : tree.offsetWidth;
     sp.setPointerCapture(e.pointerId); e.preventDefault();
   });
   sp.addEventListener('pointermove', e => {
     if (!dragging) return;
-    const w = Math.min(Math.max(startW + e.clientX - startX, 96), Math.max(160, innerWidth * 0.55));
-    apply(w);
+    if (Math.abs(e.clientX - startX) > 6) moved = true;
+    if (moved) apply(Math.min(Math.max(startW + e.clientX - startX, 96),
+      Math.max(160, innerWidth * 0.55)));
   });
-  const stop = () => { dragging = false; };
+  const stop = () => {
+    if (dragging && !moved) collapse(!document.body.classList.contains('treeOff'));
+    dragging = false;
+  };
   sp.addEventListener('pointerup', stop);
   sp.addEventListener('pointercancel', stop);
-  sp.addEventListener('dblclick', () => apply(150));
+  sp.addEventListener('dblclick', () => collapse(false));
 })();
 
 window.addEventListener('resize', fitTerm);
