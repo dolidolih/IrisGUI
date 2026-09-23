@@ -38,12 +38,17 @@ internal class CodeEditorBridge(
         @Volatile var pending: Pair<Int, Int>? = null
     }
 
-    private fun Term.applyResize(cols: Int, rows: Int) {
-        runCatching {
-            input.write(("stty rows $rows cols $cols" + "\r").toByteArray())
-            input.flush()
-        }
+    // 셸은 바뀐 것도 아닌 stty 명령을 에코해서 화면을 어지럽힌다. 크기 파일(/home/projects/
+    // .termsize 는 guest 와 host 가 같은 디렉터리라 바운드 필요 없음)에 쓰고 프롬프트마다
+    // PROMPT_COMMAND 가 반영하게 한다. 입력 줄에 끼어드는 일도 없다.
+    private val sizeFile = File(UserlandRuntime.projectsHostDir(context), ".termsize")
+
+    private fun writeSizeFile(cols: Int, rows: Int) {
+        runCatching { sizeFile.writeText("$cols $rows\n") }
     }
+
+    private fun Term.applyResize(cols: Int, rows: Int) = Unit
+
 
     private val terms = ConcurrentHashMap<Int, Term>()
     private var termSeq = 0
@@ -82,6 +87,46 @@ internal class CodeEditorBridge(
             .getOrDefault(f.name)
 
     // ── JS 로 공개되는 API ───────────────────────────────────────────────────
+
+    /** venv python 으로 모듈을 import 해 dir() 공개 멤버를 나열한다. 실패는 조용히 빈 목록으로. */
+    @JavascriptInterface
+    fun members(module: String): String = runCatching {
+        val mod = module.trim().take(64)
+        if (!Regex("^[A-Za-z0-9_.]+$").matches(mod)) return err("bad module")
+        val key = project + ":" + mod
+        memberCache[key]?.let { (at, list) ->
+            if (System.currentTimeMillis() - at < 30000) return membersJson(list)
+        }
+        val guest = UserlandRuntime.guestProject(context, project)
+        val py =
+            "import sys,importlib\n" +
+                "try:\n" +
+                "    m = importlib.import_module(sys.argv[1])\n" +
+                "    print(chr(10).join(x for x in dir(m) if not x.startswith('_'))[:4000])\n" +
+                "except BaseException:\n" +
+                "    pass\n"
+        val exec = UserlandRuntime.exec(
+            context,
+            "printf '%s' " + UserlandRuntime.q(py) + " | " + guestVenvPython() +
+                " -c " + UserlandRuntime.q("import sys;exec(sys.stdin.read())") + " " + mod,
+            5000, guest
+        )
+        val list = if (exec.exitCode == 0) {
+            exec.output.trim().split("\n")
+                .filter { it.isNotBlank() && Regex("^[A-Za-z_]\\w*$").matches(it.trim()) }
+                .map { it.trim() }
+        } else emptyList()
+        memberCache[key] = System.currentTimeMillis() to list
+        membersJson(list)
+    }.getOrElse { err(it.message ?: "members failed") }
+
+    private val memberCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<String>>>()
+
+    private fun membersJson(list: List<String>): String {
+        val arr = JSONArray()
+        list.forEach { arr.put(it) }
+        return JSONObject().put("members", arr).toString()
+    }
 
     @JavascriptInterface
     fun projectInfo(): String = JSONObject().apply {
@@ -256,6 +301,7 @@ internal class CodeEditorBridge(
     @JavascriptInterface
     fun termStart(cols: Int, rows: Int): String = try {
         val guest = UserlandRuntime.guestProject(context, project)
+        val rcGuest = "$guest/.termrc"
         // script(script util) 가 PTY 를 잡아 대화가 유지된다. script 를 못 쓰면
         // bash -i(pipe 모드라 echo만 되는 반쪽)라도 살려둔다. exec 금지: 마지막
         // exec 가 죽으면 폴백 없이 세션이 종결된다.
@@ -264,8 +310,23 @@ internal class CodeEditorBridge(
                 "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }\n" +
                 "export PS1=" + UserlandRuntime.q("$ ") + "\n" +
                 "stty rows " + rows + " cols " + cols + " 2>/dev/null\n" +
-                "script -qc bash /dev/null 2>&1\n" +
+                // 크기 동기화: host 가 .termsize 에 창 크기를 쓰고, bash rc 가 백그라운드
+                // 폴러로 read+stty 한다(폴러는 interactive bash 의 잡으로만 살수 있음).
+                // rc 는 host 파일에서 직접 쓰지 — printf 이스케이프 사달 prevents.
+                "script -qc 'bash --rcfile " + rcGuest + " -i' /dev/null 2>&1\n" +
                 "exec bash -i 2>&1"
+        val rcHost = java.io.File(UserlandRuntime.projectsHostDir(context), "$project/.termrc")
+        runCatching {
+            rcHost.parentFile?.mkdirs()
+            // read 는 개행 없는 EOF 에서 rc=1 을 반환하므로 && 로 게이트하지 않는다.
+            // stty 는 stdin 을 tty 로 써야 하므로 stdin 을 /dev/tty 로 리다이렉트한다.
+            rcHost.writeText(
+                "[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc\n" +
+                    "[ -f ~/.bashrc ] && . ~/.bashrc\n" +
+                    "PROMPT_COMMAND='read -r _c _r </home/projects/.termsize 2>/dev/null; " +
+                    "[ -n \"\$_c\" ] && stty cols \$_c rows \$_r 0</dev/tty 2>/dev/null'\n"
+            )
+        }
         val p = UserlandRuntime.spawnBackground(context, inner, guest, null)
             ?: return err("터미널 시작 실패")
         val id = ++termSeq
@@ -316,8 +377,7 @@ internal class CodeEditorBridge(
         val t = terms[id] ?: return
         val alive = runCatching { t.process.exitValue() }.isFailure
         if (!alive) return
-        if (System.currentTimeMillis() - t.lastInput > 600) t.applyResize(cols, rows)
-        else t.pending = cols to rows
+        writeSizeFile(cols, rows)
     }
 
     @JavascriptInterface
