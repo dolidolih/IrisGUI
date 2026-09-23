@@ -20,34 +20,38 @@
   #app { display: flex; flex-direction: column; position: fixed; inset: 0; }
 
   #bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+    flex-wrap: wrap; row-gap: 6px;
     background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
   #bar .title { font-weight: 600; font-size: 14px; margin-right: 6px;
     max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sub);
     display: inline-block; margin-right: 5px; }
   .dot.run { background: var(--green); box-shadow: 0 0 6px var(--green); }
-  .spacer { flex: 1; }
+  .spacer { flex: 1 0 4px; }
   .btn { border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
     border-radius: 7px; padding: 6px 10px; font-size: 12.5px; line-height: 1;
-    cursor: pointer; -webkit-tap-highlight-color: transparent; white-space: nowrap; }
+    cursor: pointer; -webkit-tap-highlight-color: transparent; white-space: nowrap;
+    flex: 0 0 auto; }
   .btn:active { transform: scale(0.96); background: var(--line); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #10121A; font-weight: 600; }
   .btn.stop { background: var(--red); border-color: var(--red); color: #fff; }
   .btn.ghost { background: transparent; }
-  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .seg .btn { border: none; border-radius: 0; padding: 7px 12px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: 0 0 auto; }
+  .seg .btn { border: none; border-radius: 0; padding: 7px 12px; flex: 0 0 auto; }
   .seg .btn.on { background: var(--accent); color: #10121A; font-weight: 600; }
 
   #main { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
   #tree { flex: 0 0 150px; background: var(--panel2); border-right: none;
     overflow-y: auto; overflow-x: hidden; font-size: 13px; padding: 6px 0 60px; }
   body.treeOff #tree { display: none; }
-  body.treeOff #split { flex: 0 0 14px; }
-  body.treeOff #split::after { left: 6px; }
-  #split { flex: 0 0 10px; cursor: col-resize; touch-action: none; position: relative; z-index: 5; }
-  #split::after { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px;
+  body.treeOff #split { flex: 0 0 18px; }
+  #split { flex: 0 0 16px; cursor: col-resize; touch-action: none; position: relative; z-index: 5; }
+  /* 중앙에 always-visible 그립: 접기/펼치기 버튼이 여기 있다 */
+  #split::before { content: ""; position: absolute; left: 6px; top: 50%; width: 4px; height: 40px;
+    margin-top: -20px; border-radius: 2px; background: var(--line); transition: background .12s; }
+  #split::after { content: ""; position: absolute; left: 7.5px; top: 0; bottom: 0; width: 1px;
     background: var(--line); }
-  #split:active::after { background: var(--accent); }
+  #split:active::before { background: var(--accent); }
   body.term #tree, body.term #split { display: none; }
   #tree .head { color: var(--sub); font-size: 10.5px; letter-spacing: .8px;
     text-transform: uppercase; padding: 8px 12px 4px; }
