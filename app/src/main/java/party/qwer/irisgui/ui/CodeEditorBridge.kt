@@ -1,6 +1,7 @@
 package party.qwer.irisgui.ui
 
 import android.content.Context
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.RuntimeLog
@@ -53,6 +54,58 @@ internal class CodeEditorBridge(
     private val terms = ConcurrentHashMap<Int, Term>()
     private var termSeq = 0
     @Volatile private var closed = false
+
+    /** 화면 키보드 게이트. false 이면 WebView 의 IM 연결/표시를 막는다. */
+    @Volatile var keyboardAllowed = false
+        private set
+    @Volatile private var imeOverride = false
+    /** 게이트 상태가 바뀌었을 때 화면(실제 IME 제어)에 통지한다. */
+    var gateListener: (() -> Unit)? = null
+
+    /** 입력 커넥션을 허락할지: 항상 허용(kb 토글 ON) 또는 임시 예외(다이얼로그). */
+    val imeActive: Boolean get() = keyboardAllowed || imeOverride
+
+    @JavascriptInterface
+    fun setKeyboardAllowed(allowed: Boolean) {
+        if (keyboardAllowed == allowed) return
+        keyboardAllowed = allowed
+        runCatching { gateListener?.invoke() }
+    }
+
+    /** 키보드 ON 전환 즉시 IM 을 올린다 (포커스는 이미 WebView 에 걸려 있다). */
+    @JavascriptInterface
+    fun showSoftKeyboard() {
+        val activity = context as? android.app.Activity ?: return
+        activity.window.decorView.post {
+            runCatching {
+                val view = activity.window.currentFocus ?: activity.window.decorView
+                val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE)
+                    as InputMethodManager
+                imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    /** 올라와 있는 화면 키보드를 즉시 숨긴다 (포커스 요구와 방지 모드 사이 경쟁 방지). */
+    @JavascriptInterface
+    fun hideSoftKeyboard() {
+        val activity = context as? android.app.Activity ?: return
+        activity.window.decorView.post {
+            runCatching {
+                val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE)
+                    as InputMethodManager
+                imm.hideSoftInputFromWindow(activity.window.currentFocus?.windowToken, 0)
+            }
+        }
+    }
+
+    /** 다이얼로그 입력 등 임시 허용. false 로 되돌리면 열려 있던 키보드를 숨긴다. */
+    @JavascriptInterface
+    fun setImeOverride(allowed: Boolean) {
+        if (imeOverride == allowed) return
+        imeOverride = allowed
+        runCatching { gateListener?.invoke() }
+    }
 
     fun close() {
         closed = true
@@ -148,18 +201,23 @@ internal class CodeEditorBridge(
     }
 
     private fun walk(dir: File, out: JSONArray, depth: Int) {
-        val kids = (dir.listFiles()?.filter { keep(it) } ?: return)
-            .sortedWith(compareByDescending<File> { it.isDirectory }
+        val isRoot = depth == 0
+        val kids = (dir.listFiles()?.filter { keep(it, isRoot) } ?: return)
+            .sortedWith(compareBy<File> { it.name == ".venv" || it.name == "venv" }
+                .thenByDescending<File> { it.isDirectory }
                 .thenBy { it.name.lowercase() })
         for (f in kids) {
             val o = JSONObject()
             o.put("name", f.name)
             o.put("path", relOf(f))
             o.put("dir", f.isDirectory)
+            val venv = f.name == ".venv" || f.name == "venv"
             if (f.isFile) {
                 o.put("size", f.length())
                 o.put("mtime", f.lastModified())
-            } else if (depth < 8) {
+            } else if (!venv && depth < 8) {
+                // venv 는 노드의 일부가 아니다. 자식을 내려주면 트리 들여쓰기가
+                // "전부가 .venv 아래"처럼 보이는 착각을 준다.
                 val c = JSONArray()
                 walk(f, c, depth + 1)
                 if (c.length() > 0) o.put("children", c)
@@ -168,12 +226,13 @@ internal class CodeEditorBridge(
         }
     }
 
-    /** .venv/.git/__pycache__ 등은 접지만. 사이트패키지 트리를 트리에서 보여주는 건 무의미. */
-    private fun keep(f: File): Boolean = when {
+    /** 노이즈 정리. 루트의 앱 내부 파일(.log/.termrc/.venv.done/...) 도 숨긴다. */
+    private fun keep(f: File, isRoot: Boolean): Boolean = when {
         f.name == ".git" || f.name == "__pycache__" || f.name == ".idea" ||
             f.name == "node_modules" || f.name == ".mypy_cache" || f.name == ".pytest_cache" -> false
-        f.name == ".venv" -> true
+        f.name == ".venv" || f.name == "venv" -> true
         f.isDirectory && f.name.startsWith(".") -> false
+        isRoot && f.name.startsWith(".") -> false
         f.length() > 8L * 1024 * 1024 && f.isFile -> false
         else -> true
     }
