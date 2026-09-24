@@ -84,11 +84,10 @@
 
   #termwrap { display: none; flex: 1 1 auto; flex-direction: column; min-height: 0; }
   #term { flex: 1 1 auto; min-height: 0; background: #161821; padding: 6px 4px 0; }
-  #termbio { position: fixed; left: 0; right: 0; bottom: 54px; z-index: 30;
-    margin: 0 8px; border-radius: 10px;
-    padding: 6px 6px; background: var(--panel2); border: 1px solid var(--line);
-    display: flex; gap: 5px; align-items: center; flex-wrap: nowrap;
-    justify-content: center; box-shadow: 0 2px 10px #0008; }
+  #termbio { flex: 0 0 auto; margin: 6px 8px 0; border-radius: 10px;
+    padding: 5px 6px; background: var(--panel2); border: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
+  #termbio .kbrow { display: flex; gap: 5px; justify-content: center; }
   #termbio .hint { color: var(--sub); font-size: 10.5px; margin-right: auto;
     max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .keycap { font-family: monospace; font-size: 11.5px; padding: 7px 7px; flex: 0 0 auto; }
@@ -130,7 +129,6 @@
     <div class="btn ghost icon" id="btnZoomOut" title="글자 작게"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M8 10.5h5"/></svg></div>
     <div class="btn ghost icon" id="btnZoomIn" title="글자 크게"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M8 10.5h5M10.5 8v5"/></svg></div>
     <div class="btn ghost" id="btnMore">⋮</div>
-    <div class="btn icon" id="btnKeyboard" title="화면 키보드"><svg viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="10.5" rx="2"/><path d="M6 10.5h.01M9.5 10.5h.01M13 10.5h.01M16.5 10.5h.01M8 14h8"/></svg></div>
     <div class="btn icon" id="btnClose" title="닫기"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></div>
   </div>
 
@@ -139,18 +137,22 @@
     <div id="split" title="드래그: 너비 / 클릭: 접기"></div>
     <div id="editor"></div>
     <div id="termwrap">
-      <div id="term"></div>
       <div id="termbio">
-        <div class="btn keycap" data-key="ctrlc">^C</div>
-        <div class="btn keycap" data-key="tab">tab</div>
-        <div class="btn keycap" id="modCtrl">ctrl</div>
-        <div class="btn keycap" id="modAlt">alt</div>
-        <div class="btn keycap" data-key="left">←</div>
-        <div class="btn keycap" data-key="up">↑</div>
-        <div class="btn keycap" data-key="down">↓</div>
-        <div class="btn keycap" data-key="right">→</div>
-        <div class="btn keycap" id="btnKill">restart</div>
+        <div class="kbrow">
+          <div class="btn keycap" data-key="ctrlc">^C</div>
+          <div class="btn keycap" data-key="tab">tab</div>
+          <div class="btn keycap" id="modCtrl">ctrl</div>
+          <div class="btn keycap" id="modAlt">alt</div>
+          <div class="btn keycap" id="btnKill">restart</div>
+        </div>
+        <div class="kbrow">
+          <div class="btn keycap" data-key="left">←</div>
+          <div class="btn keycap" data-key="down">↓</div>
+          <div class="btn keycap" data-key="up">↑</div>
+          <div class="btn keycap" data-key="right">→</div>
+        </div>
       </div>
+      <div id="term"></div>
     </div>
   </div>
 
@@ -196,10 +198,9 @@ function dlg(title, value, cb) {
   const inp = $('dlgInput');
   inp.value = value || '';
   $('dlg').style.display = 'flex';
-  try { B.setImeOverride(true); } catch (e) {}
   setTimeout(() => inp.focus(), 60);
-  const ok = () => { $('dlg').style.display = 'none'; try { B.setImeOverride(false); } catch (e) {} cb(inp.value.trim()); },
-        no = () => { $('dlg').style.display = 'none'; try { B.setImeOverride(false); } catch (e) {} cb(null); };
+  const ok = () => { $('dlg').style.display = 'none'; cb(inp.value.trim()); },
+        no = () => { $('dlg').style.display = 'none'; cb(null); };
   $('dlgOk').onclick = ok; $('dlgCancel').onclick = no;
   inp.onkeydown = e => { if (e.key === 'Enter') ok(); };
 }
@@ -547,7 +548,7 @@ function initTerminal() {
       red: '#F28779', magenta: '#C792EA', yellow: '#E6C896', white: '#D0D4E1' },
     cursorBlink: true, scrollback: 1000, convertEol: false,
   });
-  term.onData(d => { if (termId != null) B.termInput(termId, b64e(d)); });
+  term.onData(d => { if (termId != null) B.termInput(termId, b64e(applyMods(d))); });
   window.Term = {
     onData(id, b) {
       if (id !== termId) return;
@@ -645,12 +646,39 @@ $('btnZoomIn').onclick = () => { setFont(fontPx + 1); toast('글자 ' + fontPx +
 $('btnZoomOut').onclick = () => { setFont(fontPx - 1); toast('글자 ' + fontPx + 'px'); };
 $('tabCode').onclick = () => showPane(true);
 $('tabTerm').onclick = () => showPane(false);
-/* ctrl/alt 는 토글 모드: 켜진 다음 화살/문자가 조합 시퀀스로 나간다. */
+/* ctrl/alt 는 홀드(래치) 모드: 켜진 뒤 누르는 첫 키 한 번만 조합으로 보내고 자동 해제.
+ * 화살표뿐 아니라 IME 로 입력한 문자에도 적용된다. */
 let modCtrl = false, modAlt = false;
 function mods() { $('modCtrl').classList.toggle('on', modCtrl);
   $('modAlt').classList.toggle('on', modAlt); }
-$('modCtrl').onclick = () => { modCtrl = !modCtrl; mods(); toast(modCtrl ? 'ctrl 대기' : 'ctrl 해제'); };
-$('modAlt').onclick = () => { modAlt = !modAlt; mods(); toast(modAlt ? 'alt 대기' : 'alt 해제'); };
+function modRelease() { modCtrl = modAlt = false; mods(); }
+function modsAfter() { if (!document.body.classList.contains('term')) return;
+  setTimeout(() => { try { term && termOpened && term.focus(); } catch (e) {} }, 0); }
+$('modCtrl').onclick = () => { modCtrl = !modCtrl; modAlt = false; mods(); modsAfter(); toast(modCtrl ? 'ctrl 홀드 — 다음 키가 조합으로 나감' : 'ctrl 해제'); };
+$('modAlt').onclick = () => { modAlt = !modAlt; modCtrl = false; mods(); modsAfter(); toast(modAlt ? 'alt 홀드 — 다음 키가 조합으로 나감' : 'alt 해제'); };
+function applyMods(d) {
+  if (!d || (!modCtrl && !modAlt)) return d;
+  let out = d, used = true;
+  const arrow = { '\x1b[A': 'A', '\x1b[B': 'B', '\x1b[C': 'C', '\x1b[D': 'D' }[d];
+  if (arrow) {
+    out = modCtrl && modAlt ? '\x1b[1;7' + arrow
+        : modCtrl ? '\x1b[1;5' + arrow
+        : '\x1b[1;3' + arrow;
+  } else if (d.length === 1) {
+    const c = d.charCodeAt(0);
+    if (modCtrl && ((c >= 0x40 && c <= 0x7f) || c === 0x20)) {
+      out = c === 0x20 ? '\x00' : String.fromCharCode(c & 0x1f);
+    } else if (modAlt) {
+      out = '\x1b' + d;
+    } else used = false;
+  } else used = false;
+  if (used) {
+    const tag = (modCtrl ? 'ctrl+' : '') + (modAlt ? 'alt+' : '');
+    modRelease();
+    setTimeout(() => toast(tag + '로 전송'), 0);
+  }
+  return out;
+}
 function arrowCode(k) {
   const base = { left: 'D', up: 'A', down: 'B', right: 'C' }[k];
   if (modAlt && modCtrl) return '\x1b[1;7' + base;
@@ -658,6 +686,11 @@ function arrowCode(k) {
   if (modAlt) return '\x1b[1;3' + base;
   return '\x1b[' + base;
 }
+/* 키팁 탭이 textarea 에서 포커스를 뺏지 않게: mousedown 단계에서 기본动作 차단 */
+document.querySelectorAll('#termbio .btn').forEach(b => {
+  b.addEventListener('mousedown', e => e.preventDefault());
+  b.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+});
 document.querySelectorAll('#termbio [data-key]').forEach(b => {
   b.onclick = () => {
     termStart();
@@ -668,7 +701,7 @@ document.querySelectorAll('#termbio [data-key]').forEach(b => {
     else if (k in { up: 1, down: 1, left: 1, right: 1 }) { seq = arrowCode(k); }
     else seq = b.dataset.key;
     if (termId != null) B.termInput(termId, b64e(seq));
-    mods();
+    if (modCtrl || modAlt) modRelease();
   };
 });
 /* 문자 그대로 입력하는 텍스트창용: alt+f/b = 단어 단위 이동 */
@@ -702,8 +735,26 @@ $('btnKill').onclick = termKill;
   sp.addEventListener('dblclick', () => collapse(false));
 })();
 
-window.addEventListener('resize', fitTerm);
-window.addEventListener('resize', () => { if (editor) editor.layout(); });
+/* ── IME 위치 관리 ───────────────────────────────────────────────
+   두 모드 모두 커버: (a) 창/뷰포트가 실제 리사이즈되는 경우(visualViewport 로 감지),
+   (b) 창은 그대로고 IME 가 오버레이되는 경우(native inset → setImeBottom). */
+let imeBottom = 0;
+function imePad() {
+  const vv = window.visualViewport;
+  const shrunk = vv ? Math.max(0, innerHeight - vv.height - vv.offsetTop) : 0;
+  const pad = Math.max(imeBottom, shrunk);
+  $('app').style.paddingBottom = pad ? pad + 'px' : '';
+  fitTerm(); if (editor) editor.layout();
+}
+window.IrisEditor = window.IrisEditor || {};
+/* native 는 device px 로 Insets 를 주지만 CSS 레이어는 dpr 로 나뉜다. */
+window.IrisEditor.setImeBottom = function (px) {
+  const dpr = window.devicePixelRatio || 1;
+  imeBottom = Math.max(0, (px | 0) / dpr);
+  imePad();
+};
+window.addEventListener('resize', () => { fitTerm(); imePad(); if (editor) editor.layout(); });
+if (window.visualViewport) window.visualViewport.addEventListener('resize', imePad);
 
 /* ── ⋮ menu ────────────────────────────────────────────── */
 let menuEl = null;
@@ -782,37 +833,10 @@ let treeT = null;
 function loadTreeSoon() { clearTimeout(treeT); treeT = setTimeout(loadTree, 300); }
 
 /* ── close / keys ──────────────────────────────────────── */
-$('btnClose').onclick = () => { save(true); B.closeEditor ? B.closeEditor() : B.log('close requested'); };
+$('btnClose').onclick = () => { try { save(true); } catch (e) {} if (B.closeEditor) B.closeEditor(); };
 
-/* ── 화면 키보드 토글 ─────────────────────────────────────
- * 방지 모드(off)일 때 Android 네이티브가 IM 요청을 막는다. 다이얼로그 입력만
- * 예외(setImeOverride)로 키보드를 허용한다. */
-let kbOn = false; try { kbOn = localStorage.getItem('igKb') === '1'; } catch (e) {}
-function kbApply() {
-  $('btnKeyboard').classList.toggle('on', kbOn);
-  try { B.setKeyboardAllowed(kbOn); } catch (e) {}
-}
-$('btnKeyboard').onclick = () => {
-  kbOn = !kbOn;
-  try { localStorage.setItem('igKb', kbOn ? '1' : '0'); } catch (e) {}
-  kbApply();
-  if (kbOn) { try { B.showSoftKeyboard(); } catch (e) {} }
-  toast(kbOn ? '화면 키보드 켬' : '화면 키보드 꺼짐');
-};
-kbApply();
-/* 방지 중이어도 터미널 textarea 포커스는 IM 요청 → 즉시 되감는다. */
-document.addEventListener('focusin', e => {
-  const t = e.target;
-  if (kbOn || !t || !t.classList) return;
-  if (t.classList.contains('xterm-helper-textarea')) {
-    setTimeout(() => { if (!kbOn && document.activeElement === t) t.blur(); }, 0);
-    try { B.hideSoftKeyboard(); } catch (e) {}
-  }
-});
-window.IrisEditor = {
-  flush() { save(true); },
-  back() { save(true); if (B.closeEditor) B.closeEditor(); },
-};
+window.IrisEditor.flush = () => { try { save(true); } catch (e) {} };
+window.IrisEditor.back = () => { try { save(true); } catch (e) {}; if (B.closeEditor) B.closeEditor(); };
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); save(); }
 });

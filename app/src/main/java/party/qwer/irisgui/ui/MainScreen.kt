@@ -155,7 +155,11 @@ fun MainScreen() {
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
+        // 편집기(WebView)가 열리면 네비게이션 바 영역까지 WebView 를 내려 흰 창 배경이
+        // 비치는 띠를 없앤다 (바가 이미 숨겨져 so bottom padding 은 불필요).
+        val boxPad = if (codeEditorOpen.value)
+            PaddingValues(top = paddingValues.calculateTopPadding()) else paddingValues
+        Box(modifier = Modifier.padding(boxPad).fillMaxSize()) {
             when (selectedTabName) {
                 "상태" -> StatusScreen(permission)
                 "로그" -> LogsScreen()

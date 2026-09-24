@@ -8,5 +8,7 @@
         <item name="colorOnSecondary">@color/black</item>
         <item name="android:statusBarColor">#F3F4F6</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#1B1D27</item>
+        <item name="android:windowBackground">#1B1D27</item>
     </style>
 </resources>

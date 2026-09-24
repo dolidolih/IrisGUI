@@ -2,18 +2,13 @@ package party.qwer.irisgui.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.view.inputmethod.BaseInputConnection
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
-import android.text.InputType
-import android.view.inputmethod.InputConnection
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,6 +16,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.viewinterop.AndroidView
@@ -52,37 +48,30 @@ fun MonacoEditorScreen(name: String, onBack: () -> Unit) {
             requestClose = { currentBack.value() }
         )
     }
-    DisposableEffect(bridge) { onDispose { bridge.gateListener = null; bridge.close() } }
+    DisposableEffect(bridge) { onDispose { bridge.close() } }
+
+    // IME inset 을 JS 에게만 알려 화면이 키보드 높이만큼 줄어들게 한다 (redroid 는 창이
+    // 실제 리사이즈되지 않는 경우가 있어 네이티브 inset 이 확정 경로). requestLayout 나
+    // focus/blurring 같은 네이티브 개입은 렌더러를 불안정하게 해 웹뷰가 죽으므로 금지.
+    val wvRef = webViewRef
+    val decorView = LocalView.current.rootView
+    DisposableEffect(Unit) {
+        ViewCompat.setOnApplyWindowInsetsListener(decorView) { _, ins ->
+            val px = ins.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            wvRef.value?.evaluateJavascript(
+                "window.IrisEditor&&IrisEditor.setImeBottom($px)", null
+            )
+            ins
+        }
+        ViewCompat.requestApplyInsets(decorView)
+        onDispose { ViewCompat.setOnApplyWindowInsetsListener(decorView, null) }
+    }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF1B1D27))) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { c ->
-                object : WebView(c) {
-                    // 키보드 방지: 게이트 OFF 면 IM 연결에 TYPE_NULL 을 박아 IME 가
-                    // 키보드를 올릴 input type 을 아예 못 받게 한다.
-                    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
-                        // super 는 렌더 초기화 이전엔 null 을 반환할 수 있다 → nullable 로 선언.
-                        if (bridge.imeActive) return super.onCreateInputConnection(outAttrs)
-                        outAttrs.inputType = InputType.TYPE_NULL
-                        return BaseInputConnection(this, false)
-                    }
-
-                    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
-                        super.onWindowFocusChanged(hasWindowFocus)
-                        if (!bridge.imeActive) hideSoftInput()
-                    }
-
-                    /** 올라와 있던 키보드를 즉시 내린다. */
-                    fun hideSoftInput() = post {
-                        runCatching {
-                            (context.getSystemService(Context.INPUT_METHOD_SERVICE)
-                                as? InputMethodManager)?.hideSoftInputFromWindow(
-                                windowToken, InputMethodManager.HIDE_NOT_ALWAYS
-                            )
-                        }
-                    }
-                }.apply {
+                WebView(c).apply {
                     if ((c.applicationInfo.flags and
                             android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
                     ) WebView.setWebContentsDebuggingEnabled(true)
@@ -121,44 +110,18 @@ fun MonacoEditorScreen(name: String, onBack: () -> Unit) {
                             }
                         }
                     }
-                    webChromeClient = android.webkit.WebChromeClient()
-                    addJavascriptInterface(bridge, "AndroidBridge")
-                    ViewCompat.setOnApplyWindowInsetsListener(this) { v, ins ->
-                        val bars = ins.getInsets(
-                            WindowInsetsCompat.Type.systemBars(),
-                        )
-                        v.setPadding(bars.left, 0, bars.right, bars.bottom)
-                        ins
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                            android.util.Log.i("EditorJS", m.message() + " @" + m.lineNumber())
+                            return true
+                        }
                     }
+                    addJavascriptInterface(bridge, "AndroidBridge")
                     loadUrl(URL_EDITOR)
                     webViewRef.value = this
                 }
             }
         )
-    }
-
-    // 키보드 게이트: 게이트 토글/다이얼로그 예외 때마다 실제 IM 제어를 재 동기화한다.
-    LaunchedEffect(bridge) {
-        bridge.gateListener = gate@{
-            val w = webViewRef.value ?: return@gate
-            // 입력 커넥션은 포커스 유지 중엔 재생성되지 않는다. 게이트가 바뀌었으면
-            // IME 가 onCreateInputConnection 을 다시 읽도록 restartInput 한다.
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
-                as? InputMethodManager
-            imm?.restartInput(w)
-            if (!bridge.imeActive) {
-                w.post {
-                    runCatching {
-                        (context.getSystemService(Context.INPUT_METHOD_SERVICE)
-                            as? InputMethodManager)?.hideSoftInputFromWindow(
-                            w.windowToken, InputMethodManager.HIDE_NOT_ALWAYS
-                        )
-                    }
-                }
-            } else {
-                w.requestFocus()
-            }
-        }
     }
 
     // 닫기 = flush(autosave 반영) 후 화면 반환. flush 는 JS autosave(1.5s) 로 이미 저장된 게 대부분.
