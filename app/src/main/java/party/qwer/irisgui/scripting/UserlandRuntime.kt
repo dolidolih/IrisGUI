@@ -250,7 +250,11 @@ object UserlandRuntime {
     /** proot 를 띄우는 공통 ProcessBuilder. cwd=guest dir, /home/projects 바인드. */
     private fun prootBuilder(context: Context, inner: String, cwdGuest: String?): ProcessBuilder {
         val dir = rootDir(context)
+        // setsid 필수: proot 를 앱과 같은 세션/그룹에 두면 proot 의 SIGTERM cleanup 이
+        // ptrace group-stop 을 세션 전체(앱 전 스레드 포함 = T stop, 입력 ANR)로 전파한다.
+        // 자식에게 새 세션을 주면 stop 은 자식 세션에만 국한된다.
         val pb = ProcessBuilder(
+            "/system/bin/setsid",
             prootPath(context).absolutePath,
             "-0",
             "-r", dir.absolutePath,
