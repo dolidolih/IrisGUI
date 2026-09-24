@@ -209,6 +209,7 @@ function dlg(title, value, cb) {
 let editor = null, MODEL_PATH = null, DIRTY = false;
 let fontPx = 13; try { fontPx = +localStorage.getItem('igFs') || 13; } catch (e) {}
 const MODELS = {};
+let treeSel = null;   // 트리에서 마지막으로 탭한 경로 (폴더 포함) — 이름변경/삭제 대상
 let pipModules = [], pipPackages = [];
 let runningState = false;
 
@@ -431,7 +432,10 @@ function renderTree(host, nodes) {
       : !isDir && n.size != null ? '<span class="sub">' + human(n.size) + '</span>' : '';
     row.innerHTML = chevron + icon + label + sub;
     row.addEventListener('click', () => {
+      treeSel = n.path;  // 이름변경/삭제 대상 = 마지막으로 탭한 항목 (폴더 포함)
       if (isDir) {
+        document.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+        row.classList.add('sel');
         row.classList.toggle('open');
         const kid = row.nextElementSibling;
         if (kid && kid.classList.contains('kid')) kid.classList.toggle('open', row.classList.contains('open'));
@@ -605,7 +609,7 @@ function termAttach() {
     setTimeout(() => { fitTerm(); }, 50);
   }
   termStart();
-  setTimeout(() => { fitTerm(); if (kbOn) term.focus(); }, 350);
+  setTimeout(() => { fitTerm(); try { if (term && termOpened) term.focus(); } catch (e) {} }, 350);
 }
 function termKill() {
   if (termId != null) { B.termStop(termId); termId = null; }
@@ -654,8 +658,8 @@ function mods() { $('modCtrl').classList.toggle('on', modCtrl);
 function modRelease() { modCtrl = modAlt = false; mods(); }
 function modsAfter() { if (!document.body.classList.contains('term')) return;
   setTimeout(() => { try { term && termOpened && term.focus(); } catch (e) {} }, 0); }
-$('modCtrl').onclick = () => { modCtrl = !modCtrl; modAlt = false; mods(); modsAfter(); toast(modCtrl ? 'ctrl 홀드 — 다음 키가 조합으로 나감' : 'ctrl 해제'); };
-$('modAlt').onclick = () => { modAlt = !modAlt; modCtrl = false; mods(); modsAfter(); toast(modAlt ? 'alt 홀드 — 다음 키가 조합으로 나감' : 'alt 해제'); };
+$('modCtrl').addEventListener('pointerup', () => { modCtrl = !modCtrl; modAlt = false; mods(); modsAfter(); toast(modCtrl ? 'ctrl 홀드 — 다음 키가 조합으로 나감' : 'ctrl 해제'); });
+$('modAlt').addEventListener('pointerup', () => { modAlt = !modAlt; modCtrl = false; mods(); modsAfter(); toast(modAlt ? 'alt 홀드 — 다음 키가 조합으로 나감' : 'alt 해제'); });
 function applyMods(d) {
   if (!d || (!modCtrl && !modAlt)) return d;
   let out = d, used = true;
@@ -691,8 +695,9 @@ document.querySelectorAll('#termbio .btn').forEach(b => {
   b.addEventListener('mousedown', e => e.preventDefault());
   b.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
 });
+/* click 은 touchstart 의 preventDefault 로 취소될 수 있어 pointerup 에 바인다. */
 document.querySelectorAll('#termbio [data-key]').forEach(b => {
-  b.onclick = () => {
+  b.addEventListener('pointerup', () => {
     termStart();
     let seq;
     const k = b.dataset.key;
@@ -702,10 +707,9 @@ document.querySelectorAll('#termbio [data-key]').forEach(b => {
     else seq = b.dataset.key;
     if (termId != null) B.termInput(termId, b64e(seq));
     if (modCtrl || modAlt) modRelease();
-  };
+  });
 });
-/* 문자 그대로 입력하는 텍스트창용: alt+f/b = 단어 단위 이동 */
-$('btnKill').onclick = termKill;
+$('btnKill').addEventListener('pointerup', termKill);
 /* tree ↔ editor splitter (드래그로 너비 조절; 세션 중 유지) */
 (function () {
   const sp = $('split'), tree = $('tree');
@@ -783,9 +787,13 @@ function menuToggle() {
 $('btnMore').onclick = menuToggle;
 
 function selPath() {
+  // 마지막으로 탭한 트리 항목 우선 — 폴더도 선택 가능해야 이름변경/삭제가 동작한다.
+  if (treeSel && (document.querySelector('.row.sel') || document.querySelector('.row[data-path="' + cssq(treeSel) + '"]')))
+    return treeSel;
   const s = document.querySelector('.row.sel');
   return MODEL_PATH || (s ? s.dataset.path : 'main.py');
 }
+function cssq(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'); }
 function actNew() {
   dlg('만들 파일 이름', 'util.py', v => {
     if (!v) return;
@@ -809,8 +817,15 @@ function actRename() {
     const r = JSON.parse(B.rename(p, to));
     toast(r.message);
     if (r.ok) {
-      if (p === MODEL_PATH) { MODELS[to] = MODELS[p]; delete MODELS[p];
-        MODEL_PATH = to; }
+      // 폴더 rename: 아래 열린 파일 모델/MODEL_PATH 키도 옮겨야 이어진다.
+      const pre = p + '/';
+      for (const k of Object.keys(MODELS)) if (k === p || k.startsWith(pre)) {
+        MODELS[to + (k === p ? '' : k.slice(p.length))] = MODELS[k]; delete MODELS[k];
+      }
+      if (MODEL_PATH && (MODEL_PATH === p || MODEL_PATH.startsWith(pre)))
+        MODEL_PATH = to + MODEL_PATH.slice(p.length);
+      if (treeSel === p || (treeSel && treeSel.startsWith(pre)))
+        treeSel = to + treeSel.slice(p.length);
       loadTreeSoon();
     }
   });
