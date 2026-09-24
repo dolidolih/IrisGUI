@@ -1,7 +1,6 @@
 package party.qwer.irisgui.ui
 
 import android.content.Context
-import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.RuntimeLog
@@ -54,58 +53,6 @@ internal class CodeEditorBridge(
     private val terms = ConcurrentHashMap<Int, Term>()
     private var termSeq = 0
     @Volatile private var closed = false
-
-    /** 화면 키보드 게이트. false 이면 WebView 의 IM 연결/표시를 막는다. */
-    @Volatile var keyboardAllowed = false
-        private set
-    @Volatile private var imeOverride = false
-    /** 게이트 상태가 바뀌었을 때 화면(실제 IME 제어)에 통지한다. */
-    var gateListener: (() -> Unit)? = null
-
-    /** 입력 커넥션을 허락할지: 항상 허용(kb 토글 ON) 또는 임시 예외(다이얼로그). */
-    val imeActive: Boolean get() = keyboardAllowed || imeOverride
-
-    @JavascriptInterface
-    fun setKeyboardAllowed(allowed: Boolean) {
-        if (keyboardAllowed == allowed) return
-        keyboardAllowed = allowed
-        runCatching { gateListener?.invoke() }
-    }
-
-    /** 키보드 ON 전환 즉시 IM 을 올린다 (포커스는 이미 WebView 에 걸려 있다). */
-    @JavascriptInterface
-    fun showSoftKeyboard() {
-        val activity = context as? android.app.Activity ?: return
-        activity.window.decorView.post {
-            runCatching {
-                val view = activity.window.currentFocus ?: activity.window.decorView
-                val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE)
-                    as InputMethodManager
-                imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
-            }
-        }
-    }
-
-    /** 올라와 있는 화면 키보드를 즉시 숨긴다 (포커스 요구와 방지 모드 사이 경쟁 방지). */
-    @JavascriptInterface
-    fun hideSoftKeyboard() {
-        val activity = context as? android.app.Activity ?: return
-        activity.window.decorView.post {
-            runCatching {
-                val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE)
-                    as InputMethodManager
-                imm.hideSoftInputFromWindow(activity.window.currentFocus?.windowToken, 0)
-            }
-        }
-    }
-
-    /** 다이얼로그 입력 등 임시 허용. false 로 되돌리면 열려 있던 키보드를 숨긴다. */
-    @JavascriptInterface
-    fun setImeOverride(allowed: Boolean) {
-        if (imeOverride == allowed) return
-        imeOverride = allowed
-        runCatching { gateListener?.invoke() }
-    }
 
     fun close() {
         closed = true
