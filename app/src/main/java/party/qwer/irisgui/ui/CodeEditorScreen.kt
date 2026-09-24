@@ -21,6 +21,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
+import party.qwer.irisgui.RuntimeLog
 
 /**
  * Monaco 편집 화면 — code-server 없이 assets/editor/editor.html 을 직접 서빙.
@@ -92,21 +93,30 @@ fun MonacoEditorScreen(name: String, onBack: () -> Unit) {
                         .build()
                     webViewClient = object : android.webkit.WebViewClient() {
                         override fun shouldInterceptRequest(
-                            view: WebView,
-                            request: android.webkit.WebResourceRequest
+                            view: WebView, request: android.webkit.WebResourceRequest
                         ): android.webkit.WebResourceResponse? =
                             loader.shouldInterceptRequest(request.url)
 
+                        // 렌더러/GPU 크래시가 프로세스 전체를 죽이지 못하게. redroid 의 불안정한
+                        // ANGLE/Vulkan 스택에서 WebView 렌더러가 죽으면 기본 동작은 앱 종료인데,
+                        // true 를 반환하면 편집 화면만 죽고 앱은 산다.
+                        override fun onRenderProcessGone(
+                            view: WebView, detail: android.webkit.RenderProcessGoneDetail
+                        ): Boolean {
+                            RuntimeLog.error(
+                                "Editor", "renderer gone (didCrash=${detail.didCrash()})"
+                            )
+                            runCatching { view.destroy() }
+                            return true
+                        }
+
                         override fun onReceivedError(
-                            view: WebView,
-                            request: android.webkit.WebResourceRequest?,
+                            view: WebView, request: android.webkit.WebResourceRequest?,
                             error: android.webkit.WebResourceError?
                         ) {
                             // 워커/폰트 실패 정도는 치명적이지 않다 — 로그만.
                             if (request?.isForMainFrame == true) {
-                                party.qwer.irisgui.RuntimeLog.error(
-                                    "Editor", "page load: ${error?.description}"
-                                )
+                                RuntimeLog.error("Editor", "page load: ${error?.description}")
                             }
                         }
                     }

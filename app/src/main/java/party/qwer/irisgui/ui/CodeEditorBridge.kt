@@ -13,6 +13,7 @@ import java.io.File
 import java.io.InputStreamReader
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 /**
  * WebView(Monaco/터미널) ↔ Kotlin 브리지. 편집 화면은 호스트 파일시스템을 직접 보고,
@@ -56,8 +57,18 @@ internal class CodeEditorBridge(
 
     fun close() {
         closed = true
-        terms.values.forEach { runCatching { it.process.destroyForcibly() } }
+        // SIGTERM 먼저: proot 는 시그널 핸들러로 ptrace 중인 guest 자식을 정리한다.
+        // destroyForcibly(SIGHUP/kill) 만 쓰면 bash/python 이 고아로 남아 다음 터미널과
+        // 충돌하고 /proc 상태가 잔존한다. 백그라운드에서 보류 후 강제 종료 — main 대기 없음.
+        val procs = terms.values.map { it.process }
         terms.clear()
+        procs.forEach { runCatching { it.destroy() } }
+        Thread {
+            procs.forEach { p ->
+                runCatching { p.waitFor(600, TimeUnit.MILLISECONDS) }
+                runCatching { p.destroyForcibly() }
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     // ── 경로 ───────────────────────────────────────────────────────────────
@@ -315,6 +326,10 @@ internal class CodeEditorBridge(
             "cd " + UserlandRuntime.q(guest) + " || cd ~\n" +
                 "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }\n" +
                 "export PS1=" + UserlandRuntime.q("$ ") + "\n" +
+                // script 아래 파이프 실행이면 TERM 이 비어 clear 가 죽는다. coreutils 의
+                // 'groups: cannot find name' 도 호스트 gid 가 /etc/group 에 없어 나는 소음.
+                "export TERM=xterm-256color\n" +
+                "{ for g in \$(id -G); do grep -q \"^[^:]*:[^:]*:\$g:\" /etc/group 2>/dev/null || echo \"g\$g:x:\$g:\" >>/etc/group; done; } 2>/dev/null\n" +
                 "stty rows " + rows + " cols " + cols + " 2>/dev/null\n" +
                 // 크기 동기화: host 가 .termsize 에 창 크기를 쓰고, bash rc 가 백그라운드
                 // 폴러로 read+stty 한다(폴러는 interactive bash 의 잡으로만 살수 있음).
@@ -388,7 +403,15 @@ internal class CodeEditorBridge(
 
     @JavascriptInterface
     fun termStop(id: Int) {
-        terms.remove(id)?.let { runCatching { it.process.destroyForcibly() } }
+        // close() 와 동일: SIGTERM 으로 proot 로 하여금 guest 자식을 정리하게 하고,
+        // 끝나지 않으면 백그라운드에서 강제 종료. 호출자(JS/메인) 블로킹 없음.
+        terms.remove(id)?.let { term ->
+            runCatching { term.process.destroy() }
+            Thread {
+                runCatching { term.process.waitFor(600, TimeUnit.MILLISECONDS) }
+                runCatching { term.process.destroyForcibly() }
+            }.apply { isDaemon = true }.start()
+        }
     }
 
     @JavascriptInterface
