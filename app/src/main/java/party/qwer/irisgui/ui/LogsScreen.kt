@@ -75,14 +75,16 @@ fun LogsScreen() {
     var logsExpanded by rememberSaveable { mutableStateOf(true) }
 
     if (mode == AppMode.ROOT_ADB) {
-        LaunchedEffect(Unit) {
-            while (true) {
-                rooms = AdbProcessClient.fetchRooms().map { it.id to (it.name ?: "") }
-                // DB 로그와 데몬 실행 로그는 같은 응답(/process-status)에 함께 온다.
-                val processStatus = AdbProcessClient.queryStatus()
+        // ISSUE-28: lifecycle 게이트 + 실패 백오프. ISSUE-29: 조회 실패(null)로
+        // messages 를 비우지 않는다 — transient busy 가 "수신 없음" flicker 가 된다.
+        StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L) {
+            rooms = AdbProcessClient.fetchRooms().map { it.id to (it.name ?: "") }
+            // DB 로그와 데몬 실행 로그는 같은 응답(/process-status)에 함께 온다.
+            val processStatus = AdbProcessClient.queryStatus()
+            if (processStatus != null) {
                 messages.clear()
                 messages.addAll(
-                    (processStatus?.last_logs ?: emptyList()).map { log ->
+                    (processStatus.last_logs ?: emptyList()).map { log ->
                         AppState.AppMessage(
                             id = log["_id"] ?: (log["created_at"] ?: "").toString(),
                             roomName = log["room_name"]?.takeIf { it.isNotBlank() } ?: log["chat_id"] ?: "?",
@@ -93,32 +95,30 @@ fun LogsScreen() {
                         )
                     }.sortedByDescending { it.timeMs }
                 )
-                runtimeLogs = (RuntimeLog.snapshot(60) + (processStatus?.logs ?: emptyList()))
+                runtimeLogs = (RuntimeLog.snapshot(60) + (processStatus.logs ?: emptyList()))
                     .sortedByDescending { it.timeMs }
                     .take(120)
-                delay(3000)
             }
+            processStatus != null
         }
     } else {
-        LaunchedEffect(Unit) {
-            while (true) {
-                rooms = AppState.storedRooms.map { it.id.ifBlank { it.name } to it.name }
-                messages.clear()
-                messages.addAll(
-                    AppState.notificationHistory.map {
-                        AppState.AppMessage(
-                            id = "${it.timestamp}:${it.roomId.ifBlank { it.room }}",
-                            roomName = it.room,
-                            senderName = it.senderName,
-                            text = it.text,
-                            timeMs = it.timestamp,
-                            isGroup = it.isGroupChat
-                        )
-                    }.sortedByDescending { it.timeMs }
-                )
-                runtimeLogs = RuntimeLog.snapshot(100)
-                delay(1500)
-            }
+        StartedPollLoop(mode, baseMs = 1500L, maxMs = 15_000L) {
+            rooms = AppState.storedRooms.map { it.id.ifBlank { it.name } to it.name }
+            messages.clear()
+            messages.addAll(
+                AppState.notificationHistory.map {
+                    AppState.AppMessage(
+                        id = "${it.timestamp}:${it.roomId.ifBlank { it.room }}",
+                        roomName = it.room,
+                        senderName = it.senderName,
+                        text = it.text,
+                        timeMs = it.timestamp,
+                        isGroup = it.isGroupChat
+                    )
+                }.sortedByDescending { it.timeMs }
+            )
+            runtimeLogs = RuntimeLog.snapshot(100)
+            true
         }
     }
 

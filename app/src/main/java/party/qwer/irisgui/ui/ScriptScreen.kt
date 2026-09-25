@@ -101,11 +101,13 @@ fun ScriptScreen() {
     }
 
     // 목록 화면일 때만 폴링. 에디터/로그 화면은 자기 poll 을 가진다.
-    LaunchedEffect(editor, logs) {
-        while (editor == null && logs == null) {
+    // ISSUE-28: StartedPollLoop — STARTED 에서만, /proc 실패 시 2.5s→10s 백오프.
+    StartedPollLoop(editor, logs, baseMs = 2500L, maxMs = 10_000L) {
+        if (editor == null && logs == null) {
             runCatching { refresh() }
-            delay(2500)
-        }
+            env.state == UserlandRuntime.State.READY ||
+                env.state == UserlandRuntime.State.DISABLED
+        } else true
     }
 
     when {

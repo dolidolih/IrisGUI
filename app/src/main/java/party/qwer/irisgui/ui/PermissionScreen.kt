@@ -51,13 +51,13 @@ fun PermissionScreen(permission: PermissionStatus) {
     var daemonRunning by remember { mutableStateOf(false) }
     var daemonPort by remember { mutableStateOf(0) }
     if (mode == AppMode.ROOT_ADB) {
-        LaunchedEffect(Unit) {
-            while (true) {
-                val status = AdbProcessClient.queryStatus()
-                daemonRunning = status?.server_running == true
-                daemonPort = status?.bot_http_port ?: 0
-                delay(3000)
-            }
+        // ISSUE-28: 백오프 있는 lifecycle 폴링 — daemon 이 내려간 채로 매번 full
+        // timeout 소음을 내지 않게 실패 시 지수 증가.
+        StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L) {
+            val status = AdbProcessClient.queryStatus()
+            daemonRunning = status?.server_running == true
+            daemonPort = status?.bot_http_port ?: 0
+            status != null
         }
     }
 
