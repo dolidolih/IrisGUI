@@ -38,8 +38,12 @@ import java.io.File
  * 원본 Iris(IrisServer.kt)와 동일한 엔드포인트를 제공하며, 채팅 이벤트는 DBObserver가 전송한다.
  */
 object AdbServer {
+    // ISSUE-17: start/stop 은 UI 스레드(startOrStop), Netty 워커(/process-command),
+    // 서비스/워치독에서 동시에 도달한다 — 모든 변경부는 @Synchronized 로 직렬화하고
+    // 공개 필드는 @Volatile 로 발행한다.
     @Volatile
     private var _isRunning = false
+    @Volatile
     private var engineRef: Any? = null
 
     /**
@@ -82,6 +86,7 @@ object AdbServer {
         get() = _isRunning && engineRef != null
 
     /** P21: 서버 시작/정지 — Android 앱에서 app_process 제어용 */
+    @Synchronized
     fun startOrStop() {
         if (_isRunning) {
             stopServer()
@@ -114,6 +119,7 @@ object AdbServer {
         return "IrisGUI"
     }
 
+    @Synchronized
     fun startServer() {
         if (engineRef != null) return
         try {
@@ -231,6 +237,13 @@ object AdbServer {
                                     val value = req.port ?: throw Exception("missing or invalid value")
                                     if (value < 1 || value > 65535) throw Exception("Invalid port number")
                                     AdbConfig.serverPort = value
+                                    // ISSUE-17: 실행 중인 엔진은 이전 포트 바인딩을 유지한다.
+                                    // 조용히 넘어가는 "성공" 응답 대신 재시작 필요를 명시 —
+                                    // 상태는 /process-status 의 port 필드로 계속 확인 가능하다.
+                                    return@post call.respond(ApiResponse(
+                                        success = true,
+                                        message = "saved; engine keeps port ${AdbConfig.serverPort} until restart"
+                                    ))
                                 }
                                 "types" -> {
                                     val value = req.types ?: throw Exception("missing value")
@@ -661,6 +674,13 @@ object AdbServer {
         } catch (e: Exception) {
             System.err.println("AdbServer failed to start: ${e.message}")
             e.printStackTrace()
+            // ISSUE-17: BindException 등으로 실패해도 이미 만든 KakaoDB 핸들은 열어둔
+            // 채로 남는다 — 반복 재시작마다 fd 누수. 어떤 실패 경로든 핸들을 닫는다.
+            engineRef = null
+            _isRunning = false
+            runCatching { kakaoDb?.closeConnection() }
+            kakaoDb = null
+            readHelper = null
         }
     }
 
@@ -783,6 +803,7 @@ object AdbServer {
     /**
      * 리소스 정리
      */
+    @Synchronized
     fun stopServer() {
         // ISSUE-05/17: 먼저 수접을 끊는다(new requests 차단, in-flight join) —
         // handler 가 DB/scope 에 접근하지 않는 상태가 된 뒤에 워스를 정리한다.

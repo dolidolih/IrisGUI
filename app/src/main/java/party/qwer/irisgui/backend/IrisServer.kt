@@ -36,7 +36,22 @@ import java.io.File
  *  app_process의 AdbServer가 전 엔드포인트를 담당한다.)
  */
 object IrisServer {
+    // ISSUE-17: start/stop 은 UI/서비스/워치독/Netty 어디에서나 올 수 있다 —
+    // check-then-act 경쟁과 반-발행 상태를 막기 위해 synchronized + volatile.
+    @Volatile
     private var activeEngine: ApplicationEngine? = null
+
+    /** ISSUE-17: cacheDir 에 남는 iris_temp_* 잔재 정리 — 유출된 이미지 정리. */
+    private fun sweepTempImages(cacheDir: File) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 30 * 60 * 1000L
+            cacheDir.listFiles()?.forEach { f ->
+                if (f.name.startsWith("iris_temp_") && f.lastModified() < cutoff) {
+                    f.delete()
+                }
+            }
+        }
+    }
 
     /** A1: 서버 시작 상태 — 외부에서 확인용 */
     val isStarted: Boolean
@@ -67,10 +82,11 @@ object IrisServer {
      * 인프로세스 서버 기동.
      * @return 기동 성공 여부 — 실패 시 [lastError]에 원인이 남는다.
      */
-    fun start(context: Context): Boolean {
+    fun start(context: Context): Boolean = synchronized(this) {
         if (activeEngine != null) return true
         lastError = null
         try {
+            sweepTempImages(context.cacheDir)
             val lenientJson = Json { ignoreUnknownKeys = true }
 
             embeddedServer(Netty, port = AppConfig.serverPort) {
@@ -151,7 +167,7 @@ object IrisServer {
         ReplyManager.startQueue()
     }
 
-    fun stop() {
+    fun stop(): Unit = synchronized(this) {
         // P10: ReplyManager 정지 — 코루틴 누수 방지
         ReplyManager.stopQueue()
         activeEngine?.stop(1000, 2000)
@@ -198,8 +214,8 @@ object IrisServer {
                 try {
                     val bytes = Base64.decode(base64, Base64.DEFAULT)
 
-                    val fileName = "iris_temp_${System.currentTimeMillis()}.png"
-                    val file = File(context.cacheDir, fileName)
+                    // ISSUE-17: millis 파일명 충돌(동일 ms 요청) 덮어쓰기 방지
+                    val file = File.createTempFile("iris_temp_", ".png", context.cacheDir)
 
                     file.outputStream().use { it.write(bytes) }
                     savedFiles.add(file)
