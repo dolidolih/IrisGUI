@@ -62,6 +62,9 @@ class Main {
                 val workerStop = Runnable {
                     runCatching { dbObserver.stopPolling() }
                     runCatching { imageDeleter.stopDeletion() }
+                    // ISSUE-05/21 (integration): 워스레더가 중단되는 동안 송신기가
+                    // 인-플라이트 송신을 조용히 마무리하고 종료된다.
+                    runCatching { Replier.stop() }
                 }
                 AdbServer.workerStopHook = workerStop
                 AdbServer.startServer()
