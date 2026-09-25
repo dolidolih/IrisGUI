@@ -73,6 +73,16 @@ android {
             excludes += "META-INF/DEPENDENCIES"
         }
     }
+
+    // 릴리즈 산출물 이름 고정: IrisGUI-v<versionName>.apk
+    applicationVariants.configureEach {
+        outputs.configureEach {
+            if (buildType.name == "release") {
+                (this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                    ?.outputFileName = "IrisGUI-v${versionName}.apk"
+            }
+        }
+    }
 }
 
 dependencies {
