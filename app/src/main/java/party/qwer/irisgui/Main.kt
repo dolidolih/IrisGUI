@@ -1,9 +1,5 @@
 package party.qwer.irisgui
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.launch
 import party.qwer.irisgui.backend.*
 
 class Main {
@@ -15,8 +11,6 @@ class Main {
                 RuntimeLog.captureStdout("데몬")
 
                 // ADB 모드: SharedPreferences 없이 AdbConfig(JSON 파일) 사용
-                val wsEventFlow = MutableSharedFlow<String>(extraBufferCapacity = 64)
-
                 // 0. AdbConfig 초기화 — JSON 파일에서 설정 로드
                 AdbConfig.saveToPrefs()
 
@@ -43,7 +37,9 @@ class Main {
 
                 // 2. KakaoDB 초기화 (SQLite ATTACH)
                 val kakaoDb = KakaoDB()
-                val observerHelper = ObserverHelper(kakaoDb, wsEventFlow)
+                // ISSUE-15: poller → WS 브로드캐스트는 non-publish 경로 — ObserverHelper 가
+                // polling thread 에서 직접(블록 없이) AdbServer 의 연결별 fanout 으로 넘긴다.
+                val observerHelper = ObserverHelper(kakaoDb) { msg -> AdbServer.broadcastToClients(msg) }
 
                 // 3. DBObserver 시작 (DB 폴링)
                 val dbPollingRate = AdbConfig.dbPollingRate
@@ -74,12 +70,8 @@ class Main {
                 // 6. 상태 업데이트 (UI 브로드캐스트)
                 AppState.isObserving = true
 
-                // 8. WebSocket 브로드캐스트 — DBObserver에서 보낸 메시지를 클라이언트에 전달
-                CoroutineScope(Dispatchers.IO).launch {
-                    wsEventFlow.collect { msg ->
-                        AdbServer.broadcastToClients(msg)
-                    }
-                }
+                // (ISSUE-15: wsEventFlow + relay collector 제거 — ObserverHelper.publish 가
+                //  AdbServer.wsFanout 으로 직접 전달 — 별도 코루틴 중계 불필요
 
                 println("IrisGUI: All services started. Waiting for requests...")
 

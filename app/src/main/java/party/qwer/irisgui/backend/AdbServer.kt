@@ -26,8 +26,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import party.qwer.irisgui.*
@@ -44,8 +42,11 @@ object AdbServer {
     private var _isRunning = false
     private var engineRef: Any? = null
 
-    private val wsBroadcastFlow = MutableSharedFlow<String>(extraBufferCapacity = 100)
-    val sharedFlow = wsBroadcastFlow.asSharedFlow()
+    /**
+     * ISSUE-15: SharedFlow/tryEmit 폐기는 느린 구독자 하나가 전체 손실을 만든다.
+     * 연결별 bounded 채널 fanout 으로 교체.
+     */
+    private val wsFanout = WsFanout("AdbServer")
 
     /** KakaoTalk의 NotificationReferer — shared_prefs XML에서 추출 */
     private var notificationReferer: String? = null
@@ -69,9 +70,8 @@ object AdbServer {
     @Volatile
     private var serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun broadcastToClients(message: String) {
-        wsBroadcastFlow.tryEmit(message)
-    }
+    /** P21/ISSUE-15: WS 이벤트 전달 (non-blocking). @return 버퍼 만충으로 폐기한 건수. */
+    fun broadcastToClients(message: String): Long = wsFanout.publish(message)
 
     /** P21: 서버 실행 상태 확인 — Android 앱에서 상태 표시용 */
     val isRunning: Boolean
@@ -149,8 +149,15 @@ object AdbServer {
                 routing {
                     // ── WebSocket ──────────────────────────────
                     webSocket("/ws") {
-                        sharedFlow.collect { msg ->
-                            send(msg)
+                        // ISSUE-15: 연결별 수신 채널 — 느린 클라이언트 하나가
+                        // 다른 connection/polling thread 를 막지 못한다.
+                        val sub = wsFanout.subscribe()
+                        try {
+                            for (msg in sub.channel) {
+                                send(msg)
+                            }
+                        } finally {
+                            wsFanout.unsubscribe(sub)
                         }
                     }
 

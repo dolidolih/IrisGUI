@@ -22,8 +22,6 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.send
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.serialization.json.*
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.models.*
@@ -56,12 +54,14 @@ object IrisServer {
                 l.contains("already in use")
         } == true
 
-    private val wsBroadcastFlow = MutableSharedFlow<String>(extraBufferCapacity = 100)
-    val sharedFlow = wsBroadcastFlow.asSharedFlow()
+    /**
+     * ISSUE-15: SharedFlow/tryEmit 폐기는 느린 구독자 하나가 전체 손실을 만든다.
+     * 연결별 bounded 채널 fanout 으로 교체 — publish 는 non-blocking.
+     */
+    private val wsFanout = WsFanout("IrisServer")
 
-    fun broadcastToClients(message: String) {
-        wsBroadcastFlow.tryEmit(message)
-    }
+    /** WS 이벤트 전달 (non-blocking). @return 버퍼 만충으로 폐기한 건수. */
+    fun broadcastToClients(message: String): Long = wsFanout.publish(message)
 
     /**
      * 인프로세스 서버 기동.
@@ -92,8 +92,14 @@ object IrisServer {
                 routing {
                     // ── WebSocket ──────────────────────────────
                     webSocket("/ws") {
-                        sharedFlow.collect { msg ->
-                            send(msg)
+                        // ISSUE-15: 연결별 수신 채널 — 다른 연결/publisher 무영향.
+                        val sub = wsFanout.subscribe()
+                        try {
+                            for (msg in sub.channel) {
+                                send(msg)
+                            }
+                        } finally {
+                            wsFanout.unsubscribe(sub)
                         }
                     }
 
