@@ -26,6 +26,7 @@ import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.AppState
+import party.qwer.irisgui.AdbConfig
 import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.R
 import party.qwer.irisgui.backend.AdbProcessClient
@@ -60,6 +61,9 @@ class IrisService : Service() {
 
         /** ISSUE-07: EXIT 시 동기 데몬 정지 상한 — 초과하면 포기하고 종료 수순으로 넘긴다(ANR 회피). */
         private const val EXIT_STOP_BUDGET_MS = 8_000L
+
+        /** ISSUE-06: startService 이후 binding 확인 유예 — 이 안에 콜백이 없으면 미연결로 본다. */
+        private const val LISTENER_BIND_GRACE_MS = 2_500L
 
         /** RuntimeLog source tag */
         private const val TAG = "IrisService"
@@ -165,6 +169,12 @@ class IrisService : Service() {
 
         when (mode) {
             AppMode.ROOT_ADB -> {
+                // ISSUE-04: 데몬 기동 직전에 UI의 현재 설정을 데몬가 읽을 live-config
+                // 오버레이로 발행한다. 기존 경로(port 인자)로는 sendRate/dbPollingRate/
+                // broadcastTypes 등 UI 변경이 데몬에 아예 닿지 않았고, 실행 중 바뀐 값은
+                // Replier sender loop가 오버레이를 반영한다.
+                runCatching { AdbConfig.publishCurrentConfig() }
+                    .onFailure { RuntimeLog.warn(TAG, "live-config 오버레이 발행 실패: ${it.message}") }
                 // 데emon(app_process)을 기기 내 자체 ADB 연결로 자율 기동 (host PC 불필요).
                 // 반드시 await — 기다리지 않으면 UI가 즉시Polling해서 "OFF"로 표기된다.
                 val result = withContext(Dispatchers.IO) {
@@ -186,18 +196,37 @@ class IrisService : Service() {
                 }
             }
             AppMode.NON_ROOT -> {
-                val ok = IrisServer.start(applicationContext)
-                if (ok) {
-                    startNlsService()
-                    started = true
-                    RuntimeLog.info(TAG, "NLS mode started on port $port")
+                // ISSUE-06: startService() 는 BIND_NOTIFICATION_LISTENER_SERVICE 권한과
+                // 무관하게 성공한다. 그래서 "붙었는가"를 먼저 확인하고 권한 자체가 없으면
+                // 성공으로 위장하지 않고 fail-fast 한다 — 실패 문구는 UI가 설정 화면으로
+                // 라우팅할 수 있게 그대로 쓴다 (StatusScreen/PermissionScreen 배선은 batch 3).
+                val listenerStatus = NotificationListenerState.status(applicationContext)
+                if (listenerStatus == NotificationListenerState.ListenerStatus.NOT_GRANTED) {
+                    failure = NotificationListenerState.permissionMissingMessage(applicationContext)
+                    RuntimeLog.error(
+                        TAG,
+                        "start aborted — notification listener not granted " +
+                            NotificationListenerState.describe(applicationContext)
+                    )
                 } else {
-                    failure = if (IrisServer.isPortInUseError) {
-                        "포트 $port 이 이미 사용 중입니다. 다른 포트(예: ${port + 1})로 바꿔주세요"
+                    val ok = IrisServer.start(applicationContext)
+                    if (ok) {
+                        startNlsService()
+                        started = true
+                        RuntimeLog.info(
+                            TAG,
+                            "NLS mode started on port $port, ${NotificationListenerState.describe(applicationContext)}"
+                        )
+                        // startService 직후에는 binding 이 아직 안 잡힐 수 있어 확인은 따로 비동기로 따라간다.
+                        confirmListenerBound()
                     } else {
-                        "서버 시작 실패: ${IrisServer.lastError ?: "알 수 없는 오류"}"
+                        failure = if (IrisServer.isPortInUseError) {
+                            "포트 $port 이 이미 사용 중입니다. 다른 포트(예: ${port + 1})로 바꿔주세요"
+                        } else {
+                            "서버 시작 실패: ${IrisServer.lastError ?: "알 수 없는 오류"}"
+                        }
+                        RuntimeLog.error(TAG, failure!!)
                     }
-                    RuntimeLog.error(TAG, failure!!)
                 }
             }
         }
@@ -338,6 +367,34 @@ class IrisService : Service() {
         } catch (e: Exception) {
             System.err.println("IrisService: Failed to start NLS: ${e.message}")
             e.printStackTrace()
+        }
+    }
+
+    /**
+     * ISSUE-06: start 직후 실제 binding 을 확인한다. 붙지 않았으면 AppState.running 을
+     * 참으로 놓되 "건강한 실행" 처럼 보이지만 않게 — 사용자에게는 확인 필요한 상태를
+     * 알리고 RuntimeLog 에는 상태를 남긴다. (start 자체를 되돌리지는 않는다: 서버는
+     * 이미 port 를 잡았고, 정지/재시작 루프를 만드는 것보다 안내가 낫다.)
+     */
+    private fun confirmListenerBound() {
+        serviceScope.launch {
+            val deadline = System.currentTimeMillis() + LISTENER_BIND_GRACE_MS
+            while (System.currentTimeMillis() < deadline) {
+                if (NotificationListenerState.isBound) {
+                    RuntimeLog.info(
+                        TAG,
+                        "NLS binding 확인됨 " + NotificationListenerState.describe(applicationContext)
+                    )
+                    return@launch
+                }
+                kotlinx.coroutines.delay(200)
+            }
+            val message = if (NotificationListenerState.status(applicationContext) ==
+                NotificationListenerState.ListenerStatus.GRANTED_NOT_BOUND
+            ) NotificationListenerState.notBoundMessage()
+            else NotificationListenerState.permissionMissingMessage(applicationContext)
+            RuntimeLog.warn(TAG, "NLS binding 미확인 — $message")
+            AppState.postFeedback(message, isError = true)
         }
     }
 
