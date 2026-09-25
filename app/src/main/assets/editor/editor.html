@@ -981,7 +981,7 @@ function loadTreeSoon() { clearTimeout(treeT); treeT = setTimeout(loadTree, 300)
 /* ── close / keys ──────────────────────────────────────── */
 $('btnClose').onclick = () => { try { save(true); } catch (e) {} if (B.closeEditor) B.closeEditor(); };
 
-window.IrisEditor.flush = () => { try { save(true); } catch (e) {} };
+window.IrisEditor.flush = () => { try { save(true); } catch (e) {} try { if (B.editorFlushed) B.editorFlushed(); } catch (e) {} };
 window.IrisEditor.back = () => { try { save(true); } catch (e) {}; if (B.closeEditor) B.closeEditor(); };
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); save(); }
