@@ -135,8 +135,14 @@ object UserlandRuntime {
     private fun marker(context: Context, name: String): File =
         File(rootDir(context), ".ready_$name")
     private fun ready2(context: Context, name: String) = marker(context, name).exists()
-    private fun markReady(context: Context, name: String) {
-        val m = marker(context, name); m.parentFile?.mkdirs(); runCatching { m.writeText("ok") }
+    /** ISSUE-23: 마커 쓰기 실패를 삼키지 않고 호출자에게 알린다 (실패 = 미준비). */
+    private fun markReady(context: Context, name: String): Boolean {
+        val m = marker(context, name)
+        m.parentFile?.mkdirs()
+        return runCatching {
+            m.writeText("ok")
+            m.length() > 0
+        }.getOrDefault(false)
     }
 
     /** host 에서 python 프로세스의 cwd 스캔용. project 디렉터리 경로 집합. */
@@ -155,17 +161,39 @@ object UserlandRuntime {
             RuntimeLog.info(TAG, "ubuntu rootfs 준비 시작 ($arch)")
             val tar = File(dir, "rootfs.tar.gz")
             // 예전 distro 트리가 남아있으면 통째로 비우고 다시 받는다.
+            // ISSUE-23: wipe 시 .ready_* 마커도 함께 삭제 — 루트 없는 python 마커는 거짓.
             if (dir.listFiles()?.isNotEmpty() == true) {
                 RuntimeLog.info(TAG, "기존 rootfs 트리 초기화")
                 wipeRootfs(dir)
             }
-            if (tar.length() < 8 * 1024 * 1024) {
-                if (!download(ROOTFS_URL.replace("%ARCH%", arch), tar, 600_000))
+            // ISSUE-23: 다운로드 무결성 검증. 부분 다운로드(8MB 룰만으론 통과)는
+            // 언팩 실패 후 아카이브까지 남겨 항시 브로킹 상태에 빠지던 것을,
+            // gzip 스트림 전량 판독 + 크기 검사로 재시도만이면 수렴하게 바꾼다.
+            var attempt = 0
+            while (tar.length() < 8L * 1024 * 1024 || !gzipIntact(tar)) {
+                if (attempt >= 2) {
+                    runCatching { tar.delete() }
+                    return Result(false, "rootfs 아카이브 손상 — 재시도 후 중단")
+                }
+                if (attempt > 0 || tar.length() > 0) runCatching { tar.delete() }
+                if (!download(ROOTFS_URL.replace("%ARCH%", arch), tar, 600_000)) {
+                    runCatching { tar.delete() }
                     return Result(false, "rootfs 다운로드 실패 (네트워크?)")
+                }
+                if (tar.length() < 8L * 1024 * 1024) {
+                    RuntimeLog.warn(TAG, "rootfs 다운로드가 너무 작음 (${tar.length()} bytes)")
+                }
+                attempt++
             }
-            if (!unpack(tar, dir)) return Result(false, "rootfs 언팩 실패")
+            // 언팩은 staging 후 커밋 — 어느 시점에 크래시돼도 기존 트리는 온전하다.
+            if (!unpackStaged(tar, dir)) {
+                // 손상/잘린 아카이브를 남기지 않는다 — 다음 시도가 새 다운로드에서 시작.
+                runCatching { tar.delete() }
+                return Result(false, "rootfs 언팩 실패 — 다음 시도에서 재다운로드")
+            }
             writeResolvConf(dir)
-            markReady(context, "rootfs")
+            if (!markReady(context, "rootfs"))
+                return Result(false, "rootfs 마커 기록 실패 (용량 부족?)")
             runCatching { tar.delete() }
         }
 
@@ -174,6 +202,11 @@ object UserlandRuntime {
             if (!download(PROOT_URL.replace("%ABI%", abi), proot, 120_000))
                 return Result(false, "proot 바이너리 다운로드 실패")
             if (!proot.setExecutable(true)) return Result(false, "proot 실행권한 설정 실패")
+            // 부분 다운로드(절단 ELF) 방지 — 최소 크기 게이트.
+            if (proot.length() < 1_000_000) {
+                runCatching { proot.delete() }
+                return Result(false, "proot 바이너리 손상 — 삭제 후 재시도")
+            }
         }
 
         if (!baseOk(dir)) return Result(false, "rootfs 검증 실패")
@@ -186,7 +219,13 @@ object UserlandRuntime {
         if (ready2(context, "python")) {
             val probe = exec(context, "python3 -V 2>&1", 20_000)
             return if (probe.output.contains("Python 3")) Result(true, "python 준비됨")
-            else { runCatching { marker(context, "python").delete() }; ensurePython(context) }
+            else {
+                // 마커가 거짓말 — 마커를 내리고 아래 실제 준비 경로로 재진입.
+                // (한 단계 재귀; base 가 망가졌으면 ensureBase 가 구조를 복구한다.)
+                RuntimeLog.warn(TAG, "python 마커 불일치 — 재설치 진행")
+                runCatching { marker(context, "python").delete() }
+                ensurePython(context)
+            }
         }
         val base = ensureBase(context)
         if (!base.ok) return base
@@ -202,7 +241,8 @@ object UserlandRuntime {
         if (!out.contains("Python 3")) {
             return Result(false, "python 준비 실패: " + out.take(300))
         }
-        markReady(context, "python")
+        if (!markReady(context, "python"))
+            return Result(false, "python 마커 기록 실패 (용량 부족?)")
         RuntimeLog.info(TAG, "userland python 준비 완료")
         return Result(true, "python 준비됨")
     }
@@ -406,13 +446,64 @@ object UserlandRuntime {
         return File(dir, "usr/bin/bash").exists() || File(dir, "bin/bash").exists()
     }
 
-    /** distro 교체/깨짐으로 rootfs 트리만 비운다. proot/마커/아카이브/프로젝트는 남긴다. */
+    /** distro 교체/깨짐으로 rootfs 트리만 비운다. proot/마커/아카이브/프로젝트는 남긴다.
+     * ISSUE-23: .ready_* 마커는 루트와 운명을 함께하므로 여기서 삭제한다
+     * (루트 없는 python/ca 마커가 status() 를 속이는 것을 방지). */
     private fun wipeRootfs(dir: File) {
-        val keep = setOf(".proot", ".ready", "rootfs.tar.gz", "home")
+        val keep = setOf(".proot", "rootfs.tar.gz", "home", ".staging")
         dir.listFiles()?.forEach { f ->
             if (keep.any { f.name.startsWith(it) }) return@forEach
+            if (f.name.startsWith(".ready")) { runCatching { f.delete() }; return@forEach }
             runCatching { f.deleteRecursively() }
         }
+    }
+
+    /** ISSUE-23: gzip 스트림 전량 판독으로 아카이브 무결성 검사. 압축 해제 후
+     * 최소 8MB 이어야 ubuntu base 로서 정당하다. 손상/절단은 false. */
+    private fun gzipIntact(f: File): Boolean = runCatching {
+        if (!f.isFile || f.length() < 1) return false
+        java.util.zip.GZIPInputStream(f.inputStream(), 1 shl 16).use { g ->
+            val b = ByteArray(65536)
+            var total = 0L
+            while (true) {
+                val n = try { g.read(b) } catch (io: java.io.IOException) { return false }
+                if (n < 0) break
+                total += n
+            }
+            total >= 8L * 1024 * 1024
+        }
+    }.getOrDefault(false)
+
+    /** ISSUE-23: staging 언팩 → top-level entry 별 move 커밋. 크래시 포인트 어디에서
+     * 죽어도 (1) 기존 rootfs 트리는 오염되지 않고, (2) .staging 는 다음 시도에 재언팩
+     * 된다. 커밋 중 part 도 baseOk(dir) false 로 이어져 같은 경로가 반복된다. */
+    private fun unpackStaged(tar: File, dir: File): Boolean {
+        val staging = File(dir, ".staging")
+        runCatching { staging.deleteRecursively() }
+        if (!staging.mkdirs()) return false
+        if (!unpack(tar, staging)) {
+            runCatching { staging.deleteRecursively() }
+            return false
+        }
+        var ok = true
+        staging.listFiles()?.forEach { e ->
+            if (!ok) return@forEach
+            if (!moveInto(e, File(dir, e.name))) ok = false
+        }
+        if (ok) runCatching { staging.delete() }
+        return ok
+    }
+
+    /** 같은 file-system 내 rename 우선, 실패 시 copy+delete 폴백. */
+    private fun moveInto(src: File, dst: File): Boolean {
+        if (src.renameTo(dst)) return true
+        val ok = runCatching {
+            if (dst.exists()) runCatching { dst.deleteRecursively() }
+            if (src.isDirectory) src.copyRecursively(dst, overwrite = true)
+            else { src.copyTo(dst, overwrite = true); true }
+        }.getOrDefault(false)
+        if (ok) runCatching { src.deleteRecursively() }
+        return ok
     }
 
     /** ubuntu base 의 /etc/resolv.conf 는 broken 심볼릭이라 proot 안에서 DNS 가 죽는다. */
@@ -428,7 +519,11 @@ object UserlandRuntime {
 
     internal fun download(url: String, target: File, timeoutMs: Long): Boolean = try {
         target.parentFile?.mkdirs()
-        client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+        val call = client.newCall(Request.Builder().url(url).build())
+        // ISSUE-23: 호출 단위 timeout — 고정 readTimeout 만 믿고 파라미터를
+        // 무시하던 것을 실제로 지킨다 (정체된 다운로드를 통째로 끊는다).
+        call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
+        call.execute().use { resp ->
             if (!resp.isSuccessful || resp.body == null) {
                 RuntimeLog.error(TAG, "다운로드 실패 $url code=" + resp.code)
                 return false
