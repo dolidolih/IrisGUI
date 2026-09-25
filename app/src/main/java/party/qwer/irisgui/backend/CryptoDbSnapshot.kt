@@ -132,6 +132,13 @@ internal class CryptoDbSnapshot(
                 System.err.println("$label: open failed (key mismatch or unreadable db): $e")
                 return null
             }
+            // ISSUE-32: wrong key 와 corrupted file 이 모두 "file is not a database" 로 나온다.
+            // catalog 를 읽어 미리 판별하면 이후 caller 질의가 이상한 오류로 헤매는 대신
+            // "this key does not open it" 로그에 남는다.
+            if (!verifyReadable(opened, workFile)) {
+                runCatching { opened.close() }
+                return null
+            }
             rw.writeLock().lock()
             try {
                 runCatching { db?.close() }
@@ -258,6 +265,22 @@ internal class CryptoDbSnapshot(
             val dir = workingDir() ?: return
             dir.listFiles()?.forEach { if (it.isFile) it.delete() }
         }
+    }
+
+    /**
+     * Opening succeeds even with the wrong key (SQLCipher does not know yet) — the first page
+     * decrypt is what fails. Read the catalog once so the failure is attributed now, at the
+     * one place that knows the key came from (keystore blob / seed file).
+     */
+    private fun verifyReadable(database: SQLiteDatabase, workFile: File): Boolean = try {
+        database.rawQuery("SELECT count(*) FROM sqlite_master", null).use { it.moveToFirst() }
+        true
+    } catch (e: Throwable) {
+        System.err.println(
+            "$label: ${workFile.name} opened but its catalog is unreadable with the derived key " +
+                "(${e.message}) — wrong/rotated key or a copy taken mid-write"
+        )
+        false
     }
 
     private fun copyInto(src: File, dst: File) {

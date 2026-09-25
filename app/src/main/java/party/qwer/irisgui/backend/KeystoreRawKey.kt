@@ -52,17 +52,31 @@ object KeystoreRawKey {
             dbFile.absolutePath, null,
             SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS
         ).use { db ->
+            // ISSUE-32: 키 로테이션이 있으면 alias 당 blob이 여러 개 쌓인다. `k.id` 순서는
+            // keyentry 의 갱신 시각과 무관해서 (같은 key row 를 그대로 쓸 수 있다) 오래된
+            // 구형 blob을 마지막이라고 잘못 집는다 — 그래서 "file is not a database" 가 키
+            // 문제인지 파일 문제인지 알 수 없게 된다. insertion order(blobentry.rowid) 를
+            // 최신 기준으로 읽어 newest-first 로 시도한다.
+            val blobs = ArrayList<ByteArray>(2)
             db.rawQuery(
                 "SELECT b.blob FROM blobentry b JOIN keyentry k ON b.keyentryid = k.id" +
                     " WHERE k.namespace = ? AND k.alias = ? AND b.subcomponent_type = 0" +
-                    " ORDER BY k.id",
+                    " ORDER BY b.rowid DESC",
                 arrayOf(uid.toString(), alias)
             ).use { c ->
-                // key당 blob이 여러 개 등록될 수 있으므로 마지막(최신) 항목을 사용한다.
-                var blob: ByteArray? = null
-                while (c.moveToNext()) blob = c.getBlob(0)
-                return blob?.let { extractRawKey(it) }
+                while (c.moveToNext() && blobs.size < 4) blobs += c.getBlob(0)
             }
+            if (blobs.isEmpty()) {
+                System.err.println("KeystoreRawKey: no blob for alias=$alias uid=$uid")
+                return null
+            }
+            if (blobs.size > 1) {
+                println(
+                    "KeystoreRawKey: $alias has ${blobs.size} registered blob(s) - using the newest " +
+                        "(rowid-desc); older ones are ignored"
+                )
+            }
+            return blobs.first().let { extractRawKey(it) }
         }
     }
 

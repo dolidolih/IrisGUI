@@ -59,12 +59,13 @@ object CryptoDatabaseReader {
      * Empty when the DB can't be opened or the term matches nothing.
      */
     fun searchMessages(query: String, limit: Int = 50): List<Pair<Long, String>> {
+        val pattern = "%${escapeLike(query)}%"
         return runCatching {
             snapshot.use(::keyProvider) { database ->
                 database.rawQuery(
                     "SELECT id, substr(searchable_text, 1, 120) FROM chat_log_search" +
-                        " WHERE searchable_text LIKE ? ORDER BY id DESC LIMIT ?",
-                    arrayOf("%$query%", limit.toString())
+                        " WHERE searchable_text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?",
+                    arrayOf(pattern, limit.toString())
                 ).use { c ->
                     val out = ArrayList<Pair<Long, String>>()
                     while (c.moveToNext()) {
@@ -80,6 +81,11 @@ object CryptoDatabaseReader {
             emptyList()
         }
     }
+
+    /** ISSUE-32: LIKE 의 `%`/`_` 를 escape 하지 않으면 질의에 포함된 와일드카드가
+     *  의도치 않게 매치 셋을 넓힌다 (한 문자 질의가 전체를 훑는 식). */
+    private fun escapeLike(term: String): String =
+        term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /** Names resolvable from crypto_database (chat_log_search is not a name source; kept
      *  for API symmetry with CryptoUserDatabaseReader — always null). */
