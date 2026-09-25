@@ -21,6 +21,7 @@ import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.AppState
+import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.backend.IrisServer
 import party.qwer.irisgui.backend.KakaoNotificationParser
 import party.qwer.irisgui.models.IrisJsonData
@@ -31,12 +32,33 @@ import party.qwer.irisgui.models.StoredRoom
 import java.io.ByteArrayOutputStream
 
 class IrisNotificationService : NotificationListenerService() {
+    private companion object {
+        const val DEDUP_MAX_ENTRIES = 1024
+        const val DEDUP_WINDOW_CHATLOG_MS = 30L * 60L * 1000L
+        const val DEDUP_WINDOW_CONTENT_MS = 90_000L
+        const val DAEMON_LIVENESS_TTL_MS = 30_000L
+    }
+
     private val httpClient = OkHttpClient()
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
     /** A1: NLS 리스너 시작 상태 — 외부에서 확인용 */
     @Volatile
     var isStarted: Boolean = false
+
+    /** ISSUE-14: 재브로드캐스트 중복 창 (roomId,chatLogId) / content 기준 */
+    private val dedupSeen = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
+                size > DEDUP_MAX_ENTRIES
+        }
+    )
+
+    @Volatile
+    private var cachedDaemonLive: Boolean = false
+
+    @Volatile
+    private var cachedDaemonLiveAt: Long = 0
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!AppConfig.isServiceEnabled || sbn.packageName != "com.kakao.talk") return
@@ -57,6 +79,14 @@ class IrisNotificationService : NotificationListenerService() {
 
         val largeIconExtra = try { extras.get(Notification.EXTRA_LARGE_ICON) } catch (e: Exception) { null }
         val rawDump = dumpBundle(extras).toString()
+
+        // ISSUE-14: 같은 메시지의 재표시(요약 재구성/화면 재노출)마다 /ws 와 webhook 이
+        // 한 번씩 더 나간다. (roomId, chatLogId) 기준 bounded LRU 로 중복을 막는다.
+        if (isDuplicateEvent(roomId, chatLogId, text, sbn.key)) {
+            println("IrisNls: 중복 이벤트 무시 (room=$roomId chatLogId=$chatLogId) — 브로드캐스트 생략")
+            extractAndStoreReplyAction(notification, (conversationTitleExtra ?: senderName), roomId)
+            return
+        }
 
         coroutineScope.launch {
             // 방 이름: shared 파서의 roomTitle → 모드별(KakaoRoomResolver) → 발신자 닉네임.
@@ -128,7 +158,10 @@ class IrisNotificationService : NotificationListenerService() {
             // 데몬의 DBObserver → ObserverHelper가 원본 Iris와 동일한 형식으로 전송하므로,
             // 루팅 모드에서 NLS가 바인딩되어 있더라도 여기서 브로드캐스트/전송하지 않는다
             // (그래야 원본 Iris용 irispy-client와 호환되고 이벤트 중복도 방지된다).
-            if (AppModeManager.currentMode == AppMode.NON_ROOT) {
+            // ISSUE-14: 모드 캐시가 stale(NON_ROOT 가 기본값인 fresh process)이면 NLS 이벤트를
+            // 내보내는데에도 daemon DBObserver 가 같은 메시지를 스트림에 올려 이중 이벤트가
+            // 된다. 그래서 캐시된 모드문자열만 보지 않고 daemon 생존 여부까지 본다.
+            if (!daemonOwnsEventStream()) {
                 IrisServer.broadcastToClients(jsonPayload)
 
                 val endpoint = AppConfig.webEndpoint
@@ -151,6 +184,11 @@ class IrisNotificationService : NotificationListenerService() {
         // ISSUE-06: 바인딩이 실제로 잡힌 시점만 state 객체에 남긴다 — startService 성공
         // 만으로는 "실행 중"을 판단할 수 없기 때문.
         NotificationListenerState.onConnected()
+        // ISSUE-14: 첫 알림이 들어오기 전에 모드를 확정한다 — currentMode 의 기본값이
+        // NON_ROOT 라서 detectMode 되기 전까지 ROOT_ADB 에서도 NLS 가 스트림에 중복으로
+        // 올라탈 수 있다.
+        val mode = AppModeManager.ensureDetected()
+        println("IrisNls: listener connected, mode=$mode, " + NotificationListenerState.describe(this))
     }
 
     override fun onListenerDisconnected() {
@@ -180,6 +218,45 @@ class IrisNotificationService : NotificationListenerService() {
                 }
             }
         }
+    }
+
+    /**
+     * ISSUE-14: (roomId, chatLogId) 기준 bounded LRU 로 같은 이벤트의 재브로드캐스트을 막는다.
+     * chatLogId 가 없는 알림은 (roomId, 본문, key) 조합으로 보되 재전송 창을 짧게 잡아 정상
+     * 중복 발신(같은 문구를 두 번 보내는 경우)까지 삼키지 않도록 한다.
+     */
+    private fun isDuplicateEvent(roomId: String, chatLogId: Long, text: String?, sbnKey: String): Boolean {
+        val (key, windowMs) = if (chatLogId != 0L) {
+            ("$roomId|$chatLogId") to DEDUP_WINDOW_CHATLOG_MS
+        } else {
+            ("$roomId|t=${text?.hashCode() ?: 0}|$sbnKey") to DEDUP_WINDOW_CONTENT_MS
+        }
+        val now = System.currentTimeMillis()
+        val previous = dedupSeen.putIfAbsent(key, now)
+        if (previous == null) return false
+        if (now - previous <= windowMs) return true
+        dedupSeen[key] = now
+        return false
+    }
+
+    /**
+     * 이벤트 스트림의 주인이 NLS 인가, daemon(DBObserver) 인가.
+     * ROOT_ADB 이면 daemon, NON_ROOT 이면 NLS. 판별이 밀려서 모드는 NON_ROOT 인데 daemon 이
+     * 이미 도는 상태(기동 직후 / 자동감지 실패)에서는 중복을 막기 위해 생존 확인을 한다 —
+     * local loopback 의 /process-status GET 한 번만, throttled 로. root/adb 명령은 쓰지 않는다.
+     */
+    private suspend fun daemonOwnsEventStream(): Boolean {
+        if (AppModeManager.ensureDetected() == AppMode.ROOT_ADB) return true
+        val now = System.currentTimeMillis()
+        val last = cachedDaemonLiveAt
+        if (last != 0L && now - last < DAEMON_LIVENESS_TTL_MS) return cachedDaemonLive
+        val live = withContext(Dispatchers.IO) {
+            runCatching { AdbProcessClient.queryStatus() != null }.getOrDefault(false)
+        }
+        cachedDaemonLiveAt = now
+        cachedDaemonLive = live
+        if (live) println("IrisNls: mode=NON_ROOT 이지만 daemon 생존 — 이벤트 스트림은 daemon 차지")
+        return live
     }
 
     private fun dumpBundle(bundle: Bundle?): Map<String, Any?> {

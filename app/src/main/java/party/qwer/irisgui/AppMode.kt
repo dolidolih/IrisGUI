@@ -35,6 +35,7 @@ object AppModeManager {
      */
     fun setMode(mode: AppMode) {
         currentMode = mode
+        isDetected = true
         _modeChangeCounter++
     }
 
@@ -44,6 +45,7 @@ object AppModeManager {
      * 저장되어 있지 않으면 자동 감지.
      */
     fun detectMode(): AppMode {
+        isDetected = true
         // 1. 수동 설정이 있으면 우선 사용
         val saved = AppConfig.appMode
         if (saved != null) {
@@ -55,6 +57,23 @@ object AppModeManager {
         currentMode = detectModeInternal()
         return currentMode
     }
+
+    /**
+     * ISSUE-14: 첫 알림 분기가 일어나기 전에 한 번은 반드시 호출해야 하는 값싼 판별.
+     * currentMode 는 캐시이고 기본값이 NON_ROOT 라서, detectMode 를 부르기 전까지 fresh
+     * process 는 ROOT_ADB 데몬이 살아있는데도 NLS 가 이벤트를 중복 브로드캐스트한다.
+     * 이미 판별했으면 props AppConfig 도 다시 읽지 않고 그냥 넘긴다.
+     */
+    fun ensureDetected(): AppMode {
+        if (!isDetected) {
+            isDetected = true
+            return detectMode()
+        }
+        return currentMode
+    }
+
+    @Volatile
+    private var isDetected: Boolean = false
 
     private fun detectModeInternal(): AppMode {
         // Root ADB 체크: Android 시스템 속성(reflection) — System.getProperty는 JVM 속성만
