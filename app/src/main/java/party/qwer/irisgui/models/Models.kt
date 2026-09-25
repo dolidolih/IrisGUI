@@ -102,12 +102,15 @@ data class ConfigRequest(
 
 @Serializable
 data class ConfigResponse(
-    val bot_name: String,
-    val bot_http_port: Int,
-    val web_server_endpoint: String,
-    val db_polling_rate: Long,
-    val message_send_rate: Long,
-    val bot_id: Long,
+    // ISSUE-13: 데몬 JSON 을 받아 쓰는 모델 — 모든 필드에 기본값을 둬서
+    // 필드 누락/이름 변경/중간-시동 부분 응답에서도 디코딩이 실패하지 않게 한다.
+    // (null 입력은 클라이언트 Json.coerceInputValues 로 기본값 치환된다)
+    val bot_name: String = "",
+    val bot_http_port: Int = 0,
+    val web_server_endpoint: String = "",
+    val db_polling_rate: Long = 0,
+    val message_send_rate: Long = 0,
+    val bot_id: Long = 0,
     val broadcast_types: List<String>? = null
 )
 
@@ -194,15 +197,19 @@ data class AotResponse(
 
 @Serializable
 data class AdbProcessStatusResponse(
-    val server_running: Boolean,
-    val port: Int,
-    val db_observing: Boolean,
-    val bot_id: Long,
-    val bot_name: String,
-    val bot_http_port: Int,
-    val web_server_endpoint: String,
-    val db_polling_rate: Long,
-    val message_send_rate: Long,
+    // ISSUE-13: 데몬 JSON 디코딩은 "살아있음"과 "정지"를 가르는 1심 판정근거다.
+    // 필수 필드(기본값 없는 non-null)가 하나라도 없으면 전체 디코딩 실패 → null("Down")
+    // 이 되어 한가하지만 살아있는 데몬을 두 번째 시동/.pk로 모는 오탐을 낳는다.
+    // 따라서 상태 필드는 전부 nullable+기본값, 로그성 필드는 빈 리스트 기본으로 한다.
+    val server_running: Boolean? = null,
+    val port: Int? = null,
+    val db_observing: Boolean? = null,
+    val bot_id: Long? = null,
+    val bot_name: String? = null,
+    val bot_http_port: Int? = null,
+    val web_server_endpoint: String? = null,
+    val db_polling_rate: Long? = null,
+    val message_send_rate: Long? = null,
     /** 데몬 stdout/stderr 로그(최신 선행) — 로그 탭의 "실행 로그"에 병합 표시. */
     val logs: List<RuntimeLog.Entry> = emptyList(),
     /**

@@ -70,6 +70,14 @@ object DaemonLauncher {
             return@withContext StartResult.AlreadyRunning
         }
 
+        // ISSUE-13: status 가 null 이라도 포트가 열려 있으면 "살아있음" 후보 —
+        // status JSON 해석 실패(유령 Down)를 "정지"로 확정하지 않고 먼저 삼킨다.
+        // 의도적 정지 경로는 waitForDaemonDown 이 포트까지 확인하므로 충돌하지 않는다.
+        if (AdbProcessClient.isHttpPortOpen()) {
+            println("DaemonLauncher: port open but status silent — live-but-unqueriable daemon, 흡수(start 안 함)")
+            return@withContext StartResult.AlreadyRunning
+        }
+
         val apkPath = context.applicationInfo.sourceDir
         val logPath = File(context.filesDir, "daemon.log").absolutePath
 
@@ -197,6 +205,12 @@ object DaemonLauncher {
         }
         val tail = readDaemonLogTail(logPath)
         if (tail.isNotBlank()) println("DaemonLauncher: \n$tail")
+        // ISSUE-13: status 응답은 없어도 포트가 열려 있으면 데몬은 살아있음 —
+        // 성공을 START_TIMEOUT 실패로 역전시키는 유령 Down 을 막는다.
+        if (AdbProcessClient.isHttpPortOpen()) {
+            println("DaemonLauncher: /process-status 는 응답 없으나 포트 열림 — 실행 중인 것으로 취급(Started)")
+            return StartResult.Started
+        }
         val detail = if (tail.isBlank()) {
             "데몬은 기동했으나 /process-status 가 ${maxWaitMs / 1000}s 내 응답하지 않았습니다."
         } else {

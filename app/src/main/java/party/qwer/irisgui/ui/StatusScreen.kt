@@ -100,10 +100,10 @@ fun StatusScreen(permission: PermissionStatus) {
                 AppMode.ROOT_ADB -> {
                     val status = AdbProcessClient.queryStatus()
                     if (status != null) {
-                        port = status.bot_http_port
-                        endpoint = status.web_server_endpoint
-                        dbPoll = status.db_polling_rate
-                        send = status.message_send_rate
+                        port = status.bot_http_port ?: port
+                        endpoint = status.web_server_endpoint ?: endpoint
+                        dbPoll = status.db_polling_rate ?: dbPoll
+                        send = status.message_send_rate ?: send
                     }
                     when {
                         status?.server_running == true -> BackendProbe.Up
