@@ -15,18 +15,27 @@ class KakaoDB {
     lateinit var connection: SQLiteDatabase
 
     init {
-        try {
-            connection =
-                SQLiteDatabase.openDatabase(":memory:", null, SQLiteDatabase.OPEN_READWRITE)
-            connection.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk.db' AS db1")
-            connection.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk2.db' AS db2")
-            connection.execSQL("ATTACH DATABASE '$DB_PATH/multi_profile_database.db' AS db3")
-            AppConfig.botId = botUserId
+        // ISSUE-03: a constructor that called System.exit(1) erased the whole process on a
+        // transient attach failure (file lock, DB mid-write, retry after BindException).
+        // Failure now propagates: callers decide (AdbServer.startServer already catches
+        // Exception and tears the half-built server down, see ISSUE-17).
+        val db = try {
+            SQLiteDatabase.openDatabase(":memory:", null, SQLiteDatabase.OPEN_READWRITE)
         } catch (e: SQLiteException) {
-            System.err.println("SQLiteException: " + e.message)
-            System.err.println("You don't have a permission to access KakaoTalk Database.")
-            System.exit(1)
+            throw IllegalStateException("KakaoDB: cannot open in-memory connection: ${e.message}", e)
         }
+        try {
+            db.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk.db' AS db1")
+            db.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk2.db' AS db2")
+            db.execSQL("ATTACH DATABASE '$DB_PATH/multi_profile_database.db' AS db3")
+        } catch (e: SQLiteException) {
+            runCatching { db.close() }
+            System.err.println("SQLiteException: " + e.message)
+            System.err.println("Cannot attach the KakaoTalk databases at $DB_PATH — check that KakaoTalk is installed and the process has permission.")
+            throw IllegalStateException("KakaoDB: cannot attach KakaoTalk databases at $DB_PATH: ${e.message}", e)
+        }
+        connection = db
+        AppConfig.botId = botUserId
     }
 
     val botUserId: Long
@@ -487,6 +496,13 @@ class KakaoDB {
     }
 
     companion object {
+        /**
+         * ISSUE-03: failure-tolerant entry point for callers that would rather report the
+         * error than propagate it (AdbServer/Main keep using the constructor + their own
+         * catch, this is for any future caller that wants a Result instead).
+         */
+        fun tryOpen(): Result<KakaoDB> = runCatching { KakaoDB() }
+
         private const val NAME_CACHE_MAX = 4096
         private const val NAME_HIT_TTL_MS = 10 * 60 * 1000L
         private const val NAME_MISS_TTL_MS = 30_000L
