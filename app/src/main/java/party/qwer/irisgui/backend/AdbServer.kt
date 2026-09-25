@@ -23,6 +23,8 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.send
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -58,8 +60,14 @@ object AdbServer {
         readHelper?.takeIf { it.first === db }?.second
             ?: ObserverHelper.forReads(db).also { readHelper = db to it }
 
-    /** AdbServer 전용 CoroutineScope — handleTextReply에서 재사용 (P7 누수 방지) */
-    private val serverScope = CoroutineScope(Dispatchers.IO)
+    /**
+     * AdbServer 전용 CoroutineScope — handleTextReply에서 재사용 (P7 누수 방지).
+     * ISSUE-01: stopServer()가 이 scope을 cancel하므로 startServer()가 매번 새
+     * scope을 만들어야 한다. 재사용하면 cancelled scope에 launch하는 것으로 되어
+     * restart 이후 답장이 조용히 전부 폐기된다.
+     */
+    @Volatile
+    private var serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun broadcastToClients(message: String) {
         wsBroadcastFlow.tryEmit(message)
@@ -109,6 +117,12 @@ object AdbServer {
     fun startServer() {
         if (engineRef != null) return
         try {
+            // ISSUE-01: 이전 stopServer()가 cancel한 scope이 있으면 새 scope으로 교체한다.
+            val previous = serverScope
+            serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            if (previous.coroutineContext[Job]?.isActive == true) {
+                runCatching { previous.cancel() }
+            }
             // 1. notificationReferer 추출
             notificationReferer = extractNotificationReferer()
 
@@ -733,6 +747,7 @@ object AdbServer {
      */
     fun stopServer() {
         // serverScope 정지 — handleTextReply/handleImageReply 코루틴 정리
+        // (ISSUE-01: scope은 startServer에서 매번 새로 만들어지므로 재사용 걱정 없음)
         serverScope.cancel()
         kakaoDb?.closeConnection()
         kakaoDb = null
