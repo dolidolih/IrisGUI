@@ -235,7 +235,7 @@ object LinuxScripts {
         val inner = "export IRISGUI_SCRIPT=" + q(name) +
             "\nexport IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) +
             "\necho $$ > " + q(RUN_PID) +
-            "\nexec $py ${q(MAIN)} 2>&1"
+            "\nexec $py ${q(MAIN)} 2>&1 # irisproj=" + name
         val logFile = File(dir, LOG)
         val p = UserlandRuntime.spawnBackground(context, inner,
             UserlandRuntime.guestProject(context, name), logFile)
@@ -380,7 +380,10 @@ object LinuxScripts {
                 }
             }
 
-        val guestBase = UserlandRuntime.GUEST_PROJECTS + "/"
+        val guestBase = if (UserlandRuntime.backend(context) ==
+            UserlandRuntime.Backend.BIONIC
+        ) UserlandRuntime.projectsHostDir(context).absolutePath + "/"
+        else UserlandRuntime.GUEST_PROJECTS + "/"
         val venvRe = Regex("home/projects/([^ /]+)/\\.venv/bin/python")
         val dirs = runCatching {
             File("/proc").listFiles { f -> f.isDirectory && f.name.all { c -> c.isDigit() } }
@@ -395,6 +398,7 @@ object LinuxScripts {
             if (cmd.contains("IRISGUI_SCRIPT")) {
                 val fromW = Regex("-w " + Regex.escape(guestBase) + "([^ /]+)")
                     .find(cmd)?.groupValues?.getOrNull(1)
+                    ?: Regex("irisproj=([^\\s']+)").find(cmd)?.groupValues?.getOrNull(1)
                 if (fromW != null) add(fromW.trim('/').substringBefore('/'), pid)
                 continue
             }
