@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ISSUE-33: 클리익트래픽을 제어 평면(localhost 데몬 HTTP)으로만 제한한다.
+  base-config 기본 false — 그 외 호스트로는 평문(HTTP)이 차단되어 네트워크상 유출/중간자 노출을 막는다.
+  (webhook 엔드포인트를 쓸 경우 https: 주소를 사용해야 한다 — 코드 변경 없이 정책으로 명시)
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
