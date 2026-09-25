@@ -87,6 +87,7 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation("org.tukaani:xz:1.10")  // pure-Java lzma for Termux deb data.tar.xz
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

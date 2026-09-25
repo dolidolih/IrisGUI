@@ -43,6 +43,10 @@
             android:name=".WxProbe2Activity"
             android:exported="true"
             android:theme="@style/Theme.IrisGUI" />
+        <activity
+            android:name=".WxProbe3Activity"
+            android:exported="true"
+            android:theme="@style/Theme.IrisGUI" />
 
         <service
             android:name=".service.IrisService"

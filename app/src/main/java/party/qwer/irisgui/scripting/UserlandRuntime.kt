@@ -4,6 +4,8 @@ import android.content.Context
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import party.qwer.irisgui.AppConfig
+import party.qwer.irisgui.AppMode
+import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.RuntimeLog
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -84,32 +86,68 @@ object UserlandRuntime {
     data class Result(val ok: Boolean, val message: String)
     data class Exec(val exitCode: Int, val output: String)
 
-    /** filesDir/linux. rootfs+proot+projects 의 공통 루트. */
-    fun rootDir(context: Context): File = File(context.filesDir, DIR_NAME)
+    /** filesDir/linux. rootfs+proot+projects 의 공통 루트 (proot 플로우 전용, 불변). */
+    internal fun prootRoot(context: Context): File = File(context.filesDir, DIR_NAME)
 
-    internal fun prootPath(context: Context): File = File(rootDir(context), ".proot")
+    /** 현재 동작 백엔드. 설치된 것이 있으면 그쪽 우선, 없으면 신규 설치 대상 판정. */
+    enum class Backend { PROOT, BIONIC }
 
-    /** host 의 프로젝트 부모. guest 에는 GUEST_PROJECTS 로 바인드된다. */
+    fun backend(context: Context): Backend = when {
+        File(prootRoot(context), ".ready_python").exists() &&
+            prootPath(context).exists() -> Backend.PROOT
+        BionicRuntime.installed(context) -> Backend.BIONIC
+        else -> installTarget(context)
+    }
+
+    /** 신규 설치 대상. enforcing 실기기(S26U 검증 완료)는 proot exec 가 도메인에서
+     * 거부되므로 무조건 bionic. permissive/disabled(redroid) 만 기존 모드 정책
+     * (루팅→Ubuntu proot) 을 유지한다. */
+    internal fun installTarget(context: Context): Backend {
+        val enforcing = runCatching {
+            File("/sys/fs/selinux/enforce").readText().trim() == "1"
+        }.getOrDefault(true)
+        return if (!enforcing && AppModeManager.currentMode == AppMode.ROOT_ADB) Backend.PROOT
+        else Backend.BIONIC
+    }
+
+    /** UI 가 보는 공용 root — 백엔드별 루트 디렉터리. */
+    fun rootDir(context: Context): File =
+        if (backend(context) == Backend.BIONIC) BionicRuntime.prefix(context)
+        else prootRoot(context)
+
+    internal fun prootPath(context: Context): File = File(prootRoot(context), ".proot")
+
+    /** host 의 프로젝트 부모. guest 에는 GUEST_PROJECTS 로 바인드된다.
+     * bionic 백엔드는 chroot 가 없어 host 가 곧 guest 경로다. */
     fun projectsHostDir(context: Context): File =
-        File(rootDir(context), "home/projects").apply { mkdirs() }
+        if (backend(context) == Backend.BIONIC) BionicRuntime.projectsHostDir(context)
+        else File(prootRoot(context), "home/projects").apply { mkdirs() }
 
-    /** guest 안 프로젝트 부모 경로. */
+    /** guest 안 프로젝트 부모 경로 (proot 기준). */
     const val GUEST_PROJECTS = "/home/projects"
 
-    /** host 프로젝트 디렉터리 → guest 경로. */
-    fun guestProject(context: Context, name: String): String = "$GUEST_PROJECTS/$name"
+    /** host 프로젝트 디렉터리 → 실행 환경 내 경로. */
+    fun guestProject(context: Context, name: String): String =
+        if (backend(context) == Backend.BIONIC)
+            File(BionicRuntime.projectsHostDir(context), name).absolutePath
+        else "$GUEST_PROJECTS/$name"
 
     /** proot 로 guest 명령을 실행할 수 있는지. python 유무는 보지 않는다. */
     fun prootReady(context: Context): Boolean =
-        abiTag() != null && prootPath(context).exists() && baseOk(rootDir(context))
+        abiTag() != null && prootPath(context).exists() && baseOk(prootRoot(context))
 
-    /** 전체 준비(프로젝트 실행/편집) 가능 여부: proot+python. */
+    /** 전체 준비(프로젝트 실행/편집) 가능 여부. 백엔드별 판정. */
     fun ready(context: Context): Boolean =
-        prootReady(context) && ready2(context, "python")
+        if (backend(context) == Backend.BIONIC) BionicRuntime.ready(context)
+        else prootReady(context) && ready2(context, "python")
 
     /** cheap 준비 상태 — UI 가 polling. 설치 진행/미설치를 구분. */
     fun status(context: Context): Status {
-        val dir = rootDir(context)
+        if (backend(context) == Backend.BIONIC) {
+            val s = BionicRuntime.status(context)
+            return Status(s.state, s.ready, false, 0, s.message)
+        }
+        val dir = prootRoot(context)
         return when {
             abiTag() == null -> Status(State.DISABLED, false, false, 0, "미지원 ABI")
             !baseOk(dir) ->
@@ -133,7 +171,7 @@ object UserlandRuntime {
         if (rootfsAbiTag() == "arm64") "arm64" else "amd64"
 
     private fun marker(context: Context, name: String): File =
-        File(rootDir(context), ".ready_$name")
+        File(prootRoot(context), ".ready_$name")
     private fun ready2(context: Context, name: String) = marker(context, name).exists()
     /** ISSUE-23: 마커 쓰기 실패를 삼키지 않고 호출자에게 알린다 (실패 = 미준비). */
     private fun markReady(context: Context, name: String): Boolean {
@@ -153,7 +191,7 @@ object UserlandRuntime {
     /** rootfs+proot+DNS. python 등 추가 패키지는 설치하지 않는다. */
     fun ensureBase(context: Context): Result {
         val abi = abiTag() ?: return Result(false, "미지원 ABI (proot/rootfs 없음)")
-        val dir = rootDir(context)
+        val dir = prootRoot(context)
         dir.mkdirs()
 
         if (!baseOk(dir)) {
@@ -252,6 +290,11 @@ object UserlandRuntime {
      * 하나, 없으면 apt 로 설치. 멱등.
      */
     fun ensureTrustStore(context: Context): Result {
+        if (backend(context) == Backend.BIONIC) {
+            val f = File(BionicRuntime.prefix(context), "usr/tls/certs/ca-certificates.crt")
+            return if (f.isFile) Result(true, "CA 준비됨")
+            else Result(false, "CA 번들 없음 — 환경 재설치 필요")
+        }
         val probe = exec(context, "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK",
             20_000)
         if (probe.output.contains("CA_OK")) return Result(true, "CA 준비됨")
@@ -268,8 +311,9 @@ object UserlandRuntime {
         else Result(false, "CA 인증서 설치 실패: " + out.take(200))
     }
 
-    /** 전체 준비: rootfs + python + ca. 멱등. blocking. */
+    /** 전체 준비: rootfs + python + ca. 멱등. blocking. 백엔드 자동 분기. */
     fun provision(context: Context): Result {
+        if (backend(context) == Backend.BIONIC) return BionicRuntime.provision(context)
         val base = ensureBase(context)
         if (!base.ok) return base
         val py = ensurePython(context)
@@ -289,7 +333,7 @@ object UserlandRuntime {
 
     /** proot 를 띄우는 공통 ProcessBuilder. cwd=guest dir, /home/projects 바인드. */
     private fun prootBuilder(context: Context, inner: String, cwdGuest: String?): ProcessBuilder {
-        val dir = rootDir(context)
+        val dir = prootRoot(context)
         // setsid 필수: proot 를 앱과 같은 세션/그룹에 두면 proot 의 SIGTERM cleanup 이
         // ptrace group-stop 을 세션 전체(앱 전 스레드 포함 = T stop, 입력 ANR)로 전파한다.
         // 자식에게 새 세션을 주면 stop 은 자식 세션에만 국한된다.
@@ -327,6 +371,8 @@ object UserlandRuntime {
     internal fun exec(
         context: Context, inner: String, timeoutMs: Long, cwdGuest: String?
     ): Exec {
+        if (backend(context) == Backend.BIONIC)
+            return BionicRuntime.exec(context, inner, timeoutMs, cwdGuest?.let { File(it) })
         if (!prootPath(context).exists()) return Exec(-1, "userland 미준비 — 먼저 준비 필요")
         return try {
             val p = prootBuilder(context, inner, cwdGuest).start()
@@ -415,9 +461,13 @@ object UserlandRuntime {
     internal fun spawnBackground(
         context: Context, inner: String, cwdGuest: String, logFile: File?
     ): Process? = try {
-        val pb = prootBuilder(context, inner, cwdGuest)
-        if (logFile != null) pb.redirectOutput(logFile)
-        pb.start()
+        if (backend(context) == Backend.BIONIC) BionicRuntime.spawnBackground(
+            context, inner, cwdGuest.let { if (it == "/root") null else File(it) }, logFile)
+        else {
+            val pb = prootBuilder(context, inner, cwdGuest)
+            if (logFile != null) pb.redirectOutput(logFile)
+            pb.start()
+        }
     } catch (e: Exception) {
         RuntimeLog.error(TAG, "spawn 실패: ${e.message}")
         null
@@ -537,4 +587,8 @@ object UserlandRuntime {
     }
 
     internal fun q(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+    /** BionicRuntime 공용으로 노출하는 출력 수집기. */
+    internal fun collectOutputPublic(p: Process, timeoutMs: Long): Pair<Boolean, String> =
+        collectOutput(p, timeoutMs)
 }

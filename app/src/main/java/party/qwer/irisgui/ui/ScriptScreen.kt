@@ -94,12 +94,6 @@ fun ScriptScreen() {
     val envReady = env.state == UserlandRuntime.State.READY ||
         env.state == UserlandRuntime.State.RUNNING
 
-    // W^X 게이트: Android 10+(targetSdk 29+)은 앱 data dir 의 파일을 실행하지 못하게
-    // 막는다. proot 바이너리도 rootfs 의 sh/python 도 같은 dir 안에 있으므로 논루팅
-    // 기기에서는 설치가 물리적으로 불가능 — 설치 버튼을 내고 안내만 보인다.
-    // (루팅 기기는 root 셸 도메인이라 제한이 없고, 실제 검증은 redroid 에서 가능.)
-    val blockedByWx = mode == AppMode.NON_ROOT && !envReady
-
     val refresh = suspend {
         env = withContext(Dispatchers.Default) { UserlandRuntime.status(context) }
         scripts = withContext(Dispatchers.Default) {
@@ -202,20 +196,13 @@ fun ScriptScreen() {
                     )
                 }
                 if (!envReady) {
-                    if (blockedByWx) {
-                        Text(
-                            "논루팅 기기에서는 실행할 수 없습니다 — Android 10+ 의 W^X 정책이 앱 " +
-                                "data 에 내려받은 파일(proot/rootfs 포함) 실행을 막습니다. " +
-                                "상태 탭에서 루팅(ADB) 모드로 전환하면 설치할 수 있습니다.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = AppColors.TextMain
-                        )
-                    } else {
-                        Text(
-                            "Ubuntu + python + venv. 다운로드는 한 번 (~250MB).",
-                            style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
-                        )
-                    }
+                    Text(
+                        "python + pip + venv. 이 기기에서 동작하는 백엔드를 설치합니다 — " +
+                            "root 필요한 Ubuntu(proot) 는 SELinux permissive 기기용이고, 실기기 " +
+                            "대부분은 Termux bionic + linker 구동 방식(~100MB)으로 설치됩니다. " +
+                            "다운로드는 한 번.",
+                        style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
+                    )
                 }
                 if (!message.isNullOrBlank()) {
                     Spacer(Modifier.height(4.dp))
@@ -225,7 +212,7 @@ fun ScriptScreen() {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                if (!envReady && !blockedByWx) {
+                if (!envReady) {
                     Button(
                         enabled = !busy,
                         onClick = {
