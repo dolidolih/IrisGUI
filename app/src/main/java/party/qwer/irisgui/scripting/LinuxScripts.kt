@@ -28,10 +28,31 @@ object LinuxScripts {
     private const val LOG = ".log"
     private const val VENV_LOG = ".venv.log"
     private const val VENV_DONE = ".venv.done"
+    /** ISSUE-11: start 가 기록하는 python 시작 pid 파일 (cwd=project 에 상대). */
+    internal const val RUN_PID = ".run.pid"
     /** venv 생성 진행 중 로그에 남는 자리표시자. */
     private const val VENV_PROGRESS = "venv preparing"
     /** 프로세스 재시작 등으로 venv 생성이 끊긴 경우 placeholder 를 stale 처리. */
     private const val STALE_AFTER_MS = 30 * 60 * 1000L
+
+    /**
+     * ISSUE-22: per-project mutex — start/stop/delete/ensureVenv(및 create 의 venv
+     * 스레드)를 직렬화한다. 카드 버튼 + 에디터 bridge 의 동시 실행, venv 생성 경합,
+     * 실행 중 삭제를 한꺼번에 막는다. Reentrant 라 start()→ensureVenv() 중첩 호출도
+     * 데드록 없다. 락 하나가 venv 설치(수 분)를 직렬화할 수 있으나 UI 는 이미
+     * "준비 중" pending 상태를 보여주므로 세매 변경 없음.
+     */
+    private val projectLocks = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock>()
+
+    private fun <T> withProjectLock(name: String, block: () -> T): T {
+        val l = projectLocks.getOrPut(name) { java.util.concurrent.locks.ReentrantLock() }
+        l.lock()
+        try {
+            return block()
+        } finally {
+            l.unlock()
+        }
+    }
 
     /** 프로젝트 + 런타임 상태 스냅샷. */
     data class Script(
@@ -101,7 +122,10 @@ object LinuxScripts {
      * 프로젝트 신규 생성. main.py(샘플) 작성 + venv 백그라운드 생성.
      * 이미 있으면 false. blocking — mkdir + 파일 쓰기만 하고 venv 는 별도 스레드.
      */
-    fun create(context: Context, name: String): UserlandRuntime.Result {
+    fun create(context: Context, name: String): UserlandRuntime.Result =
+        withProjectLock(name) { createImpl(context, name) }
+
+    private fun createImpl(context: Context, name: String): UserlandRuntime.Result {
         if (!isValidName(name)) return UserlandRuntime.Result(false, "사용할 수 없는 이름")
         val dir = projectDir(context, name)
         if (dir.exists()) return UserlandRuntime.Result(false, "$name 이미 존재")
@@ -115,8 +139,15 @@ object LinuxScripts {
     }
 
     /** 프로젝트 삭제. 실행 중이면 먼저 정지. */
-    fun delete(context: Context, name: String): UserlandRuntime.Result {
-        stop(context, name)
+    fun delete(context: Context, name: String): UserlandRuntime.Result =
+        withProjectLock(name) { deleteImpl(context, name) }
+
+    private fun deleteImpl(context: Context, name: String): UserlandRuntime.Result {
+        // ISSUE-22: 살아있는 프로세스 밑의 파일/venv/log 삭제를 막는다 — 정지가
+        // 확인되지 않으면 삭제 자체를中止 (유령 respawn + detached .log 방지).
+        val s = stopImpl(context, name)
+        if (!s.ok)
+            return UserlandRuntime.Result(false, "정지 확인 실패로 삭제하지 않음 — 정지 후 재시작 (${s.message})")
         val dir = projectDir(context, name)
         if (!dir.isDirectory) return UserlandRuntime.Result(false, "$name 없음")
         return if (runCatching { dir.deleteRecursively() }.getOrDefault(false)) {
@@ -126,7 +157,10 @@ object LinuxScripts {
     }
 
     /** venv 생성. 멱등: 이미 .venv/가 있고 done 마커 있으면 skip. blocking. */
-    fun ensureVenv(context: Context, name: String): UserlandRuntime.Result {
+    fun ensureVenv(context: Context, name: String): UserlandRuntime.Result =
+        withProjectLock(name) { ensureVenvImpl(context, name) }
+
+    private fun ensureVenvImpl(context: Context, name: String): UserlandRuntime.Result {
         val dir = projectDir(context, name)
         if (!dir.isDirectory) return UserlandRuntime.Result(false, "$name 없음")
         val venv = File(dir, ".venv")
@@ -164,7 +198,10 @@ object LinuxScripts {
     }
 
     /** main.py 실행. 이미 실행 중이면 멱등. blocking. */
-    fun start(context: Context, name: String): UserlandRuntime.Result {
+    fun start(context: Context, name: String): UserlandRuntime.Result =
+        withProjectLock(name) { startImpl(context, name) }
+
+    private fun startImpl(context: Context, name: String): UserlandRuntime.Result {
         val dir = projectDir(context, name)
         if (!dir.isDirectory) return UserlandRuntime.Result(false, "$name 없음")
         if (!UserlandRuntime.ready(context))
@@ -196,32 +233,37 @@ object LinuxScripts {
      * python, 그리고 wrapper 가 죽고 init 에 떠려 살아남는 orphan python 전부.
      * host kill 은 same uid 라 non-root(NLS) 에서도 별돈 privilege 없는 동작.
      */
-    fun stop(context: Context, name: String): UserlandRuntime.Result {
+    fun stop(context: Context, name: String): UserlandRuntime.Result =
+        withProjectLock(name) { stopImpl(context, name) }
+
+    private fun stopImpl(context: Context, name: String): UserlandRuntime.Result {
         synchronized(this) {
             val p = processes.remove(name)
             if (p?.isAlive == true) runCatching { p.destroy() }
         }
-        // 확인 포함 쵘대 4 라운드: kill → 재스컹. 스캩서는 cmdline-venv 경로로 orphan
-        // python 까지 잡베 라운드 사이에 살아남으면 다음 라운드에서 짓힌다.
+        // ISSUE-11: 대상은 정확한 시작 트리 — .run.pid 에 기록된 pid + 정밀 스캔
+        // (venv python+main.py, IRISGUI_SCRIPT wrapper) 만. 터미널의 pip/python 은
+        // 절대 타깃에 들어가지 않는다. kill → 확인 4 라운드.
         var remaining = pidsOf(context, name)
         var rounds = 0
         while (rounds < 4 && remaining.isNotEmpty()) {
             remaining.forEach { runCatching { killPid(it) } }
-            Thread.sleep(150)
+            Thread.sleep(200)
             remaining = pidsOf(context, name)
             rounds++
         }
-        // 보험: proot 안 guest pkill sweep (host pid ns 공유라 실효은 같지만
-        // host kill 권한 이상 시에도 정리된다).
+        // 보험: guest pkill sweep — 패턴은 python cmdline 의 main.py 실행만 잡도록
+        // 좁혔다. `python -m pip ...`/interactive shell 은 매치되지 않는다.
         if (remaining.isNotEmpty()) {
-            val guestPy = UserlandRuntime.guestProject(context, name) + "/.venv/bin/python"
-            val pat = "[h]" + guestPy.substring(1)
+            val py = UserlandRuntime.guestProject(context, name) + "/\\.venv/bin/python"
+            val pat = py + " [^ ]*main\\.py"
             runCatching {
                 UserlandRuntime.exec(context, "pkill -9 -f " + q(pat) + " 2>/dev/null; true", 15_000)
             }
             remaining = pidsOf(context, name)
         }
         val ok = remaining.isEmpty()
+        if (ok) runCatching { File(projectDir(context, name), RUN_PID).delete() }
         RuntimeLog.info(TAG, if (ok) "스크립트 정지: $name"
             else "스크립트 정지 실패: $name (pids=$remaining)")
         return UserlandRuntime.Result(ok, if (ok) "$name 정지됨"
