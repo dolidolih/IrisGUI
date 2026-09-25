@@ -232,7 +232,13 @@ class ObserverHelper(
     }
 
     /** 원본 log_id -> 삭제 마크 역색인 캐시. 원본 삭제 표지는 별도 마크 행에만 존재한다. */
+    // ISSUE-18: HTTP 핸들러 스레드가 polling thread 와 동시에 읽고 갱신한다.
+    // 비가시적 필드면 재구축 내용보다 앞선 epoch 만 보거나, 반쯤 망가진 HashMap 을
+    // 훑는 일이 생긴다. 모두 @Volatile 로 보이고, 갱신은 copy-on-write(새 map
+    // 조립 후 스왑) + map-먼저-epoch-나중 순서 보장으로 묶는다.
+    @Volatile
     private var deletionIndexEpoch: Pair<Long, Long> = -1L to -1L
+    @Volatile
     private var deletionIndex: Map<Long, Map<String, Any?>> = emptyMap()
 
     /**
@@ -248,6 +254,10 @@ class ObserverHelper(
         return deletionIndex[originalLogId]
     }
 
+    // ISSUE-18: 재구축 직렬화 — 동시 재구축이 깨진 캐시를 만드는 일을 막는다.
+    // 새 map 은 색인 필드에 먼저 발행하므로, 다른 스레드가 새 epoch 를 보는 순간엔
+    // 이미 새 map 내용까지 충분히 공개된 상태다.
+    @Synchronized
     private fun refreshDeletionIndexIfNeeded() {
         val epoch = db.connection
             .rawQuery(
@@ -272,6 +282,7 @@ class ObserverHelper(
             }
         }
         deletionIndex = rebuilt
+        // ISSUE-18: map 발행 후 epoch — 둘 다 volatile 이라 관찰 순서 보장
         deletionIndexEpoch = epoch
     }
 
