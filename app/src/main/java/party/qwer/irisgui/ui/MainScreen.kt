@@ -110,7 +110,15 @@ fun MainScreen() {
     val selectedTabName = tabs[safeTabIndex]
 
 
+    // 편집기 창 모드(edge-to-edge)에서만 창 inset 을 Compose 레이아웃에 반영한다.
+    // 평소 모드에서는 decor 쪽이 이미 시스템 바만큼 잘라 쓰기 때문에 inset 을 한 번 더
+    // 적용하면 이중 패딩이 된다. 특히 편집기를 나간 뒤 setDecorFitsSystemWindows(true)
+    // 로 돌아와도 플랫폼 inset 재전달이 남은 상태로 남아(레드드로이드: stat=48/
+    // nav=96 px 잔존) 탭 바 아래에 흰 띠가 생겼다. 평소 모드에선 inset 을 완전히 무시해
+    // 그 잔존값 자체를 레이아웃에서 원천 차단한다.
+    val scaffoldInsets = if (codeEditorOpen.value) WindowInsets.systemBars else WindowInsets(0)
     Scaffold(
+        contentWindowInsets = scaffoldInsets,
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
@@ -120,6 +128,7 @@ fun MainScreen() {
             // code 편집 화면(WebView) 중에는 탭 바를 완전히 감춘다 — 화면 전체를 코딩에 쓴다.
             if (!codeEditorOpen.value) {
             NavigationBar(
+                windowInsets = WindowInsets(0),
                 containerColor = AppColors.BottomNavBg,
                 contentColor = AppColors.TextSub,
                 tonalElevation = 0.dp
