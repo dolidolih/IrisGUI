@@ -20,14 +20,44 @@ object UserDbSaltStore {
     private const val FILE = "Feature_DataStore.pref.preferences_pb"
     private val CANDIDATES = listOf("files/datastore/$FILE", "files/$FILE", "datastore/$FILE")
 
+    /** Re-stat the source file after this long even when it looks unchanged (ISSUE-02). */
+    private const val SEED_TTL_MS = 5 * 60 * 1000L
+
     @Volatile
     private var cachedSeed: Long? = null
 
-    /** cached seed, reading the DataStore file if absent. null if unavailable. */
-    fun getSeed(): Long? = cachedSeed ?: loadSeed()?.also { cachedSeed = it }
+    @Volatile
+    private var loadedAtMs: Long = 0
 
+    @Volatile
+    private var sourceFile: File? = null
+
+    @Volatile
+    private var sourceMtime: Long = -1
+
+    /** cached seed, reading the DataStore file if absent. null if unavailable. */
+    fun getSeed(): Long? {
+        val cached = cachedSeed
+        if (cached != null && !expired()) return cached
+        return loadSeed()?.also { cachedSeed = it }
+    }
+
+    /**
+     * Drops the cached seed. Called when an encrypted-DB open fails so the next attempt
+     * re-reads the DataStore (a rotated seed would otherwise be cached forever).
+     */
     fun invalidateCache() {
         cachedSeed = null
+        loadedAtMs = 0
+        sourceFile = null
+        sourceMtime = -1
+    }
+
+    /** True when the cached seed must be re-read (TTL expiry or the source file changed). */
+    private fun expired(): Boolean {
+        val f = sourceFile
+        if (f != null && f.lastModified() != sourceMtime) return true
+        return System.currentTimeMillis() - loadedAtMs > SEED_TTL_MS
     }
 
     fun loadSeed(): Long? {
@@ -35,8 +65,15 @@ object UserDbSaltStore {
         for (rel in CANDIDATES) {
             val f = File(base, rel)
             if (!f.isFile) continue
-            runCatching { return parseLong(f) }
-                .onFailure { System.err.println("UserDbSaltStore: ${f.path} parse error: $it") }
+            val parsed = runCatching { parseLong(f) }
+            parsed.onFailure { System.err.println("UserDbSaltStore: ${f.path} parse error: $it") }
+            val value = parsed.getOrNull()
+            if (value != null) {
+                sourceFile = f
+                sourceMtime = f.lastModified()
+                loadedAtMs = System.currentTimeMillis()
+                return value
+            }
         }
         System.err.println("UserDbSaltStore: '$KEY' not found under $base")
         return null
@@ -102,7 +139,8 @@ object UserDbSaltStore {
                     j = skip(b, j, w2) ?: return null
                 }
             }
-            if (key == KEY && value != null && value != 0L) return value
+            // A legitimate seed can be 0 — accept any present value, do not filter it out.
+            if (key == KEY && value != null) return value
             i = entryEnd
         }
         return null

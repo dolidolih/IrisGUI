@@ -1,0 +1,246 @@
+package party.qwer.irisgui.backend
+
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import java.io.File
+import java.io.RandomAccessFile
+import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.locks.ReentrantReadWriteLock
+
+/**
+ * Shared snapshot machinery for the SQLCipher readers (crypto_database /
+ * crypto_user_database). One instance per database file.
+ *
+ * Why this exists (ISSUE-02 / ISSUE-31 / ISSUE-32 all live in the two readers):
+ *  - **Freshness (ISSUE-02)**: the old `if (db != null) return true` meant the first
+ *    decrypted working copy was used for the whole life of the process. `use()` re-checks
+ *    staleness (source mtime advanced, or TTL expired) and re-opens so nicknames and
+ *    `chat_log_search` stay current on a long-lived daemon.
+ *  - **Location (ISSUE-31)**: working copies go to a *private* dir — the app's own
+ *    `filesDir`, or, for the root daemon (no app Context), a mode-0700 dir we own. A
+ *    world-accessible location is refused outright instead of being used for decrypted data.
+ *  - **Close/query race (ISSUE-32)**: a read-write lock lets a refresh/close wait for
+ *    in-flight queries instead of nulling `db` out from under them (`already closed object`).
+ *
+ * Thread-safety: `use()` is safe from any thread; refresh/close are serialized by their
+ * own locks so a slow key derivation never blocks a reader on a healthy snapshot.
+ */
+internal class CryptoDbSnapshot(
+    private val label: String,
+    private val dbName: String,
+    private val subDir: String
+) {
+    @Volatile private var db: SQLiteDatabase? = null
+    @Volatile private var openedAtMs: Long = 0
+    @Volatile private var copiedSourceMtime: Long = 0
+
+    private val rw = ReentrantReadWriteLock()
+    private val refreshLock = ReentrantLock()
+
+    companion object {
+        /** Re-check the source after this long even if its mtime looks unchanged. */
+        private const val STALE_TTL_MS = 30_000L
+
+        /** Daemon (root, no app Context) working dir. Mode-0700 is enforced before use. */
+        private const val DAEMON_WORK_DIR = "/data/local/tmp/IrisGUI.work"
+    }
+
+    /** True when the open snapshot needs to be re-copied/re-opened. */
+    private fun stale(): Boolean =
+        db == null || System.currentTimeMillis() - openedAtMs > STALE_TTL_MS
+
+    /**
+     * Opens (or refreshes) the snapshot and runs [block] on it. Returns null when the
+     * database/key/working copy is unavailable — callers then fall back as before.
+     */
+    fun <T> use(keyProvider: () -> ByteArray?, block: (SQLiteDatabase) -> T): T? {
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            if (stale()) refresh(keyProvider)
+            if (db == null) return null
+            rw.readLock().lock()
+            try {
+                val current = db ?: return null
+                return block(current)
+            } catch (e: Exception) {
+                // A concurrent close/refresh can still win the race against the handle we
+                // just read. Discard the snapshot once and retry; a second failure propagates.
+                if (attempt > 1) throw e
+                System.err.println("$label: query failed (${e.javaClass.simpleName}: ${e.message}) — refreshing snapshot")
+                close()
+            } finally {
+                rw.readLock().unlock()
+            }
+        }
+        return null
+    }
+
+    /** Opens the snapshot without running a query (kept for `open()`-style callers). */
+    fun ensure(keyProvider: () -> ByteArray?): Boolean {
+        if (!stale()) return db != null
+        refresh(keyProvider)
+        return db != null
+    }
+
+    /** Drop the snapshot; the next use() re-derives the key and re-copies. */
+    fun close() {
+        refreshLock.lock()
+        try {
+            rw.writeLock().lock()
+            try {
+                db?.close()
+            } catch (t: Throwable) {
+                System.err.println("$label: close failed: $t")
+            } finally {
+                db = null
+                openedAtMs = 0
+                copiedSourceMtime = 0
+                rw.writeLock().unlock()
+            }
+        } finally {
+            refreshLock.unlock()
+        }
+    }
+
+    /** Key derivation + working-copy refresh, serialized so only one thread pays for it. */
+    private fun refresh(keyProvider: () -> ByteArray?): SQLiteDatabase? {
+        refreshLock.lock()
+        try {
+            // Another thread may already have refreshed while we waited for the lock.
+            if (db != null && !stale()) return db
+            if (!SqlCipherNative.ensureLoaded()) {
+                System.err.println("$label: libsqlcipher unavailable")
+                return null
+            }
+            val key = runCatching(keyProvider).getOrElse {
+                System.err.println("$label: key derivation failed: $it")
+                return null
+            } ?: return null
+            val workFile = copyToWorkingCopy() ?: return null
+            val opened = try {
+                SQLiteDatabase.openDatabase(
+                    workFile.absolutePath, key, null,
+                    SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS,
+                    null
+                )
+            } catch (e: Throwable) {
+                // Most likely a rotated-out key ("file is not a database") — say so, the
+                // message that used to appear here was indistinguishable from a missing file.
+                System.err.println("$label: open failed (key mismatch or unreadable db): $e")
+                return null
+            }
+            rw.writeLock().lock()
+            try {
+                runCatching { db?.close() }
+                db = opened
+                openedAtMs = System.currentTimeMillis()
+                return opened
+            } finally {
+                rw.writeLock().unlock()
+            }
+        } finally {
+            refreshLock.unlock()
+        }
+    }
+
+    /**
+     * Snapshots the live (WAL-mode) database into [workingDir] and returns the main file.
+     * Kakao keeps writing to the live files, so read-only access without the -shm/-wal is
+     * unsafe; a copy is the proven path. The copy is redone when the source timestamp
+     * advances, so repeated queries on an unchanged source cost nothing.
+     */
+    private fun copyToWorkingCopy(): File? {
+        return try {
+            val srcMain = File(PathUtils.getAppPath(), "databases/$dbName")
+            if (!srcMain.isFile) {
+                System.err.println("$label: source not found: $srcMain")
+                return null
+            }
+            val workDir = workingDir() ?: return null
+            val dstMain = File(workDir, dbName)
+            val dstWal = File(workDir, "$dbName-wal")
+            val srcWal = File(srcMain.parentFile, "$dbName-wal")
+            val sourceMtime = maxOf(srcMain.lastModified(), srcWal.lastModified())
+            if (!dstMain.isFile || sourceMtime > copiedSourceMtime) {
+                copyInto(srcMain, dstMain)
+                if (srcWal.isFile) copyInto(srcWal, dstWal) else dstWal.delete()
+                copiedSourceMtime = sourceMtime
+            }
+            dstMain
+        } catch (e: Throwable) {
+            System.err.println("$label: copyToWorkingCopy failed: $e")
+            null
+        }
+    }
+
+    /**
+     * Private working-copy directory (ISSUE-31). Never returns a world-accessible dir:
+     * the copies are fully decrypted nickname/chat data and `/data/local/tmp` is writable
+     * by every unprivileged app on several ROMs.
+     */
+    private fun workingDir(): File? {
+        val appFiles = runCatching {
+            val app = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null)
+            app.javaClass.getMethod("getFilesDir").invoke(app) as? File
+        }.getOrNull()
+        if (appFiles != null) {
+            val dir = File(appFiles, subDir)
+            if (dir.mkdirs() || dir.isDirectory) return harden(dir)
+            System.err.println("$label: cannot create working dir $dir")
+            return null
+        }
+        // Root daemon (app_process) has no app Context — use our own dir, mode-0700.
+        val dir = File(
+            System.getenv("IRISGUI_WORK_DIR")?.takeIf { it.isNotBlank() } ?: DAEMON_WORK_DIR
+        )
+        if (!dir.isDirectory && !dir.mkdirs()) {
+            System.err.println("$label: cannot create working dir $dir")
+            return null
+        }
+        return harden(dir)
+    }
+
+    /** owner-only permissions; null when the dir still grants group/other access. */
+    private fun harden(dir: File): File? {
+        runCatching {
+            dir.setReadable(false, false)
+            dir.setWritable(false, false)
+            dir.setExecutable(false, false)
+            dir.setReadable(true, true)
+            dir.setWritable(true, true)
+            dir.setExecutable(true, true)
+        }
+        val mode: Int = runCatching { android.system.Os.stat(dir.absolutePath).st_mode }
+            .getOrDefault(0)
+        if (mode >= 0 && (mode and 0x3f) != 0) {
+            System.err.println(
+                "$label: refusing decrypted working copy in group/world-accessible dir $dir (mode ${Integer.toString(mode and 0x1ff, 8)})"
+            )
+            return null
+        }
+        return dir
+    }
+
+    private fun copyInto(src: File, dst: File) {
+        RandomAccessFile(src, "r").use { raf ->
+            dst.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                val size = raf.length()
+                var pos = 0L
+                while (pos < size) {
+                    val n = raf.read(buf, 0, minOf(buf.size.toLong(), size - pos).toInt())
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    pos += n
+                }
+            }
+        }
+        dst.setLastModified(src.lastModified())
+        // Decrypted content — keep the copy owner-only even if the dir slipped through.
+        runCatching {
+            dst.setReadable(false, false); dst.setReadable(true, true)
+            dst.setWritable(false, false); dst.setWritable(true, true)
+        }
+    }
+}

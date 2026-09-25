@@ -58,19 +58,31 @@ class KakaoDB {
      * AppConfig.botId를 시드로 사용한다. recommended_friends는 open_chat_member에
      * 없을 때 사용하는 보조 저장소다.
      */
-    /** Bounded cache of user id → plaintext nickname resolved from crypto_user_database. */
-    private val cryptoNameCache = LinkedHashMap<Long, String?>()
-    private var cryptoCacheSize = 0
+    /**
+     * Bounded LRU cache of user id → plaintext nickname resolved from crypto_user_database.
+     * ISSUE-02: hits expire (the DB gains friends/renames continuously and the daemon is
+     * long-lived) and misses expire much sooner, so a transient keystore/native-lib
+     * failure no longer freezes an id as "unknown" for the life of the process. Entries
+     * evict LRU instead of being wiped wholesale at 512.
+     */
+    private class NameCacheEntry(val name: String?, val expiresAt: Long) {
+        fun valid(now: Long): Boolean = expiresAt > now
+    }
+
+    private val cryptoNameCache = object : LinkedHashMap<Long, NameCacheEntry>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, NameCacheEntry>?): Boolean =
+            size > NAME_CACHE_MAX
+    }
 
     private fun queryUserNameFromCrypto(userId: Long): String? {
-        synchronized(cryptoNameCache) {
-            if (cryptoNameCache.containsKey(userId)) return cryptoNameCache[userId]
-            if (cryptoCacheSize > 512) { cryptoNameCache.clear(); cryptoCacheSize = 0 }
-        }
+        val now = System.currentTimeMillis()
+        val hit = synchronized(cryptoNameCache) { cryptoNameCache[userId]?.takeIf { it.valid(now) } }
+        if (hit != null) return hit.name
+
         val name = runCatching { CryptoUserDatabaseReader.queryUserName(userId) }.getOrNull()
+        val ttl = if (name != null) NAME_HIT_TTL_MS else NAME_MISS_TTL_MS
         synchronized(cryptoNameCache) {
-            cryptoNameCache[userId] = name
-            cryptoCacheSize = cryptoNameCache.size
+            cryptoNameCache[userId] = NameCacheEntry(name, now + ttl)
         }
         return name
     }
@@ -475,6 +487,10 @@ class KakaoDB {
     }
 
     companion object {
+        private const val NAME_CACHE_MAX = 4096
+        private const val NAME_HIT_TTL_MS = 10 * 60 * 1000L
+        private const val NAME_MISS_TTL_MS = 30_000L
+
         private val DB_PATH: String by lazy {
             "${PathUtils.getAppPath()}databases"
         }
