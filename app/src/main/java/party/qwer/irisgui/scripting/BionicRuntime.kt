@@ -52,7 +52,7 @@ object BionicRuntime {
         "armeabi-v7a" to "arm", "armeabi" to "arm", "x86" to "i686",
     )
 
-    private const val MARKER = ".ready_runtime"
+    private const val MARKER = ".ready_runtime2"  // v2: shebang 경로 재배선 언팩 포함
 
     fun prefix(context: Context): File = File(context.filesDir, "bionic")
 
@@ -177,7 +177,7 @@ object BionicRuntime {
         ensureTrustStore(context)
         // 마커 쓰기 전에 venv/pip 왕복으로 실사용 확인. 실패하면 마커 없이 실패 반환.
         val probe = exec(context, "python3 -m venv --help >/dev/null 2>&1; " +
-            "python3 -c 'import ssl,sqlite3,venv,ensurepip,pip' && echo BIONIC_OK", 120_000)
+            "python3 -c 'import ssl,sqlite3,venv,ensurepip,pip,PIL' && echo BIONIC_OK", 120_000)
         if (!probe.output.contains("BIONIC_OK"))
             return UserlandRuntime.Result(false, "bionic python 검증 실패: ${probe.output.take(200)}")
         File(p, "home/projects").mkdirs()
@@ -358,7 +358,7 @@ object BionicRuntime {
                 when (type) {
                     '/' -> { target.mkdirs(); ndir++ }
                     '0', '\u0000' -> {
-                        target.outputStream().use { it.write(body) }
+                        target.outputStream().use { it.write(rebindTermuxPaths(body, dest)) }
                         android.system.Os.chmod(target.absolutePath, mode.toInt() and 0xfff)
                         nfile++
                     }
@@ -385,6 +385,20 @@ object BionicRuntime {
         }
         RuntimeLog.info(TAG, "untar 완료: files=$nfile links=$nlink dirs=$ndir")
         return true
+    }
+
+    /** Termux deb 의 내용물은 전부 /data/data/com.termux/files/ 하드코딩으로
+     * 빌드된다. 남의 host 에는 그 경로가 없으므로 스크립트(#! 헤더)만
+     * 바이트 안전한 문자열 치환으로 우리 userland 루트를 가리키게 다시 배선한다.
+     * ELF 바이너리는 손대지 못하지만 python/venv 런타임은 자기 경유로
+     * 잡으므로(binfmt shebang 은 interpreter 경로 문제 → shim/linker 왕복) 실해지 적다. */
+    private fun rebindTermuxPaths(body: ByteArray, dest: File): ByteArray {
+        if (body.size < 32 || body.size > 8_000_000) return body
+        if (!(body[0] == '#'.code.toByte() && body[1] == '!'.code.toByte())) return body
+        val s = String(body, Charsets.ISO_8859_1)
+        val from = "/data/data/com.termux/files/"
+        if (!s.contains(from)) return body
+        return s.replace(from, dest.absolutePath + "/").toByteArray(Charsets.ISO_8859_1)
     }
 
     private val client = OkHttpClient.Builder()

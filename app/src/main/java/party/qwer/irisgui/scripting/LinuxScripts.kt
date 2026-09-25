@@ -176,7 +176,18 @@ object LinuxScripts {
         val venv = File(dir, ".venv")
         if (venv.isDirectory && File(dir, VENV_DONE).exists() &&
             File(venv, "bin/python").isFile
-        ) return UserlandRuntime.Result(true, "venv 이미 있음")
+        ) {
+            // 백과 없이 넘어가면 rc1 잔해(PIL/irispy 없이 partial 생성된 venv) 영구
+            // 고정. 실제 import 왕복으로 진짜 준비된 venv만 신뢰한다.
+            val probe = UserlandRuntime.exec(context,
+                ".venv/bin/python -c 'import irispy_client, PIL' && echo VENV_VOCAL", 90_000,
+                UserlandRuntime.guestProject(context, name))
+            if (probe.output.contains("VENV_VOCAL"))
+                return UserlandRuntime.Result(true, "venv 이미 있음")
+            RuntimeLog.warn(TAG, "venv 복구: import 실패 → 재설치 ($name)")
+            venv.deleteRecursively()
+            File(dir, VENV_DONE).delete()
+        }
         // pip 의 TLS 는 CA 번들이 있어야 동작한다. (base 이미지엔 없음)
         val trust = UserlandRuntime.ensureTrustStore(context)
         if (!trust.ok) return trust
