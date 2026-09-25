@@ -15,12 +15,19 @@ local.properties
 .claude/
 .research/
 .openhands/
+.venv/
 
 # Not source distribution
 docs/
 Reference_project/
 qa/
 AGENTS.md
+
+# Secrets / local build config — never commit
+keystore.properties
+keystores/
+*.jks
+*.keystore
 
 # Packages
 *.apk
