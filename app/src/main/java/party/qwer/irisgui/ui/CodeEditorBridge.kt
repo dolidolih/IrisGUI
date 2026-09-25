@@ -33,22 +33,24 @@ internal class CodeEditorBridge(
     private class Term(
         val process: Process,
         val input: java.io.BufferedOutputStream,
-        val id: Int
+        val id: Int,
+        /** ISSUE-24: 터미널당 크기 파일 — 다른 프로젝트/터미널의 리사이즈가
+         * 이 터미널의 PROMPT_COMMAND 폴러를 오염시키지 않도록 id별 파일. */
+        val sizeFile: File
     ) {
         @Volatile var lastInput = 0L
-        @Volatile var pending: Pair<Int, Int>? = null
     }
 
-    // 셸은 바뀐 것도 아닌 stty 명령을 에코해서 화면을 어지럽힌다. 크기 파일(/home/projects/
-    // .termsize 는 guest 와 host 가 같은 디렉터리라 바운드 필요 없음)에 쓰고 프롬프트마다
-    // PROMPT_COMMAND 가 반영하게 한다. 입력 줄에 끼어드는 일도 없다.
-    private val sizeFile = File(UserlandRuntime.projectsHostDir(context), ".termsize")
+    private fun projectsRoot(): File = UserlandRuntime.projectsHostDir(context)
 
-    private fun writeSizeFile(cols: Int, rows: Int) {
-        runCatching { sizeFile.writeText("$cols $rows\n") }
+    private fun writeSize(term: Term, cols: Int, rows: Int) {
+        runCatching { term.sizeFile.writeText("$cols $rows\n") }
     }
 
-    private fun Term.applyResize(cols: Int, rows: Int) = Unit
+    private fun cleanupTermFiles(id: Int) {
+        runCatching { File(projectsRoot(), "$project/.termsize_$id").delete() }
+        runCatching { File(projectsRoot(), "$project/.termrc_$id").delete() }
+    }
 
 
     private val terms = ConcurrentHashMap<Int, Term>()
@@ -61,7 +63,9 @@ internal class CodeEditorBridge(
         // destroyForcibly(SIGHUP/kill) 만 쓰면 bash/python 이 고아로 남아 다음 터미널과
         // 충돌하고 /proc 상태가 잔존한다. 백그라운드에서 보류 후 강제 종료 — main 대기 없음.
         val procs = terms.values.map { it.process }
+        val ids = terms.keys.toList()
         terms.clear()
+        ids.forEach { cleanupTermFiles(it) }
         procs.forEach { runCatching { it.destroy() } }
         Thread {
             procs.forEach { p ->
@@ -99,7 +103,16 @@ internal class CodeEditorBridge(
 
     // ── JS 로 공개되는 API ───────────────────────────────────────────────────
 
-    /** venv python 으로 모듈을 import 해 dir() 공개 멤버를 나열한다. 실패는 조용히 빈 목록으로. */
+    /**
+     * ISSUE-24: 자동완성용 멤버 목록은 더 이상 모듈을 *import 하지 않는다* —
+     * import 는 사용자 코드의 모듈 최상단(서버 접속·스레드 기동)까지 실행하면서
+     * bridge 를 최대 5 초 막는다. 대신
+     *   · 프로젝트 안 모듈은 host 에서 소스를 그대로 정적 주사(최상위 def/class/
+     *     import/대입 이름만),
+     *   · venv/사이트패키지 모듈은 find_spec(실행 없음)+ast 파싱을 백그라운드에서
+     *     돌고 window.IrisEditor.onMembers 로 회신한다.
+     * 응답 형식은 {"members":[...]} 유지(호환) + pending 안내만 추가.
+     */
     @JavascriptInterface
     fun members(module: String): String = runCatching {
         val mod = module.trim().take(64)
@@ -108,29 +121,104 @@ internal class CodeEditorBridge(
         memberCache[key]?.let { (at, list) ->
             if (System.currentTimeMillis() - at < 30000) return membersJson(list)
         }
-        val guest = UserlandRuntime.guestProject(context, project)
-        val py =
-            "import sys,importlib\n" +
-                "try:\n" +
-                "    m = importlib.import_module(sys.argv[1])\n" +
-                "    print(chr(10).join(x for x in dir(m) if not x.startswith('_'))[:4000])\n" +
-                "except BaseException:\n" +
-                "    pass\n"
-        val exec = UserlandRuntime.exec(
-            context,
-            "printf '%s' " + UserlandRuntime.q(py) + " | " + guestVenvPython() +
-                " -c " + UserlandRuntime.q("import sys;exec(sys.stdin.read())") + " " + mod,
-            5000, guest
-        )
-        val list = if (exec.exitCode == 0) {
-            exec.output.trim().split("\n")
-                .filter { it.isNotBlank() && Regex("^[A-Za-z_]\\w*$").matches(it.trim()) }
-                .map { it.trim() }
-        } else emptyList()
-        memberCache[key] = System.currentTimeMillis() to list
-        membersJson(list)
+        val rel = mod.replace('.', '/')
+        val local = listOf(File(root(), "$rel.py"), File(root(), "$rel/__init__.py"))
+            .firstOrNull { it.isFile }
+        if (local != null) {
+            val list = parseTopLevelNames(local)
+            memberCache[key] = System.currentTimeMillis() to list
+            return membersJson(list)
+        }
+        // 프로젝트 밖 모듈: exec 하지 말고 백그라운드 ast 스캔 → 콜백.
+        if (probing.add(key)) {
+            Thread {
+                try {
+                    val list = scanInstalledModule(mod)
+                    memberCache[key] = System.currentTimeMillis() to list
+                    emit("window.IrisEditor && window.IrisEditor.onMembers && " +
+                        "window.IrisEditor.onMembers(" + JSONObject.quote(module) + ", " +
+                        membersJson(list) + ")")
+                } finally {
+                    probing.remove(key)
+                }
+            }.apply { isDaemon = true }.start()
+        }
+        JSONObject().put("members", JSONArray()).put("pending", true).toString()
     }.getOrElse { err(it.message ?: "members failed") }
 
+    private val probing = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+
+    /** 최상위 bar 정의의 이름만 걷어낸다 (def/class/대입/import). 실행 없음. */
+    private fun parseTopLevelNames(f: File): List<String> {
+        val names = LinkedHashSet<String>()
+        val reDef = Regex("^(?:async\\s+)?(?:def|class)\\s+([A-Za-z_]\\w*)")
+        val reSet = Regex("^([A-Za-z_]\\w*)\\s*(?::[^=]+)?=")
+        val reFrom = Regex("^from\\s+[\\w.]+\\s+import\\s+(.+)\\s*$")
+        val reImp = Regex("^import\\s+(.+)\\s*$")
+        val word = Regex("^\\w+$")
+        runCatching {
+            f.bufferedReader().use { br ->
+                var n = 0
+                br.lineSequence().take(20_000).forEach { raw ->
+                    n++
+                    val line = raw.take(200)
+                    if (line.isBlank() || line.startsWith("#") || line.startsWith("\t")) return@forEach
+                    reDef.find(line)?.let { names += it.groupValues[1]; return@forEach }
+                    reSet.find(line)?.let { names += it.groupValues[1]; return@forEach }
+                    reFrom.find(line)?.let {
+                        names += it.groupValues[1].split(",").map { a ->
+                            a.substringBefore(" as ").trim()
+                        }.filter { a -> word.matches(a) }
+                        return@forEach
+                    }
+                    reImp.find(line)?.let {
+                        names += it.groupValues[1].split(",")
+                            .map { a -> a.substringBefore(" as ").trim().substringBefore('.') }
+                            .filter { a -> word.matches(a) }
+                    }
+                }
+            }
+        }
+        return names.filter { it.isNotBlank() }.take(500).toList()
+    }
+
+    /** find_spec(모듈 실행 없음)+ast 로 venv 설치 모듈 이름을 딴다. exec 과 다르다. */
+    private fun scanInstalledModule(mod: String): List<String> {
+        val py = "import sys,ast,importlib.util,os\n" +
+            "name=sys.argv[1]\npath=None\n" +
+            "try:\n" +
+            "    sp=importlib.util.find_spec(name)\n" +
+            "    o=getattr(sp,'origin',None) or ''\n" +
+            "    if o.endswith('.py'):path=o\n" +
+            "    elif o.endswith('__init__.py'):path=o\n" +
+            "except BaseException:\n" +
+            "    pass\n" +
+            "if path:\n" +
+            "    try:\n" +
+            "        t=ast.parse(open(path,encoding='utf-8',errors='replace').read())\n" +
+            "        out=[]\n" +
+
+            "        for n in t.body:\n" +
+            "            if hasattr(n,'name') and isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):\n" +
+            "                out.append(n.name)\n" +
+            "        print(chr(10).join(out[:500]))\n" +
+            "    except BaseException:\n" +
+            "        pass\n"
+        val guest = UserlandRuntime.guestProject(context, project)
+        val r = UserlandRuntime.exec(
+            context,
+            "printf %s " + UserlandRuntime.q(py) + " | " + guestVenvPython() + " -c " +
+                UserlandRuntime.q("import sys;exec(sys.stdin.read())") + " " +
+                UserlandRuntime.q(mod),
+            6000, guest
+        )
+        if (r.exitCode != 0) return emptyList()
+        return r.output.trim().split("\n")
+            .filter { it.isNotBlank() && Regex("^[A-Za-z_]\\w*$").matches(it.trim()) }
+            .map { it.trim() }
+    }
     private val memberCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<String>>>()
 
     private fun membersJson(list: List<String>): String {
@@ -201,11 +289,25 @@ internal class CodeEditorBridge(
         if (!f.isFile || f.length() > 4_000_000) null else f.readText(Charsets.UTF_8)
     }.getOrNull()
 
+    /** ISSUE-24: tmp + atomic move — 크래시/정전時に main.py 가 잘린 채로 남지 않는다.
+     * 실행 직전 runner 가 읽는 중이어도 partial 은 절대 노출되지 않는다. */
     @JavascriptInterface
     fun write(rel: String, text: String): String = try {
         val f = resolve(rel) ?: return err("경로 밖 접근")
         f.parentFile?.mkdirs()
-        f.writeText(text, Charsets.UTF_8)
+        val tmp = java.io.File.createTempFile(f.name + ".tmp", null, f.parentFile)
+        try {
+            tmp.writeText(text, Charsets.UTF_8)
+            java.nio.file.Files.move(
+                tmp.toPath(), f.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (mv: Exception) {
+            runCatching { tmp.delete() }
+            // ATOMIC_MOVE 미지원 fs 폴백: 기존처럼 직접 쓰기.
+            f.writeText(text, Charsets.UTF_8)
+        }
         ok("saved")
     } catch (e: Exception) {
         err(e.message ?: "write failed")
@@ -216,7 +318,11 @@ internal class CodeEditorBridge(
         val f = resolve(rel) ?: return err("경로 밖 접근")
         if (f.exists()) return err("이미 존재")
         return runCatching {
-            if (isDir) f.mkdirs()
+            if (isDir) {
+                // ISSUE-24: mkdirs() 결과를 무시하던 것 — 실패 없이 "created" 를
+                // 돌려주면 빈 화면에 심는 저장까지 성공으로 위장한다.
+                if (!f.mkdirs() && !f.isDirectory) return@runCatching err("디렉터리 생성 실패")
+            }
             else {
                 f.parentFile?.mkdirs()
                 if (!f.createNewFile()) return err("생성 실패")
@@ -239,6 +345,11 @@ internal class CodeEditorBridge(
     fun rename(from: String, to: String): String {
         val s = resolve(from) ?: return err("경로 밖 접근")
         val d = resolve(to) ?: return err("경로 밖 접근")
+        // ISSUE-24: remove() 에 있던 루트 가드를 rename 도 same. 루트를 대상으로 한
+        // "" / "." 이동은 프로젝트 디렉터리 통째로 /home/projects bind 아래에서
+        // 떼어내는 무음 프로젝트 파괴였다.
+        if (s == root().canonicalFile) return err("프로젝트 자체는 리네임 불가")
+        if (d == root().canonicalFile) return err("루트로의 리네임은 불가")
         if (!s.exists() || d.exists()) return err("rename 불가")
         return runCatching {
             d.parentFile?.mkdirs()
@@ -302,6 +413,27 @@ internal class CodeEditorBridge(
         if (r.ok) ok("running") else err(r.message)
     }.getOrElse { err(it.message ?: "run failed") }
 
+    /**
+     * ISSUE-24: runScript 의 first-run venv ensure 은 30 분까지 걸릴 수 있다 — 그 동안
+     * bridge 터미널/저장이 통째로 멈춘다. 비동기 버전은 즉시 queued 를 돌려주고 결과가
+     * 준비되면 window.IrisEditor.onRunResult({ok,message}) 를 emit 한다. 동기를 쓰는
+     * 기존 editor.html 콜드패스는 그대로 동작한다(runScript 유지).
+     */
+    @JavascriptInterface
+    fun runScriptAsync(): String {
+        if (closed) return err("편집기가 닫혔습니다")
+        Thread {
+            val (ok, msg) = runCatching { LinuxScripts.start(context, project) }
+                .fold({ it.ok to it.message }, { false to (it.message ?: "run failed") })
+            runCatching {
+                emit("window.IrisEditor && window.IrisEditor.onRunResult && " +
+                    "window.IrisEditor.onRunResult(" +
+                    JSONObject().put("ok", ok).put("message", msg).toString() + ")")
+            }
+        }.apply { isDaemon = true }.start()
+        return JSONObject().put("ok", true).put("queued", true).toString()
+    }
+
     @JavascriptInterface
     fun stopScript(): String = runCatching {
         val r = LinuxScripts.stop(context, project)
@@ -318,7 +450,13 @@ internal class CodeEditorBridge(
     @JavascriptInterface
     fun termStart(cols: Int, rows: Int): String = try {
         val guest = UserlandRuntime.guestProject(context, project)
-        val rcGuest = "$guest/.termrc"
+        val id = ++termSeq
+        val rcGuest = "$guest/.termrc_$id"
+        // ISSUE-24: 크기 파일을 id(그리고 프로젝트)별로 분리 — 한 프로젝트용 global
+        // .termsize 는 다른 터미널/프로젝트의 리사이즈가 이 터미널의 prompt poller 를
+        // 오염시켜 프롬프트가 엉뚱한 너비로 찢어진다.
+        val sizeHost = java.io.File(projectsRoot(), "$project/.termsize_$id")
+        val sizeGuest = UserlandRuntime.guestProject(context, project) + "/.termsize_$id"
         // script(script util) 가 PTY 를 잡아 대화가 유지된다. script 를 못 쓰면
         // bash -i(pipe 모드라 echo만 되는 반쪽)라도 살려둔다. exec 금지: 마지막
         // exec 가 죽으면 폴백 없이 세션이 종결된다.
@@ -331,27 +469,27 @@ internal class CodeEditorBridge(
                 "export TERM=xterm-256color\n" +
                 "{ for g in \$(id -G); do grep -q \"^[^:]*:[^:]*:\$g:\" /etc/group 2>/dev/null || echo \"g\$g:x:\$g:\" >>/etc/group; done; } 2>/dev/null\n" +
                 "stty rows " + rows + " cols " + cols + " 2>/dev/null\n" +
-                // 크기 동기화: host 가 .termsize 에 창 크기를 쓰고, bash rc 가 백그라운드
-                // 폴러로 read+stty 한다(폴러는 interactive bash 의 잡으로만 살수 있음).
-                // rc 는 host 파일에서 직접 쓰지 — printf 이스케이프 사달 prevents.
+                // 크기 동기화: host 가 이 터미널 전용 .termsize_<id> 에 창 크기를 쓰고,
+                // bash rc 의 PROMPT_COMMAND 가 prompt 마다 read+stty 한다. 입력 줄에
+                // 끼어드는 일도 없다.
                 "script -qc 'bash --rcfile " + rcGuest + " -i' /dev/null 2>&1\n" +
                 "exec bash -i 2>&1"
-        val rcHost = java.io.File(UserlandRuntime.projectsHostDir(context), "$project/.termrc")
+        val rcHost = java.io.File(projectsRoot(), "$project/.termrc_$id")
         runCatching {
             rcHost.parentFile?.mkdirs()
+            sizeHost.writeText("$cols $rows\n")
             // read 는 개행 없는 EOF 에서 rc=1 을 반환하므로 && 로 게이트하지 않는다.
             // stty 는 stdin 을 tty 로 써야 하므로 stdin 을 /dev/tty 로 리다이렉트한다.
             rcHost.writeText(
                 "[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc\n" +
                     "[ -f ~/.bashrc ] && . ~/.bashrc\n" +
-                    "PROMPT_COMMAND='read -r _c _r </home/projects/.termsize 2>/dev/null; " +
+                    "PROMPT_COMMAND='read -r _c _r <" + sizeGuest + " 2>/dev/null; " +
                     "[ -n \"\$_c\" ] && stty cols \$_c rows \$_r 0</dev/tty 2>/dev/null'\n"
             )
         }
         val p = UserlandRuntime.spawnBackground(context, inner, guest, null)
             ?: return err("터미널 시작 실패")
-        val id = ++termSeq
-        val term = Term(p, java.io.BufferedOutputStream(p.outputStream), id)
+        val term = Term(p, java.io.BufferedOutputStream(p.outputStream), id, sizeHost)
         terms[id] = term
         Thread {
             val b = ByteArray(8192)
@@ -371,6 +509,7 @@ internal class CodeEditorBridge(
             RuntimeLog.info("Editor", "$project: terminal $id exited code=$code")
             runCatching { emit("window.Term.onExit($id)") }
             terms.remove(id)
+            cleanupTermFiles(id)
         }.apply { isDaemon = true }.start()
         JSONObject().put("id", id).toString()
     } catch (e: Exception) {
@@ -385,27 +524,25 @@ internal class CodeEditorBridge(
             t.input.write(d)
             t.input.flush()
             t.lastInput = System.currentTimeMillis()
-            if (d.isNotEmpty() && (d.last() == '\r'.code.toByte() || d.last() == '\n'.code.toByte())) {
-                t.pending?.let { t.pending = null; t.applyResize(it.first, it.second) }
-            }
         }
     }
 
-    /** stty 로 창 크기 반영. 입력 중인 프롬프트에 끼어들지 않도록 유휴(>600ms) 일 때만
-     *  즉시 적용하고, 그 외에는 Enter 를 기다려 pending 으로 처리한다. */
+        /** ISSUE-24: 이 터미널 전용 크기 파일에 창 크기를 쓴다 — bash rc 의
+     * PROMPT_COMMAND poller 가 prompt 마다 반영. 입력 중 끼어드는 stty 도 없다.
+     * (old deferred "pending" path: applyResize 가 no-op 이라 죽어있어 삭제.) */
     @JavascriptInterface
     fun termResize(id: Int, cols: Int, rows: Int) {
         val t = terms[id] ?: return
         val alive = runCatching { t.process.exitValue() }.isFailure
         if (!alive) return
-        writeSizeFile(cols, rows)
+        writeSize(t, cols, rows)
     }
-
     @JavascriptInterface
     fun termStop(id: Int) {
         // close() 와 동일: SIGTERM 으로 proot 로 하여금 guest 자식을 정리하게 하고,
         // 끝나지 않으면 백그라운드에서 강제 종료. 호출자(JS/메인) 블로킹 없음.
         terms.remove(id)?.let { term ->
+            cleanupTermFiles(id)
             runCatching { term.process.destroy() }
             Thread {
                 runCatching { term.process.waitFor(600, TimeUnit.MILLISECONDS) }
