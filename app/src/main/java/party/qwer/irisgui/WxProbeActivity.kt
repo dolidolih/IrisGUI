@@ -35,25 +35,27 @@ class WxProbeActivity : ComponentActivity() {
             log.append(s).append('\n')
         }
 
-        out("selinux=${readOr("/proc/self/attr/current")}")
+        out("selinux=${readOr("/sys/fs/selinux/enforce")} ctx=${readOr("/proc/self/attr/current")}")
 
-        // bionic-호환 PIE 바이너리 토이를 filesDir 에 복사 (시스템 읽기는 허용됨).
-        val src = File("/system/bin/toybox")
-        val dst = File(filesDir, "wxbox")
-        if (!src.isFile) return "FATAL: no /system/bin/toybox"
+        // bionic ELF 토이를 filesDir 에 복사 (시스템 읽기는 허용됨). sh(mksh) 는 멀티콜
+        // 어절 해석 없이 argv 로 바로 실행되므로 harness 에 알맞다.
+        val candidates = listOf("/system/bin/mksh", "/system/bin/sh", "/system/bin/toybox")
+        val src = candidates.map(::File).firstOrNull { it.isFile }
+            ?: return "FATAL: no mksh/sh/toybox"
+        val dst = File(filesDir, "wxbin")
         src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
         val execOk = dst.setExecutable(true)
-        out("copied=${dst.length()} bytes executable=$execOk")
+        out("src=$src copied=${dst.length()} executable=$execOk")
 
-        run("A-plain-execve", listOf(dst.absolutePath, "id"), ::out)
-        run("B-linker64", listOf("/system/bin/linker64", dst.absolutePath, "id"), ::out)
-
-        // 참고: linker 가 실제 execve 된 것이 아니므로 comm 은 linker64 로 찍힌다.
-        runCatching {
-            val p = ProcessBuilder("/system/bin/sh", "-c", "cat /proc/self/comm")
-                .redirectErrorStream(true).start()
-            out("self-comm=${p.inputStream.bufferedReader().readText().trim()}")
+        // 동일 바이너리·동일 인자: 두 경로는 커널 exec 창만 다르다.
+        val sh = if (src.name == "toybox") {
+            listOf(dst.absolutePath, "id")
+        } else {
+            listOf(dst.absolutePath, "-c", "echo WX_OK uid=$(id -u)")
         }
+        val linker = if (File("/system/bin/linker64").isFile) "/system/bin/linker64" else "/system/bin/linker"
+        run("A-plain-execve", sh, ::out)
+        run("B-linker64", listOf(linker, *sh.toTypedArray()), ::out)
         return "done"
     }
 
@@ -62,7 +64,7 @@ class WxProbeActivity : ComponentActivity() {
             val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
             val o = p.inputStream.bufferedReader().readText()
             val code = p.waitFor()
-            out("$tag OK exit=$code out='${o.trim()}'")
+            out("$tag ${if (code == 0) "OK" else "exit=$code"} out='${o.trim()}' cmd=${cmd.joinToString(" ")}")
         } catch (e: Exception) {
             // execve EACCES 는 IOException(error=13 Permission denied) 로 온다.
             out("$tag FAIL ${e.javaClass.simpleName}: ${e.message}")
