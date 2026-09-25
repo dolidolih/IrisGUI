@@ -74,7 +74,13 @@ class IrisNotificationService : NotificationListenerService() {
         val text = parsed.text
         val conversationTitleExtra = parsed.roomTitle
 
+        // ISSUE-35: thread/구형 카톡 build 는 tag 없이 온다 — 그러면 chat_id="" 페이로드가
+        // 되고 이름 기반 답장 조회가 이름 충돌 시 다른 방을 집는다. tag 부재를 조용히 넘기지
+        // 말고 key 기반 ranking 조회로 방 이름을 해결하고, 로그에 원인을 남긴다.
         val roomId = sbn.tag ?: ""
+        if (roomId.isEmpty()) {
+            println("IrisNls: sbn.tag 없음(thread/구 build 형식?) — conversationId 빈 chat_id 로 전송, key 로 방 해결 시도")
+        }
         val chatLogId = extras.getLong("chatLogId", 0L)
 
         val largeIconExtra = try { extras.get(Notification.EXTRA_LARGE_ICON) } catch (e: Exception) { null }
@@ -92,7 +98,14 @@ class IrisNotificationService : NotificationListenerService() {
             // 방 이름: shared 파서의 roomTitle → 모드별(KakaoRoomResolver) → 발신자 닉네임.
             // 발신자 닉네임을 폴백으로 쓰는 경우에도 그룹 대화의 방 이름을 resolver에 queries 한다.
             val resolverRoom = if (conversationTitleExtra == null) {
-                KakaoRoomResolver.resolve(this@IrisNotificationService, this@IrisNotificationService, sbn.key, roomId)
+                // tag 가 빈 경우 sbn.key 로 ranking 조회만 시도(cache 하지 않음) — 닉네임 폴백보다 낫다.
+                KakaoRoomResolver.resolve(
+                    this@IrisNotificationService,
+                    this@IrisNotificationService,
+                    sbn.key,
+                    roomId,
+                    identityFallback = if (roomId.isEmpty()) sbn.key else null
+                )
             } else {
                 null
             }

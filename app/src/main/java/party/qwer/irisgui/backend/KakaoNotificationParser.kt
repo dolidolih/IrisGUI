@@ -67,35 +67,80 @@ object KakaoNotificationParser {
             .getMessagesFromBundleArray(extras.getParcelableArray(Notification.EXTRA_MESSAGES))
         if (messages.isEmpty()) return null
 
-        val last = messages.last()
-        val person = last.senderPerson ?: legacySenderPerson(extras)
+        // ISSUE-35: stack/summary 알림은 배열 순서가 "최근" garantie 가 아니다 — 요약
+        // 재구성이 끼어들면 messages.last() 이 예전 메시지를 가리켜 남남의 이름·본문이 답장으로
+        // 간다. timestamp(=Message.getTimestamp()/postTime) 로 명시 정렬하고, 타임스탬프가
+        // 모두 없는 빌드만 배열 순서를 따른다.
+        val newest = newestOf(messages)
+        val person = newest.senderPerson ?: legacySenderPerson(extras, messages)
         val senderName = person?.name?.toString()?.trim().orEmpty()
         val senderId = person?.key?.toString()?.trim().orEmpty()
-        val text = last.text?.toString().orEmpty()
-        val timestamp = last.timestamp
+        val text = newest.text?.toString().orEmpty()
+        val timestamp = newest.timestamp
+
+        // 메시지 stack 이 요약으로 바뀐 형태(EXTRA_TEXT 만 채워지는 경우)에서는 빈 text 로
+        // 해석되므로 요약 라인을 fallback 으로 쓴다. 단 person 이 확인된 경우만 — 그래야
+        // (공지·업데이트 등 사람 태그가 없는 알림이) 예전처럼 "해석 불가 → skip" 으로 남는다.
+        val effectiveText = if (text.isEmpty() && person != null) {
+            extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        } else text
 
         val roomTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
             ?.toString()?.trim()?.ifBlank { null }
 
         val isGroupConversation = extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, false)
 
-        if (senderName.isEmpty() && senderId.isEmpty() && text.isEmpty()) return null
+        if (senderName.isEmpty() && senderId.isEmpty() && effectiveText.isEmpty()) return null
 
         return Parsed(
             senderName = senderName,
             senderId = senderId,
-            text = text,
+            text = effectiveText,
             roomTitle = roomTitle,
             isGroupConversation = isGroupConversation,
             timestamp = timestamp
         )
     }
 
-    /** getMessagesFromBundleArray()가 person을 복원하지 못한 빌드용 백업 경로 */
+    /**
+     * getMessagesFromBundleArray()가 person을 복원하지 못한 빌드용 백업 경로.
+     * ISSUE-35: 배열 마지막 원소를 그대로 쓰는 대신, 위쪽 newest 와 같은 논리(postTime)
+     * 로 고른다 — stack 요약 때문에 배열 끝이 과거 메시지일 수 있다.
+     */
     @Suppress("DEPRECATION")
-    private fun legacySenderPerson(extras: Bundle): android.app.Person? {
+    private fun legacySenderPerson(
+        extras: Bundle,
+        messages: List<Notification.MessagingStyle.Message>
+    ): android.app.Person? {
         val bundles = extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
-        val last = bundles.lastOrNull() as? Bundle ?: return null
-        return last.getParcelable(LEGACY_SENDER_PERSON_KEY)
+        val index = newestIndexOf(messages, fallbackLast = bundles.size - 1)
+        val target = (bundles.getOrNull(index) ?: bundles.lastOrNull()) as? Bundle ?: return null
+        return target.getParcelable(LEGACY_SENDER_PERSON_KEY)
+    }
+
+    /** stack 안에서 가장 최신 메시지 (타임스탬프가 전부 0 이면 배열 순서 = 마지막). */
+    private fun newestOf(
+        messages: List<Notification.MessagingStyle.Message>
+    ): Notification.MessagingStyle.Message = messages[newestIndexOf(messages, messages.size - 1)]
+
+    private fun newestIndexOf(
+        messages: List<Notification.MessagingStyle.Message>,
+        fallbackLast: Int
+    ): Int {
+        var bestIndex = -1
+        var bestTs = 0L
+        messages.forEachIndexed { i, m ->
+            val ts = try {
+                m.timestamp
+            } catch (_: Throwable) {
+                0L
+            }
+            if (ts >= bestTs) {
+                bestTs = ts
+                bestIndex = i
+            }
+        }
+        if (bestIndex < 0 || bestTs <= 0L) return fallbackLast.coerceIn(0, messages.size - 1)
+        return bestIndex
     }
 }
