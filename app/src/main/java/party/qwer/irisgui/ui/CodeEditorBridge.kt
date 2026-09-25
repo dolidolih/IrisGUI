@@ -554,6 +554,26 @@ internal class CodeEditorBridge(
     @JavascriptInterface
     fun closeEditor() { requestClose() }
 
+    // ── flush sync (ISSUE-25) ────────────────────────────────────────────────
+    private val flushAck = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch?>(null)
+
+    /** BackHandler 이 flush 를 투입하기 전에 연다 — awaitFlushAck 와 쌍. */
+    fun beginFlushWait() { flushAck.set(java.util.concurrent.CountDownLatch(1)) }
+
+    /** JS 의 flush(save) 확인을 최대 [maxMs] 까지 대기. ack 없으면 false (true != 성공 보장). */
+    fun awaitFlushAck(maxMs: Long): Boolean {
+        val l = flushAck.get() ?: return false
+        val got = runCatching { l.await(maxMs, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+        flushAck.compareAndSet(l, null)
+        return got
+    }
+
+    /** editor.html flush() 의 저장 시도 이후 호출되는 동기 confirmation. */
+    @JavascriptInterface
+    fun editorFlushed() {
+        flushAck.get()?.countDown()
+    }
+
     @JavascriptInterface
     fun log(msg: String) {
         RuntimeLog.info("Editor", "$project: ${msg.take(300)}")
