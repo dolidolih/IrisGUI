@@ -534,8 +534,13 @@ class KakaoDB {
                 if (row.contains("enc") && keywords.any { row.contains(it) }) {
                     val botId = AppConfig.botId
                     val enc = row["enc"]?.toIntOrNull() ?: 0
-                    val keysToDecrypt = arrayOf("nick_name", "name", "nickname", "profile_image_url", "full_profile_image_url", "original_profile_image_url", "status_message","contact_name","v","board_v")
-                    row = decryptRowValues(row, enc, botId, keysToDecrypt)
+                    // ISSUE-19: `enc` 컬럼 자체가 0 이면 "이 행은 평문" 이라는 뜻이다. salt 를
+                    // 만들어 AES 를 태우면 깨진 문자열(또는 BadPadding 후 원문반환)이 나오니,
+                    // 애초에 원문을 그대로 둔다..enc 0 행때문에 복호화 경로가 매행마다 도는 일도 없다.
+                    if (enc != 0) {
+                        val keysToDecrypt = arrayOf("nick_name", "name", "nickname", "profile_image_url", "full_profile_image_url", "original_profile_image_url", "status_message","contact_name","v","board_v")
+                        row = decryptRowValues(row, enc, botId, keysToDecrypt)
+                    }
                 }
             } catch (e: Exception) {
                 System.err.println("JSON processing error during decryption: $e")
