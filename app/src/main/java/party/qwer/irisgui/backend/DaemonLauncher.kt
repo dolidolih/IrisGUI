@@ -111,18 +111,18 @@ object DaemonLauncher {
                 )
             println("DaemonLauncher: local ADB root via '${root.display()}'")
 
-            val prefix = if (root.variant.isEmpty()) "" else "su ${root.variant} "
-
             // 이전 세션의 잔여 데몬(HTTP만 끊고 poller는 남은 채 포트를 점유)을 정리한다.
             // 건너뛰면 새 기동이 BindException(Address already in use)으로 HTTP만 띄우지 못한 채 poller만 도는 귀먹은 상태가 된다.
-            adb.execService("shell:${prefix}pkill -9 -f $MAIN_CLASS")
+            adb.execService("shell:" + root.exec("pkill -9 -f $MAIN_CLASS"))
             delay(1_500)
 
             // ISSUE-09: PATH1 처럼 로그 먼저 비운다 — 이전 실패 시동 잔여("Address already
             // in use" 등)를 이번 기동의 진단으로 집어서 START_TIMEOUT 오탐을 내는 것을 방지.
-            adb.execService("shell:${prefix}rm -f $logPath")
+            adb.execService("shell:" + root.exec("rm -f $logPath"))
 
-            val execFailure = adb.execService("shell:${prefix}sh -c \"${daemonStartCommand(apkPath, logPath)}\"")
+            val execFailure = adb.execService(
+                "shell:" + root.exec("sh -c \"${daemonStartCommand(apkPath, logPath)}\"")
+            )
             if (execFailure != null) {
                 return@withContext StartResult.Failed(
                     FailureReason.EXEC_FAILED,
@@ -139,6 +139,19 @@ object DaemonLauncher {
     /** 셸 세션의 root 확보 결과 — variant("")은 셸 자체가 root임을 의미. */
     private data class ShellRoot(val variant: String) {
         fun display(): String = if (variant.isEmpty()) "shell(uid=0)" else "su $variant"
+
+        /**
+         * 방언별 올바른 감싸기.
+         *   uid 인자형(su 0 <cmd>): 커맨드를 뒤 인자로 그대로 넘긴다 (redroid 확인됨).
+         *   `su -c`: -c 는 *다음 argv 하나*만 커맨드로 소비한다. 따라서 `su -c sh -c "..."`
+         *   은 "sh" 만 실행되고 나머지는 uid 오타로 깨진다 — 커맨드 전체를 따옴표로
+         *   묶어 argv 하나로 만들어야 한다 (Magisk 규격).
+         */
+        fun exec(cmd: String): String = when {
+            variant.isEmpty() -> cmd
+            variant == "-c" -> "su -c \"" + cmd.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+            else -> "su $variant $cmd"
+        }
     }
 
     /**
@@ -163,8 +176,9 @@ object DaemonLauncher {
             } else {
                 println("DaemonLauncher: in-proc su HTTP not up")
             }
-            // PATH1 에서 이미 루트를 확보해 기동까지 마쳤다. PATH2 도 같은 `su -c` 를
-            // 쓰므로 더 나은 결과가 나오지 않는다. HTTP 미상승은 daemon.log 로 판단한다.
+            // PATH1 에서 이미 루트를 확보해 기동까지 마쳤다(HTTP 미상승은 daemon.log 로
+            // 판단). PATH2 의 adb-shell su 는 별개 정책(shell uid)이지만 root 쉘까지
+            // 확보된 상태의 재시동이라 PATH2 가 더 나은 결과를 주기는 어렵다.
             return r
         }
         return null
@@ -301,8 +315,7 @@ object DaemonLauncher {
         try {
             val root = probeRootInShell(adb)
                 ?: return@withContext false
-            val prefix = if (root.variant.isEmpty()) "" else "su ${root.variant} "
-            adb.execService("shell:${prefix}pkill -f $MAIN_CLASS")
+            adb.execService("shell:" + root.exec("pkill -f $MAIN_CLASS"))
             delay(1000)
             val stopped = AdbProcessClient.queryStatus() == null
             println("DaemonLauncher: pkill via local ADB, stopped=$stopped")
