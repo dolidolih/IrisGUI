@@ -290,12 +290,79 @@ object UserlandRuntime {
         if (!prootPath(context).exists()) return Exec(-1, "userland 미준비 — 먼저 준비 필요")
         return try {
             val p = prootBuilder(context, inner, cwdGuest).start()
-            if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
-                p.destroyForcibly(); Exec(-1, "timed out")
-            } else Exec(p.exitValue(), p.inputStream.bufferedReader().use { it.readText() })
+            // ISSUE-10: 기다리는 동안 stdout/stderr 를 별도 스레드로 소비한다.
+            // 자식이 pipe 버퍼(~64KB)를 넘기면 write 에서 블로킹되어 waitFor 가
+            // 타임아웃되는 고질 버그(apt/pip 설치, python traceback)를 없앤다.
+            // 타임아웃 시에도 수집된 출력을 함께 돌려 원인을 남는다.
+            val (finished, out) = collectOutput(p, timeoutMs)
+            if (!finished) {
+                // SIGTERM 먼저 — proot 의 ptrace 정리 로직을 동작시키기 위해.
+                p.destroy()
+                if (!p.waitFor(1, TimeUnit.SECONDS)) p.destroyForcibly()
+                Exec(-1, "timed out\n$out".trim())
+            } else Exec(p.exitValue(), out)
         } catch (e: Exception) {
             RuntimeLog.error(TAG, "exec 실패: " + e.message)
             Exec(-1, e.message ?: "exec error")
+        }
+    }
+
+    /** exec 가 수집하는 출력 상한 (tail 윈도우). apt/python 출력으로 충분한 양. */
+    private const val OUT_CAP = 512 * 1024
+
+    /**
+     * 프로세스 stdout(redirectErrorStream 로 stderr 포함) 을 wait 중에도 읽어들인다.
+     * @return (정규 종료 여부, 수집 출력 tail)
+     */
+    private fun collectOutput(p: Process, timeoutMs: Long): Pair<Boolean, String> {
+        val sink = TailSink(OUT_CAP)
+        val reader = Thread {
+            runCatching {
+                p.inputStream.use { ins ->
+                    val b = ByteArray(16384)
+                    while (true) {
+                        val n = try { ins.read(b) } catch (io: java.io.IOException) { break }
+                        if (n < 0) break
+                        sink.write(b, 0, n)
+                    }
+                }
+            }
+        }
+        reader.isDaemon = true
+        reader.start()
+        val finished = p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) p.destroyForcibly()
+        reader.join(if (finished) 3_000 else 500)
+        if (reader.isAlive) runCatching { reader.interrupt() }
+        return finished to sink.snapshot()
+    }
+
+    /** 순환 버퍼 — 마지막 `cap` bytes 만 남긴다. 잘린 분량은 머리 표식으로 표시. */
+    private class TailSink(private val cap: Int) {
+        private val buf = ByteArray(cap)
+        private var total = 0L
+
+        @Synchronized fun write(b: ByteArray, off: Int, len: Int) {
+            var o = off
+            var rem = len
+            while (rem > 0) {
+                val pos = (total % cap).toInt()
+                val n = minOf(rem, cap - pos)
+                b.copyInto(buf, pos, o, o + n)
+                total += n; o += n; rem -= n
+            }
+        }
+
+        @Synchronized fun snapshot(): String {
+            val t = total
+            if (t == 0L) return ""
+            if (t <= cap) return String(buf, 0, t.toInt(), Charsets.UTF_8)
+            val pos = (t % cap).toInt()
+            val merged = ByteArray(cap)
+            // wrap 지점 기준 tail: [pos..cap) + [0..pos)
+            System.arraycopy(buf, pos, merged, 0, buf.size - pos)
+            System.arraycopy(buf, 0, merged, buf.size - pos, pos)
+            return "[...${t - cap} bytes truncated...]\n" + String(merged, Charsets.UTF_8)
         }
     }
 
@@ -316,16 +383,14 @@ object UserlandRuntime {
         null
     }
 
-    /** 앱 uid 로 tar.gz 를 rootDir 에 언팩. toybox tar 의 settime 경고는 무시. */
-    private fun unpack(tar: File, dir: File): Boolean = try {
+    /** 앱 uid 로 tar.gz 를 rootDir 에 언팩. toybox tar 의 settime 경고는 무시.
+     * ISSUE-10: 출력/경고를 wait 중 concurrently 소비 — pipe 만발 데드록 제거. */
+    internal fun unpack(tar: File, dir: File): Boolean = try {
         val p = ProcessBuilder("/system/bin/tar", "xzf", tar.absolutePath, "-C", dir.absolutePath)
             .redirectErrorStream(true).start()
-        if (!p.waitFor(180_000, TimeUnit.MILLISECONDS)) {
-            p.destroyForcibly()
-            RuntimeLog.warn(TAG, "tar 언팩 시간초과")
-        } else {
-            p.inputStream.bufferedReader().use { it.readText() }
-        }
+        val (finished, out) = collectOutput(p, 180_000)
+        if (!finished) RuntimeLog.warn(TAG, "tar 언팩 시간초과: " + out.take(200))
+        else if (out.isNotBlank()) RuntimeLog.info(TAG, "tar 언팩 출력: " + out.take(300))
         baseOk(dir)
     } catch (e: Exception) {
         RuntimeLog.error(TAG, "unpack 실패: " + e.message)
