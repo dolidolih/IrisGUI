@@ -4,6 +4,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import party.qwer.irisgui.AdbConfig
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppState
 
@@ -25,6 +26,40 @@ class DBObserver(private val kakaoDB: KakaoDB, private val observerHelper: Obser
     @Volatile
     private var isObserving: Boolean = false
 
+    // ISSUE-04 (integration): scheduleWithFixedDelay 의 지연은 한 번만 읽히므로,
+    // 설정 오버레이로 polling rate 가 바뀌면 다음 틱에서 자기 자신을 재스케줄한다.
+    @Volatile
+    private var currentDelay: Long = 1000L
+
+    private fun rescheduleTo(delay: Long) = synchronized(this) {
+        if (!isObserving) return@synchronized
+        val sch = scheduler ?: return@synchronized
+        runCatching { scheduledFuture?.cancel(false) }
+        scheduledFuture = sch.scheduleWithFixedDelay(task, 0, delay, TimeUnit.MILLISECONDS)
+        currentDelay = delay
+        println("DB Observer: polling rate re-applied -> ${delay}ms")
+    }
+
+    private val task: Runnable = Runnable {
+        try {
+            // ISSUE-04 (integration): 데몬은 앱 쪽 설정 오버레이를 틱마다 반영 (무변경 시 no-op).
+            runCatching { if (AdbConfig.reloadOverlayIfNeeded()) println("DBObserver: app config overlay applied") }
+            observerHelper.checkChange(kakaoDB)
+            if (!isObserving || !AppState.isObserving) {
+                isObserving = true
+                AppState.isObserving = true
+                println("DB Polling recovered — observing resumed.")
+            }
+        } catch (t: Throwable) {
+            isObserving = false
+            AppState.isObserving = false
+            System.err.println("DB polling task failed (schedule kept, observing=false): $t")
+            t.printStackTrace()
+        }
+        val desired = runCatching { AppConfig.dbPollingRate }.getOrNull()?.takeIf { it > 0 } ?: 1000L
+        if (desired != currentDelay) runCatching { rescheduleTo(desired) }
+    }
+
     fun startPolling() = synchronized(this) {
         if (scheduler == null || scheduler!!.isShutdown) {
             scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -33,24 +68,8 @@ class DBObserver(private val kakaoDB: KakaoDB, private val observerHelper: Obser
         }
 
         if (scheduledFuture == null || scheduledFuture!!.isCancelled || scheduledFuture!!.isDone) {
-            scheduledFuture = scheduler?.scheduleWithFixedDelay({
-                try {
-                    observerHelper.checkChange(kakaoDB)
-                    // 성공 틱 — 에러로 떨어뜨린 관찰 상태를 되올린다.
-                    if (!isObserving || !AppState.isObserving) {
-                        isObserving = true
-                        AppState.isObserving = true
-                        println("DB Polling recovered — observing resumed.")
-                    }
-                } catch (t: Throwable) {
-                    // ISSUE-20: unbound rethrow 는 future 을 취소시켜 폴링이 조용히 죽는다.
-                    // catch 후 반환하면 스케줄은 유지되고, 상태만 오류로 표시한다.
-                    isObserving = false
-                    AppState.isObserving = false
-                    System.err.println("DB polling task failed (schedule kept, observing=false): $t")
-                    t.printStackTrace()
-                }
-            }, 0, AppConfig.dbPollingRate.takeIf { it > 0 } ?: 1000L, TimeUnit.MILLISECONDS)
+            currentDelay = AppConfig.dbPollingRate.takeIf { it > 0 } ?: 1000L
+            scheduledFuture = scheduler?.scheduleWithFixedDelay(task, 0, currentDelay, TimeUnit.MILLISECONDS)
             isObserving = true
             AppState.isObserving = true
             println("DB Polling thread started.")

@@ -498,7 +498,13 @@ class KakaoDB {
         warnIfPathDrifted()
         val dict: MutableMap<String, String?> = HashMap()
 
-        connection.rawQuery("SELECT * FROM chat_logs ORDER BY _id DESC LIMIT 1", null)
+        // ISSUE-39: honor the logId parameter (0 keeps the legacy newest-row behavior).
+        val (sql, args) = if (logId > 0L) {
+            "SELECT * FROM chat_logs WHERE _id = ? LIMIT 1" to arrayOf(logId.toString())
+        } else {
+            "SELECT * FROM chat_logs ORDER BY _id DESC LIMIT 1" to null
+        }
+        connection.rawQuery(sql, args)
             .use { cursor ->
                 if (cursor.moveToNext()) {
                     val columnNames = cursor.columnNames
