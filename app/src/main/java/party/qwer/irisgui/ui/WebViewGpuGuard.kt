@@ -44,14 +44,19 @@ internal object WebViewGpuGuard {
             val f = java.io.File(PATH)
             if (f.isFile && f.readText().contains("--disable-3d-apis")) return
             // su 방언 probe — DaemonLauncher 와 같은 우선순위(redroid `su 0`, Magisk `su -c`).
-            val dialect = listOf(listOf("su", "0"), listOf("su", "-c")).firstOrNull { d ->
+            // Magisk 은 -c 가 *다음 argv 하나*만 커맨드로 소비하므로 probe/wrap 모두
+            // 커맨드를 argv 하나로 붙여야 한다 (`su -c id -u`가 아니라 `su -c "id -u"`).
+            val dialect = listOf("0", "-c").firstOrNull { v ->
+                val probe = if (v == "-c") listOf("su", "-c", "id -u") else listOf("su", v, "id", "-u")
                 runCatching {
-                    val p = ProcessBuilder(d + listOf("id", "-u")).start()
+                    val p = ProcessBuilder(probe).start()
                     p.waitFor() == 0 && p.inputStream.bufferedReader().readText().trim() == "0"
                 }.getOrDefault(false)
             } ?: return
             val shell = "printf '%s\\n' '" + FLAGS + "' > " + PATH + " && chmod 666 " + PATH
-            if (ProcessBuilder(dialect + listOf("sh", "-c", shell)).start().waitFor() == 0) {
+            val wrap = if (dialect == "-c") listOf("su", "-c", "sh -c \"$shell\"")
+            else listOf("su", dialect, "sh", "-c", shell)
+            if (ProcessBuilder(wrap).start().waitFor() == 0) {
                 RuntimeLog.info("UI", "webview-command-line 설치(root)")
             }
         }
