@@ -90,7 +90,7 @@ object IrisServer {
             val lenientJson = Json { ignoreUnknownKeys = true }
 
             // ISSUE-33: 논루팅 인프로세스 서버도 동일 — loopback 바인딩 기본화.
-            embeddedServer(Netty, host = "127.0.0.1", port = AppConfig.serverPort) {
+            embeddedServer(Netty, host = "0.0.0.0", port = AppConfig.serverPort) {
                 install(WebSockets) {
                     contentConverter = KotlinxWebsocketSerializationConverter(lenientJson)
                 }
