@@ -171,6 +171,7 @@
 <script>
 (function () {
 'use strict';
+console.log('ig-editor rev=fix-0925i');
 const B = window.AndroidBridge;
 const $ = id => document.getElementById(id);
 
@@ -552,7 +553,27 @@ function initTerminal() {
       red: '#F28779', magenta: '#C792EA', yellow: '#E6C896', white: '#D0D4E1' },
     cursorBlink: true, scrollback: 1000, convertEol: false,
   });
-  term.onData(d => { if (termId != null) B.termInput(termId, b64e(applyMods(d))); });
+  term.onData(d => {
+    if (performance.now() < suppressUntil) return;
+    const m = applyMods(d);
+    if (m && termId != null) B.termInput(termId, b64e(m));
+  });
+  /* 홀드 중 실제 keydown 이 들어오면(물리 키보드·일부 IME) 조합 확정을 기다리지
+   * 않고 그 자리에서 즉시 조합을 보낸다. */
+  term.attachCustomKeyEventHandler(e => {
+    if (!modActive()) return true;
+    if (e.type !== 'keydown') return false;
+    const k = e.key;
+    if (k && k.length === 1) {
+      const code = modCtrl ? ctrlCode(k.charCodeAt(0)) : null;
+      const out = modCtrl ? (code === null ? k : String.fromCharCode(code))
+                          : '\x1b' + k;
+      if (termId != null) B.termInput(termId, b64e(out));
+      modRelease();
+      setTimeout(() => toast((e.key) + ' → 키다운 즉시 전송'), 0);
+    }
+    return false;
+  });
   window.Term = {
     onData(id, b) {
       if (id !== termId) return;
@@ -577,7 +598,13 @@ function termSize() {
   const el = $('term');
   if (!cellW) measureChar();
   const cols = Math.max(20, Math.floor((el.clientWidth - TERM_PAD) / cellW));
-  const rows = Math.max(4, Math.floor((el.clientHeight - 4) / (fontPx * TERM_LH)));
+  let ch = 0;
+  try { /* xterm 의 실제 셀 높이(css) 로 재야 오버플로가 없다 */
+    const d = term._core && term._core._renderService && term._core._renderService.dimensions;
+    if (d && d.css && d.css.cell.height) ch = d.css.cell.height;
+  } catch (e) {}
+  if (!ch) ch = fontPx * TERM_LH;
+  const rows = Math.max(4, Math.floor((el.clientHeight - 4) / ch));
   return [cols, rows];
 }
 function termStart() {
@@ -606,7 +633,7 @@ function termAttach() {
     term.resize(s[0], s[1]);
     term.write('\x1b[90m$ \x1b[0m');
     measureChar();
-    setTimeout(() => { fitTerm(); }, 50);
+    setTimeout(() => { fitTerm(); hookImeIntercept(); }, 50);
   }
   termStart();
   setTimeout(() => { fitTerm(); try { if (term && termOpened) term.focus(); } catch (e) {} }, 350);
@@ -650,41 +677,114 @@ $('btnZoomIn').onclick = () => { setFont(fontPx + 1); toast('글자 ' + fontPx +
 $('btnZoomOut').onclick = () => { setFont(fontPx - 1); toast('글자 ' + fontPx + 'px'); };
 $('tabCode').onclick = () => showPane(true);
 $('tabTerm').onclick = () => showPane(false);
-/* ctrl/alt 는 홀드(래치) 모드: 켜진 뒤 누르는 첫 키 한 번만 조합으로 보내고 자동 해제.
- * 화살표뿐 아니라 IME 로 입력한 문자에도 적용된다. */
-let modCtrl = false, modAlt = false;
+/* ctrl/alt = Termux 식 홀드(래치): 켜진 직후 누르는 *단 하나의 키*를 조합으로
+ * 직전 키까지 포함해 즉시 보내고 바로 해제한다. 조합으로 매핑되지 않는 키(Enter,
+ * 문자열 붙여넣기 등)는 그냥 보낸 뒤 해제 — 예전처럼 래치가 남아서 이후 키가 몰래
+ * 조합으로 나가는 버그를 없앤다. 6초 입력이 없으면 자동 해제. */
+let modCtrl = false, modAlt = false, modAt = 0, suppressUntil = 0;
 function mods() { $('modCtrl').classList.toggle('on', modCtrl);
   $('modAlt').classList.toggle('on', modAlt); }
+function modActive() { // true 면 유효한 홀드, 만료면 정리
+  const on = (modCtrl || modAlt) && performance.now() - modAt < 6000;
+  if (!on && (modCtrl || modAlt)) modRelease();
+  return on;
+}
 function modRelease() { modCtrl = modAlt = false; mods(); }
 function modsAfter() { if (!document.body.classList.contains('term')) return;
   setTimeout(() => { try { term && termOpened && term.focus(); } catch (e) {} }, 0); }
-$('modCtrl').addEventListener('pointerup', () => { modCtrl = !modCtrl; modAlt = false; mods(); modsAfter(); toast(modCtrl ? 'ctrl 홀드 — 다음 키가 조합으로 나감' : 'ctrl 해제'); });
-$('modAlt').addEventListener('pointerup', () => { modAlt = !modAlt; modCtrl = false; mods(); modsAfter(); toast(modAlt ? 'alt 홀드 — 다음 키가 조합으로 나감' : 'alt 해제'); });
+function modSet(c) {
+  /* IM 조합 대기(후보 표시) 상태에서 홀드를 켜면 다음 키가 조합 안에 빨려든다.
+   * 먼저 blur 로 조합을 확정 전송시킨 뒤(래치 해제된 상태에서 나가므로 원본 그대로)
+   * 150ms 뒤에 래치를 건다. */
+  flushComposition();
+  setTimeout(() => {
+    modCtrl = c; modAlt = !c; modAt = performance.now(); mods(); modsAfter();
+    toast((c ? 'ctrl' : 'alt') + ' 홀드 — 다음 키가 조합으로 즉시 나감');
+  }, 150);
+}
+function flushComposition() {
+  const el = term && term.element && term.element.querySelector('textarea');
+  if (!el) return;
+  try { el.blur(); } catch (e) {}
+  setTimeout(() => { try { if (termOpened) term.focus(); } catch (e) {} }, 30);
+}
+/* 핵심: 홀드 상태에서 IME 키를 누르면 keydown/IME 없이 beforeinput(조합 포함)
+ * 만 온다. 여기서 즉시 조합을 해석해 combo 를 보낸 뒤 조합(blur 로 확정)을
+ * 무시 처리 — 이게 Termux 의 "ctrl 다음 키 = 즉시 조합" 동작과 같다. */
+function hookImeIntercept() {
+  const el = term && term.element && term.element.querySelector('textarea');
+  if (!el || el._igHook) return; el._igHook = 1;
+  el.addEventListener('beforeinput', e => {
+    if (!modActive()) return;
+    console.log('beforeinput ' + e.inputType + ' ' + JSON.stringify(e.data));
+    const d = e.data || '';
+    let out;
+    if (e.inputType === 'deleteContentBackward') {
+      out = modCtrl ? '\x17' : modAlt ? '\x1b\x7f' : null;
+    } else if (d) {
+      if (modCtrl) {
+        const k = ctrlCode(d.charCodeAt(0));
+        out = k === null ? d : String.fromCharCode(k);
+      } else out = '\x1b' + d;
+    } else return;
+    suppressUntil = performance.now() + 400; // 조합 확정 전송은 버린다
+    if (termId != null) B.termInput(termId, b64e(out));
+    modRelease();
+    setTimeout(() => toast('조합 즉시 전송'), 0);
+    const ta = e.target;
+    try { ta.dispatchEvent(new CompositionEvent('compositionend',
+      { data: ta.value || d, bubbles: true })); } catch (err) {}
+    try { ta.value = ''; } catch (err) {}
+    try { ta.blur(); } catch (err) {}
+    setTimeout(() => { try { if (termOpened) term.focus(); } catch (err) {} }, 30);
+  }, true);
+}
+$('modCtrl').addEventListener('pointerup', () => {
+  if (modCtrl) { modCtrl = modAlt = false; mods(); modsAfter(); toast('ctrl 해제'); }
+  else modSet(true);   // alt 켜진 거 있었다면 ctrl 로 교체
+});
+$('modAlt').addEventListener('pointerup', () => {
+  if (modAlt) { modCtrl = modAlt = false; mods(); modsAfter(); toast('alt 해제'); }
+  else modSet(false);  // ctrl 켜진 거 있었다면 alt 로 교체
+});
+/* ctrl + 키 → 터미널 제어 문자 (Ctrl+A=1 … Ctrl+Z=26, space=0, ?=DEL, Backspace=23) */
+function ctrlCode(c) {
+  if (c >= 0x40 && c <= 0x5f) return c & 0x1f;      // @ [ \ ] ^ _ 와 A-Z
+  if (c >= 0x61 && c <= 0x7a) return c & 0x1f;      // a-z
+  if (c === 0x20) return 0x00;                      // ctrl+Space
+  if (c === 0x3f) return 0x7f;                      // ctrl+?
+  if (c === 0x08 || c === 0x7f) return 0x17;        // ctrl+Backspace
+  return null;                                      // Enter, Tab 등: 그대로 전송
+}
 function applyMods(d) {
-  if (!d || (!modCtrl && !modAlt)) return d;
-  let out = d, used = true;
+  if (!d) return d;
+  if (performance.now() < suppressUntil) return null;
+  if (!modActive()) return d;
+  const tag = (modCtrl ? 'ctrl+' : '') + (modAlt ? 'alt+' : '');
+  let out = d, mapped = true;
   const arrow = { '\x1b[A': 'A', '\x1b[B': 'B', '\x1b[C': 'C', '\x1b[D': 'D' }[d];
   if (arrow) {
     out = modCtrl && modAlt ? '\x1b[1;7' + arrow
         : modCtrl ? '\x1b[1;5' + arrow
         : '\x1b[1;3' + arrow;
   } else if (d.length === 1) {
-    const c = d.charCodeAt(0);
-    if (modCtrl && ((c >= 0x40 && c <= 0x7f) || c === 0x20)) {
-      out = c === 0x20 ? '\x00' : String.fromCharCode(c & 0x1f);
-    } else if (modAlt) {
-      out = '\x1b' + d;
-    } else used = false;
-  } else used = false;
-  if (used) {
-    const tag = (modCtrl ? 'ctrl+' : '') + (modAlt ? 'alt+' : '');
-    modRelease();
-    setTimeout(() => toast(tag + '로 전송'), 0);
-  }
+    if (modCtrl) {
+      const k = ctrlCode(d.charCodeAt(0));
+      mapped = k !== null;
+      if (mapped) out = String.fromCharCode(k);
+    } else {
+      out = '\x1b' + d;   // alt+키 = ESC + 키 (alt+Enter 포함 모든 단일 키에 성립)
+    }
+  } else if (modAlt && d.length <= 8) {
+    out = '\x1b' + d;     // IME 조합 문자열도 meta 로 취급
+  } else mapped = false; // 긴 문자열(붙여넣기)엔 modifier 를 씌우지 않음
+  modRelease();           // one-shot: 조합이든 원본이든 다음 키에서 무조건 해제
+  setTimeout(() => toast(mapped ? tag + '로 전송' : tag + ' 해제 — 키는 그대로 전송'), 0);
   return out;
 }
 function arrowCode(k) {
   const base = { left: 'D', up: 'A', down: 'B', right: 'C' }[k];
+  modActive();
   if (modAlt && modCtrl) return '\x1b[1;7' + base;
   if (modCtrl) return '\x1b[1;5' + base;
   if (modAlt) return '\x1b[1;3' + base;
@@ -699,6 +799,7 @@ document.querySelectorAll('#termbio .btn').forEach(b => {
 document.querySelectorAll('#termbio [data-key]').forEach(b => {
   b.addEventListener('pointerup', () => {
     termStart();
+    modActive(); // 6초 지난 홀드는 먼저 만료 처리
     let seq;
     const k = b.dataset.key;
     if (k === 'ctrlc') { seq = '\x03'; }
@@ -742,12 +843,23 @@ $('btnKill').addEventListener('pointerup', termKill);
 /* ── IME 위치 관리 ───────────────────────────────────────────────
    두 모드 모두 커버: (a) 창/뷰포트가 실제 리사이즈되는 경우(visualViewport 로 감지),
    (b) 창은 그대로고 IME 가 오버레이되는 경우(native inset → setImeBottom). */
-let imeBottom = 0;
+/* ── IME 위치 관리 ─────────────────────────────────────
+   감지할 수 있는 두 모드:
+   (a) 창/레이아웃 자체가 키보드 높이만큼 줄어드는 경우(resize) — visualViewport 나
+       innerHeight 변화로만 판단하고 추가로 패딩을 주면 안 된다(키보드 높이만큼
+       거대한 빈 공간이 생기는 원인이 바로 이 이중 차감). (b) 창은 그대로이고 IM 가
+       오버레이되는 경우(redroid 등) — native inset(setImeBottom) 또는 visualViewport
+       쪽 변화로 패딩을 넣는다. */
+let imeBottom = 0, baseH = innerHeight;   // 키보드 없을 때 layout viewport 높이
 function imePad() {
   const vv = window.visualViewport;
   const shrunk = vv ? Math.max(0, innerHeight - vv.height - vv.offsetTop) : 0;
-  const pad = Math.max(imeBottom, shrunk);
+  let pad;
+  if (imeBottom <= 2 && shrunk <= 2) { baseH = innerHeight; pad = 0; }      // 키보드 없음 → 기준 갱신
+  else if (Math.abs(innerHeight - baseH) > 8) pad = shrunk;                 // 창 자체가 이미 줄어듐
+  else pad = Math.max(imeBottom, shrunk);                                    // overlay 모드
   $('app').style.paddingBottom = pad ? pad + 'px' : '';
+  const t = $('toast'); if (t) t.style.bottom = pad ? (pad + 16) + 'px' : '76px';
   fitTerm(); if (editor) editor.layout();
 }
 window.IrisEditor = window.IrisEditor || {};
