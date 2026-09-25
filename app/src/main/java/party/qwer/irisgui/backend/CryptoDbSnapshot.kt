@@ -42,6 +42,9 @@ internal class CryptoDbSnapshot(
 
         /** Daemon (root, no app Context) working dir. Mode-0700 is enforced before use. */
         private const val DAEMON_WORK_DIR = "/data/local/tmp/IrisGUI.work"
+
+        /** 평문 working copy 가 남아도 되는 최대 — 넘기면 sweep 으로 지운다. */
+        private const val MAX_WORKING_COPY_AGE_MS = 6 * 60 * 60 * 1000L
     }
 
     /** True when the open snapshot needs to be re-copied/re-opened. */
@@ -186,7 +189,7 @@ internal class CryptoDbSnapshot(
         }.getOrNull()
         if (appFiles != null) {
             val dir = File(appFiles, subDir)
-            if (dir.mkdirs() || dir.isDirectory) return harden(dir)
+            if (dir.mkdirs() || dir.isDirectory) return harden(dir, sweep = hasLeftovers(dir))
             System.err.println("$label: cannot create working dir $dir")
             return null
         }
@@ -194,15 +197,20 @@ internal class CryptoDbSnapshot(
         val dir = File(
             System.getenv("IRISGUI_WORK_DIR")?.takeIf { it.isNotBlank() } ?: DAEMON_WORK_DIR
         )
-        if (!dir.isDirectory && !dir.mkdirs()) {
+        val created = !dir.isDirectory && dir.mkdirs()
+        if (!dir.isDirectory) {
             System.err.println("$label: cannot create working dir $dir")
             return null
         }
-        return harden(dir)
+        return harden(dir, sweep = created || hasLeftovers(dir))
     }
 
+    /** 남겨둔 잔여물이 있는 지시점 (sweep 은 있을때만 돈다). */
+    private fun hasLeftovers(dir: File): Boolean = runCatching { dir.listFiles()?.isNotEmpty() == true }.getOrDefault(false)
+
     /** owner-only permissions; null when the dir still grants group/other access. */
-    private fun harden(dir: File): File? {
+    private fun harden(dir: File, sweep: Boolean = false): File? {
+        if (sweep) sweepStaleWorkingFiles(dir)
         runCatching {
             dir.setReadable(false, false)
             dir.setWritable(false, false)
@@ -220,6 +228,36 @@ internal class CryptoDbSnapshot(
             return null
         }
         return dir
+    }
+
+    /**
+     * ISSUE-31: working copy 는 전부 평문으로 디crypt된 데이터다. 설치/업그레이드가 남긴
+     * 잔여물이 수일간 그자리에 남아 읽히거나(공유 디바이스) 다른 DB의 사본과 같이 두지 않도록,
+     * working dir 를 새로 만들거나 비어있지 않을때 한 번 sweep 한다. 우리 DB 파일과 `-wal`
+     * /`-shm`/`.tmp`/`.bak` 만 남기고 지운다.
+     */
+    private fun sweepStaleWorkingFiles(dir: File) {
+        val keepPrefixes = listOf(dbName, "$dbName-wal", "$dbName-shm", "$dbName.tmp", "$dbName.bak")
+        val sweepStart = System.currentTimeMillis() - MAX_WORKING_COPY_AGE_MS
+        runCatching {
+            dir.listFiles()?.forEach { f ->
+                if (!f.isFile) return@forEach
+                val ours = keepPrefixes.any { f.name.startsWith(it) }
+                if (!ours || f.lastModified() < sweepStart) {
+                    if (f.delete()) {
+                        println("$label: swept stale working copy ${f.name}")
+                    }
+                }
+            }
+        }.onFailure { println("$label: working copy sweep failed: $it") }
+    }
+
+    /** working copy 를 즉시 지운다 (shutdown wiring 는 Main.kt 소유라 아직 호출자 없음). */
+    fun deleteWorkingCopy() {
+        runCatching {
+            val dir = workingDir() ?: return
+            dir.listFiles()?.forEach { if (it.isFile) it.delete() }
+        }
     }
 
     private fun copyInto(src: File, dst: File) {
