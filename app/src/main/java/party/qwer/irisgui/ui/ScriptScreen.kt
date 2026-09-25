@@ -74,10 +74,18 @@ fun ScriptScreen() {
     var draft by remember { mutableStateOf("") }
 
     // 편집 화면이 뜨면(탭 이탈 포함) 전역 플래그를 항상 일치시킨다 — MainScreen 의
-    // 바 숨김/복원을 정확히 동기화하기 위해.
-    LaunchedEffect(editor) { codeEditorOpen.value = editor != null }
-    DisposableEffect(Unit) {
+    // 바 숨김/복원을 정확히 동기화하기 위해. ISSUE-37: LaunchedEffect+별개 dispose
+    // 로는 write/dispose 레이스 창이 남는다 — effect 키를 editor 에 두고 한 쌍으로
+    // 관리 (변화 시 dispose→setup 순서가 guaranteed 라 최종 일관).
+    DisposableEffect(editor) {
+        codeEditorOpen.value = editor != null
         onDispose { codeEditorOpen.value = false }
+    }
+    // ISSUE-37: scope 이 통째로 취소되면 launch 꼬리의 busy=false 가 못 도는 경우가
+    // 있어 버튼이 회색으로 고인다 (composer 는 남아 busy 만 true). dispose 시점에
+    // 반드시 되돌린다 — 화면 이탈 시 동작도 취소되므로 상태와 어긋남 없음.
+    DisposableEffect(Unit) {
+        onDispose { busy = false }
     }
 
     val envReady = env.state == UserlandRuntime.State.READY ||
@@ -203,19 +211,24 @@ fun ScriptScreen() {
                             busy = true
                             message = null
                             scope.launch {
-                                val r = runCatching {
-                                    withContext(Dispatchers.Default) {
-                                        UserlandRuntime.provision(context)
+                                try {
+                                    val r = runCatching {
+                                        withContext(Dispatchers.Default) {
+                                            UserlandRuntime.provision(context)
+                                        }
+                                    }.getOrElse {
+                                        UserlandRuntime.Result(false, it.message ?: "설치 실패")
                                     }
-                                }.getOrElse { UserlandRuntime.Result(false, it.message ?: "설치 실패") }
-                                if (r.ok) runCatching {
-                                    withContext(Dispatchers.Default) {
-                                        LinuxScripts.bootstrapDefault(context)
+                                    if (r.ok) runCatching {
+                                        withContext(Dispatchers.Default) {
+                                            LinuxScripts.bootstrapDefault(context)
+                                        }
                                     }
+                                    message = r.message
+                                    runCatching { refresh() }
+                                } finally {
+                                    busy = false
                                 }
-                                message = r.message
-                                runCatching { refresh() }
-                                busy = false
                             }
                         }
                     ) { Text(if (busy) if (env.state == UserlandRuntime.State.NOT_INSTALLED)
@@ -247,17 +260,20 @@ fun ScriptScreen() {
                                 busy = true
                                 val name = draft.trim()
                                 scope.launch {
-                                    val r = runCatching {
-                                        withContext(Dispatchers.Default) {
-                                            LinuxScripts.create(context, name)
+                                    try {
+                                        val r = runCatching {
+                                            withContext(Dispatchers.Default) {
+                                                LinuxScripts.create(context, name)
+                                            }
+                                        }.getOrElse {
+                                            UserlandRuntime.Result(false, it.message ?: "실패")
                                         }
-                                    }.getOrElse {
-                                        UserlandRuntime.Result(false, it.message ?: "실패")
+                                        message = r.message
+                                        runCatching { refresh() }
+                                        showCreate = false
+                                    } finally {
+                                        busy = false
                                     }
-                                    message = r.message
-                                    runCatching { refresh() }
-                                    showCreate = false
-                                    busy = false
                                 }
                             }
                         ) { Text("생성") }
@@ -293,40 +309,49 @@ fun ScriptScreen() {
                 onRun = {
                     busy = true
                     scope.launch {
-                        val r = runCatching {
-                            withContext(Dispatchers.Default) {
-                                LinuxScripts.start(context, s.name)
-                            }
-                        }.getOrElse { UserlandRuntime.Result(false, it.message ?: "실행 실패") }
-                        message = r.message
-                        runCatching { refresh() }
-                        busy = false
+                        try {
+                            val r = runCatching {
+                                withContext(Dispatchers.Default) {
+                                    LinuxScripts.start(context, s.name)
+                                }
+                            }.getOrElse { UserlandRuntime.Result(false, it.message ?: "실행 실패") }
+                            message = r.message
+                            runCatching { refresh() }
+                        } finally {
+                            busy = false
+                        }
                     }
                 },
                 onStop = {
                     busy = true
                     scope.launch {
-                        val r = runCatching {
-                            withContext(Dispatchers.Default) {
-                                LinuxScripts.stop(context, s.name)
-                            }
-                        }.getOrElse { UserlandRuntime.Result(false, it.message ?: "정지 실패") }
-                        message = r.message
-                        runCatching { refresh() }
-                        busy = false
+                        try {
+                            val r = runCatching {
+                                withContext(Dispatchers.Default) {
+                                    LinuxScripts.stop(context, s.name)
+                                }
+                            }.getOrElse { UserlandRuntime.Result(false, it.message ?: "정지 실패") }
+                            message = r.message
+                            runCatching { refresh() }
+                        } finally {
+                            busy = false
+                        }
                     }
                 },
                 onDelete = {
                     busy = true
                     scope.launch {
-                        val r = runCatching {
-                            withContext(Dispatchers.Default) {
-                                LinuxScripts.delete(context, s.name)
-                            }
-                        }.getOrElse { UserlandRuntime.Result(false, it.message ?: "삭제 실패") }
-                        message = r.message
-                        runCatching { refresh() }
-                        busy = false
+                        try {
+                            val r = runCatching {
+                                withContext(Dispatchers.Default) {
+                                    LinuxScripts.delete(context, s.name)
+                                }
+                            }.getOrElse { UserlandRuntime.Result(false, it.message ?: "삭제 실패") }
+                            message = r.message
+                            runCatching { refresh() }
+                        } finally {
+                            busy = false
+                        }
                     }
                 }
             )
