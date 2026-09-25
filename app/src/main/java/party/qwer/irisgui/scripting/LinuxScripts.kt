@@ -30,6 +30,9 @@ object LinuxScripts {
     private const val VENV_DONE = ".venv.done"
     /** ISSUE-11: start 가 기록하는 python 시작 pid 파일 (cwd=project 에 상대). */
     internal const val RUN_PID = ".run.pid"
+    /** ISSUE-36: 로그 로테이션 — 개시당 ~2MB × (1 + LOG_KEEP) 개까지. */
+    private const val LOG_MAX = 2 * 1024 * 1024
+    private const val LOG_KEEP = 2
     /** venv 생성 진행 중 로그에 남는 자리표시자. */
     private const val VENV_PROGRESS = "venv preparing"
     /** 프로세스 재시작 등으로 venv 생성이 끊긴 경우 placeholder 를 stale 처리. */
@@ -106,6 +109,13 @@ object LinuxScripts {
             // venv 생성 스레드의 python/pip 도 cwd 가 프로젝트라 cwd 스캔이면 "실행
             // 중"으로 읽힌다. done 마커가 없으면 무조건 준비 중 — 이 순서가 깨지면
             // recém 생성 카드가 바로 running 배지를 단다.
+            // ISSUE-36: 정지된 프로젝트의 채워진 로그는 표시 대상도 아니고 자라도
+            // 아무 의미가 없다 — 잠들 때 회전. 실행 중 리네임은 writer fd 를 .log.1 에
+            // 붙여버리므로 running 에게는 절대로 하지 않는다.
+            if (!running.containsKey(name) && File(dir, LOG).length() >= LOG_MAX)
+                withProjectLock(name) {
+                    if (!runningPidsByProject(context).containsKey(name)) rotateLogs(dir)
+                }
             Script(
                 name = name,
                 running = running.containsKey(name) && !pending,
@@ -216,6 +226,9 @@ object LinuxScripts {
             val r = ensureVenv(context, name)
             if (!r.ok) return r
         }
+        // ISSUE-36: 수-일 장기 실행이 .log 를 파티션 가득 채우지 않게 — 시작 전에
+        // 이미 상한이면 로그를 회전(.log.1/.log.2 로 보존, 전체 다운로드 가능 유지).
+        if (File(dir, LOG).length() >= LOG_MAX) rotateLogs(dir)
         // ISSUE-11: .run.pid 에 시작 pid 를 남긴다 (sh exec 는 pid 유지 → python
         // 시작 pid 가 그대로 기록된다). stop/탐지가 정확한 대상으로 참조한다.
         runCatching { File(dir, RUN_PID).delete() }
@@ -283,12 +296,40 @@ object LinuxScripts {
         names.forEach { runCatching { stop(context, it) } }
     }
 
-    /** 프로젝트 로그 tail (host 파일). */
+    /**
+     * 프로젝트 로그 tail (host 파일). ISSUE-36: 전체 readLines() 재분석(1.5s 폴링의
+     * CPU/지연 원인)을 버리고 마지막 ~256KB 만 seek — 로그가 수 MB로 커져도 비용은
+     * 표시 창 고정. 통째로 다 읽히는 일은 폴링에서 두 번 다시 없다.
+     */
     fun logsFor(context: Context, name: String, limit: Int = 400): List<String> {
         val f = File(projectDir(context, name), LOG)
         if (!f.isFile) return emptyList()
-        val all = f.readLines().filter { it.isNotBlank() }
-        return if (all.size <= limit) all else all.takeLast(limit)
+        return runCatching {
+            java.io.RandomAccessFile(f, "r").use { raf ->
+                val len = raf.length()
+                if (len == 0L) return emptyList()
+                val take = minOf(len, 256L * 1024L)
+                raf.seek(len - take)
+                val buf = ByteArray(take.toInt())
+                raf.readFully(buf)
+                val raw = String(buf, Charsets.UTF_8)
+                val lines = if (take < len) raw.lineSequence().drop(1).toList() else raw.lines()
+                val body = lines.filter { it.isNotBlank() }
+                if (body.size <= limit) body else body.takeLast(limit)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** ISSUE-36: logrotate 식 회전 — .log → .log.1 → .log.2 (KEEP 유지). */
+    private fun rotateLogs(dir: File) {
+        runCatching {
+            for (i in LOG_KEEP downTo 1) {
+                val src = if (i == 1) File(dir, LOG) else File(dir, "$LOG.${i - 1}")
+                val dst = File(dir, "$LOG.$i")
+                if (i == LOG_KEEP && dst.exists()) dst.delete()
+                if (src.exists()) src.renameTo(dst)
+            }
+        }
     }
 
     /** main.py 원문 (status 표시 정도; 편집은 편집기 화면). */
