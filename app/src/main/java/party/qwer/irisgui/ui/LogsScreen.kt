@@ -71,8 +71,10 @@ fun LogsScreen() {
     // UI 프로세스의 AppState.lastChatLogs 는 항상 비어 있다. 반드시 daemon HTTP로 가져와야 한다.
     val messages = remember { mutableStateListOf<AppState.AppMessage>() }
     var runtimeLogs by remember { mutableStateOf<List<RuntimeLog.Entry>>(RuntimeLog.snapshot(80)) }
-    /** 실행 로그 통의 펼침/접힘. 탭 전환/회전에서도 유지. */
-    var logsExpanded by rememberSaveable { mutableStateOf(true) }
+    /** 실행 로그 통의 펼침/접힘. 탭 전환/회전에서도 유지. 둘 다 기본은 접힘. */
+    var logsExpanded by rememberSaveable { mutableStateOf(false) }
+    /** 수신 메시지 목록의 펼침/접힘. */
+    var messagesExpanded by rememberSaveable { mutableStateOf(false) }
 
     // ISSUE-29: LazyColumn key 는 유니크해야 하는데 daemon _idフォール백(=created_at)
     // 과 NON_ROOT "${ts}:${roomId}" 키는 같은 방·같은 ms 카드와 충돌해
@@ -199,17 +201,34 @@ fun LogsScreen() {
             }
         }
 
-        // ── 수신 메시지(DB 로그) — 마지막 ────────────────
+        // ── 수신 메시지(DB 로그) — 마지막. 헤더 탭으로 펼침/접힘, 기본은 접힘. ────
         item(key = "recv_header") {
-            SectionTitle("수신 메시지", icon = Icons.Default.Chat, count = messages.size)
+            SectionTitle(
+                "수신 메시지",
+                icon = Icons.Default.Chat,
+                count = messages.size,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { messagesExpanded = !messagesExpanded },
+                trailing = {
+                    Icon(
+                        if (messagesExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (messagesExpanded) "접기" else "펼치기",
+                        tint = AppColors.TextSub,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            )
         }
-        if (messages.isEmpty()) {
-            item(key = "recv_empty") {
-                Text("수신된 메시지가 없습니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
-            }
-        } else {
-            items(keyedMessages, key = { it.first }) { (_, msg) ->
-                MessageCard(msg)
+        if (messagesExpanded) {
+            if (messages.isEmpty()) {
+                item(key = "recv_empty") {
+                    Text("수신된 메시지가 없습니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
+                }
+            } else {
+                items(keyedMessages, key = { it.first }) { (_, msg) ->
+                    MessageCard(msg)
+                }
             }
         }
     }
