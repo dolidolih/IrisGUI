@@ -181,3 +181,9 @@ fun RoomDropdownField(
         }
     }
 }
+
+/**
+ * ISSUE-12/38: 포트 범위 검증 — 죽은 화면들(ConfigScreen/AdbConfigScreen)에 흩어져
+ * 있던 1..65535 가드를 live 경로(StatusScreen/설정 편집기)에서 쓰는 공용 단 하나로 이식.
+ */
+internal fun isValidPort(v: Int): Boolean = v in 1..65535
