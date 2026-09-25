@@ -34,6 +34,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import party.qwer.irisgui.AppColors
+import party.qwer.irisgui.AppMode
+import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.scripting.LinuxScripts
 import party.qwer.irisgui.scripting.UserlandRuntime
 
@@ -63,6 +65,7 @@ internal val codeEditorOpen = androidx.compose.runtime.mutableStateOf(false)
 fun ScriptScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val mode = AppModeManager.currentMode
 
     var env by remember { mutableStateOf(UserlandRuntime.status(context)) }
     var scripts by remember { mutableStateOf<List<ScriptUi>>(emptyList()) }
@@ -90,6 +93,12 @@ fun ScriptScreen() {
 
     val envReady = env.state == UserlandRuntime.State.READY ||
         env.state == UserlandRuntime.State.RUNNING
+
+    // W^X 게이트: Android 10+(targetSdk 29+)은 앱 data dir 의 파일을 실행하지 못하게
+    // 막는다. proot 바이너리도 rootfs 의 sh/python 도 같은 dir 안에 있으므로 논루팅
+    // 기기에서는 설치가 물리적으로 불가능 — 설치 버튼을 내고 안내만 보인다.
+    // (루팅 기기는 root 셸 도메인이라 제한이 없고, 실제 검증은 redroid 에서 가능.)
+    val blockedByWx = mode == AppMode.NON_ROOT && !envReady
 
     val refresh = suspend {
         env = withContext(Dispatchers.Default) { UserlandRuntime.status(context) }
@@ -193,10 +202,20 @@ fun ScriptScreen() {
                     )
                 }
                 if (!envReady) {
-                    Text(
-                        "Ubuntu + python + venv. 다운로드는 한 번 (~250MB).",
-                        style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
-                    )
+                    if (blockedByWx) {
+                        Text(
+                            "논루팅 기기에서는 실행할 수 없습니다 — Android 10+ 의 W^X 정책이 앱 " +
+                                "data 에 내려받은 파일(proot/rootfs 포함) 실행을 막습니다. " +
+                                "상태 탭에서 루팅(ADB) 모드로 전환하면 설치할 수 있습니다.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AppColors.TextMain
+                        )
+                    } else {
+                        Text(
+                            "Ubuntu + python + venv. 다운로드는 한 번 (~250MB).",
+                            style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
+                        )
+                    }
                 }
                 if (!message.isNullOrBlank()) {
                     Spacer(Modifier.height(4.dp))
@@ -206,7 +225,7 @@ fun ScriptScreen() {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                if (!envReady) {
+                if (!envReady && !blockedByWx) {
                     Button(
                         enabled = !busy,
                         onClick = {
