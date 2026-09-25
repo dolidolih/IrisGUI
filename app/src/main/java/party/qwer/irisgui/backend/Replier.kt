@@ -17,6 +17,7 @@ import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import party.qwer.irisgui.backend.Replier.Companion.SendMessageRequest
+import party.qwer.irisgui.AdbConfig
 import party.qwer.irisgui.AppConfig
 
 // SendMsg : ye-seola/go-kdb
@@ -35,6 +36,12 @@ class Replier {
         }
 
         fun startMessageSender() {
+            // ISSUE-04: 기동 시 설정 스냅샷으로 handshake 로그를 남긴다 — "UI에서는 바꿨는데
+            // 데몬은 그대로"류의 문제를 로그 한 줄로 추적하기 위한 발판.
+            if (!AppConfig.isInitialized) runCatching {
+                AdbConfig.reloadOverlayIfNeeded()
+                println("IrisGUI: daemon config ${AdbConfig.describe()}")
+            }
             // P19: 바깥 launch 제거 — messageSenderJob만 직접 관리하여 중첩 방지
             if (messageSenderJob?.isActive == true) {
                 messageSenderJob?.cancel()  // cancelAndJoin는 suspend 함수이므로 cancel() 사용
@@ -44,6 +51,9 @@ class Replier {
                     try {
                         mutex.withLock {
                             request.send()
+                            // ISSUE-04: 데몬는 UI가 바꾼 전송레이트/필터를 재시작 없이
+                            // 따라간다 (앱이 발행한 live-config 오버레이 점검).
+                            if (!AppConfig.isInitialized) runCatching { AdbConfig.reloadOverlayIfNeeded() }
                             delay(AppConfig.messageSendRate)
                         }
                     } catch (e: Exception) {

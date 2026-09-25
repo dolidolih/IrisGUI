@@ -11,15 +11,25 @@ import android.content.Context
 object AppConfig {
     private var configStore: ConfigStore? = null
     var isInitialized: Boolean = false
+        private set
 
     fun init(context: Context) {
-        configStore = SharedPrefConfigStore().apply { init(context) }
+        // ISSUE-04: prefs 저장소를 bind하기 전에 플래그를 세운다 — ConfigStoreFactory가
+        // isInitialized를 보고 구현을 고르기 때문에, init 전 초기자가 만든 JSON 바인딩에
+        // 앱 수명 전체가 묶여 있더라도 여기서 되돌아온다.
         isInitialized = true
+        configStore = SharedPrefConfigStore().apply { init(context) }
     }
 
-    /** ConfigStore 접근 — 초기화되지 않으면 AdbConfig(JSON) 사용 */
+    /**
+     * ConfigStore 접근. 초기화 여부는 고정하지 않고 그때그때 factory로 택한다 —
+     * init 이전의 getter 호출 하나가 프로세스 전체 수명을 JSON 저장소에 묶던
+     * 드립트를 막기 위한 변경 (ISSUE-04).
+     */
     private fun store(): ConfigStore {
-        return configStore ?: JsonConfigStore().also { configStore = it }
+        val current = configStore
+        if (current != null && (current is SharedPrefConfigStore) == isInitialized) return current
+        return ConfigStoreFactory.get().also { configStore = it }
     }
 
     // ── 공통 설정 ──────────────────────────────────────────

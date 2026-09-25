@@ -2,6 +2,7 @@ package party.qwer.irisgui
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.io.File
 
 /**
  * ConfigStore — SharedPreferences / JSON 저장소 추상화 (A2)
@@ -37,67 +38,86 @@ interface ConfigStore {
 
 /**
  * SharedPreferences 기반 ConfigStore (NON_ROOT 모드)
+ *
+ * ISSUE-04: 쓰기마다 현재 값을 live_config.json 오버레이로도 발행한다. ROOT_ADB에서
+ * UI(SharedPreferences)와 실행 중 데몬(JSON)이 갈라져 launch 시 port 인자만 통과하던
+ * 드리프트의 통로 — 앱 filesDir는 root가 읽을 수 있어 데몬가 그대로 반영한다.
  */
 class SharedPrefConfigStore : ConfigStore {
     private lateinit var prefs: SharedPreferences
 
     override fun init(context: Context) {
         prefs = context.getSharedPreferences("IrisGuiPrefs", Context.MODE_PRIVATE)
+        AdbConfig.setOverlayPath(File(context.filesDir, "live_config.json"))
+    }
+
+    /** 저장 후 같은 값을 오버레이로 재발행 — 앱측 설정 변경을 데몬가 곧 반영한다. */
+    private inline fun edit(block: SharedPreferences.Editor.() -> Unit) {
+        val editor = prefs.edit()
+        block(editor)
+        editor.apply()
+        runCatching { AdbConfig.publishLiveOverlay(this) }
+            .onFailure { System.err.println("SharedPrefConfigStore: overlay publish failed: $it") }
     }
 
     override var isServiceEnabled: Boolean
         get() = prefs.getBoolean("isServiceEnabled", false)
-        set(v) { prefs.edit().putBoolean("isServiceEnabled", v).apply() }
+        set(v) = edit { putBoolean("isServiceEnabled", v).apply() }
 
     override var webEndpoint: String
         get() = prefs.getString("webEndpoint", "") ?: ""
-        set(v) { prefs.edit().putString("webEndpoint", v).apply() }
+        set(v) = edit { putString("webEndpoint", v).apply() }
 
     override var sendRate: Long
         get() = prefs.getLong("sendRate", 500L)
-        set(v) { prefs.edit().putLong("sendRate", v).apply() }
+        set(v) = edit { putLong("sendRate", v).apply() }
 
     override var serverPort: Int
         get() = prefs.getInt("serverPort", 3000)
-        set(v) { prefs.edit().putInt("serverPort", v).apply() }
+        set(v) = edit { putInt("serverPort", v).apply() }
 
     override var botName: String
         get() = prefs.getString("botName", "Iris") ?: "Iris"
-        set(v) { prefs.edit().putString("botName", v).apply() }
+        set(v) = edit { putString("botName", v).apply() }
 
     override var botId: Long
         get() = prefs.getLong("botId", 0L)
-        set(v) { prefs.edit().putLong("botId", v).apply() }
+        set(v) = edit { putLong("botId", v).apply() }
 
     override var dbPollingRate: Long
         get() = prefs.getLong("dbPollingRate", 100L)
-        set(v) { prefs.edit().putLong("dbPollingRate", v).apply() }
+        set(v) = edit { putLong("dbPollingRate", v).apply() }
 
     override var messageSendRate: Long
         get() = prefs.getLong("messageSendRate", 50L)
-        set(v) { prefs.edit().putLong("messageSendRate", v).apply() }
+        set(v) = edit { putLong("messageSendRate", v).apply() }
 
     override var appMode: AppMode?
         get() {
             val raw = prefs.getString("appMode", null) ?: return null
-            return try { AppMode.valueOf(raw) } catch (_: IllegalArgumentException) { null }
+            // 알아듣지 못하는 저장값을 몰래 ROOT_ADB로 고정하지 않고 null(자동 감지)로
+            // 다룬다. 자동 감지가 틀릴 수는 있어도 조용히 한 모드로 묶이는 것보다 낫다.
+            return try { AppMode.valueOf(raw) } catch (_: IllegalArgumentException) {
+                System.err.println("SharedPrefConfigStore: unrecognized appMode '" + raw + "' - auto-detect instead")
+                null
+            }
         }
-        set(v) { prefs.edit().putString("appMode", v?.name).apply() }
+        set(v) = edit { putString("appMode", v?.name).apply() }
 
     override var broadcastTypes: List<String>?
         get() {
             val raw = prefs.getStringSet("broadcastTypes", null) ?: return null
             return raw.toList()
         }
-        set(v) { prefs.edit().putStringSet("broadcastTypes", v?.toSet()).apply() }
+        set(v) = edit { putStringSet("broadcastTypes", v?.toSet()) }
 
     override var includeSystemEvents: Boolean
         get() = prefs.getBoolean("includeSystemEvents", true)
-        set(v) { prefs.edit().putBoolean("includeSystemEvents", v).apply() }
+        set(v) = edit { putBoolean("includeSystemEvents", v).apply() }
 
     override var enableExtension: Boolean
         get() = prefs.getBoolean("enableExtension", false)
-        set(v) { prefs.edit().putBoolean("enableExtension", v).apply() }
+        set(v) = edit { putBoolean("enableExtension", v).apply() }
 }
 
 /**
@@ -158,25 +178,53 @@ class JsonConfigStore : ConfigStore {
         // prefs 초기화 시 JSON에 복사
         AdbConfig.loadFromPrefs()
     }
+
+    /**
+     * JSON 저장소는 그 자체가 원본(데몬)이라 오버레이 발행할 것이 없다.
+     * 앱 프로세스(prefs 원본)에서만 SharedPrefConfigStore가 publishLiveOverlay를 탄다.
+     */
+    fun publishOverlay() = Unit
+
 }
 
 /**
- * ConfigStore 팩토리 — 현재 모드에 따라 적절한 구현체 반환
+ * ConfigStore 팩토리 — 저장 상태(isInitialized)에 맞는 구현을 고른다.
+ *
+ * ISSUE-04: 예전에는 최초 호출 시점의 AppConfig.isInitialized 하나로 영구 바인딩해서,
+ * init 이전 getter 호출 하나가 프로세스 수명 전체를 JSON 저장소에 묶었다
+ * (=UI는 SharedPreferences에 쓰는데 데몬은 JSON만 보는 드리프트). 초기화 여부가
+ * 바뀌면 바인딩도 따라 바뀌도록 재평가한다.
  */
 object ConfigStoreFactory {
     @Volatile
     private var instance: ConfigStore? = null
 
     fun get(): ConfigStore {
-        instance?.let { return it }
-        synchronized(this) {
-            instance?.let { return it }
-            instance = if (AppConfig.isInitialized) {
-                SharedPrefConfigStore()
-            } else {
-                JsonConfigStore()
+        val wantPrefs = AppConfig.isInitialized
+        instance?.let { if ((it is SharedPrefConfigStore) == wantPrefs) return it }
+        return synchronized(this) {
+            instance?.takeIf { (it is SharedPrefConfigStore) == wantPrefs } ?: run {
+                val created: ConfigStore = if (wantPrefs) initializedPrefsStore() else JsonConfigStore()
+                instance = created
+                created
             }
         }
-        return instance!!
+    }
+
+    /**
+     * 팩토리가 lazy하게 만드는 SharedPreferences 저장소는 init(context)를 받지 못한 채로
+     * 태어날 수 있다 (A2 이후 이 경로가 사실상 데몬 전용이었기 때문). lateinit prefs를
+     * 읽고 터지는 일이 없도록 앱 Context를 찾아 붙이고, 못 찾으면 JSON으로 폴백한다.
+     */
+    private fun initializedPrefsStore(): ConfigStore {
+        val store = SharedPrefConfigStore()
+        val app = runCatching {
+            Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null)
+        }.getOrNull() as? Context ?: run {
+            System.err.println("ConfigStoreFactory: app Context 없음 - JSON 저장소로 폴백")
+            return JsonConfigStore()
+        }
+        store.init(app)
+        return store
     }
 }
