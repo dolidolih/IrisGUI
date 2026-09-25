@@ -113,15 +113,19 @@ static int build_linker_argv(const char *target, char *const argv[],
         return 0;
     }
 
-    /* {linker, target, [arg,] interp, argv[1...]} */
+    /* ELF:   {linker, target, argv[1...]}
+     * script: {linker, interp, [interp-arg,] target, argv[1...]} — linker64 의
+     * run-program 모드에서 program(=argv[1]) 은 ELF여야 하므로 shebang 스크립트는
+     * 통째로 넘기면 bad ELF magic. interpreter를 앞에 세우고 스크립트를 첫
+     * 인자로 둔다: `#!x -u` + args -> linker64 x -u script args. */
     size_t k = 0;
     nv[k++] = LINKER;
-    nv[k++] = (char *)target;
     if (is_script) {
+        nv[k++] = av2;
         if (av1)
             nv[k++] = av1;
-        nv[k++] = av2;
     }
+    nv[k++] = (char *)target;
     /* append original argv[1..] */
     if (argv) {
         for (int i = 1; argv[i] != NULL; i++) {
