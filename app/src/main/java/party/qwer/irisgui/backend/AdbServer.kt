@@ -138,7 +138,10 @@ object AdbServer {
 
             val lenientJson = Json { ignoreUnknownKeys = true }
 
-            engineRef = embeddedServer(Netty, port = AdbConfig.serverPort) {
+            // ISSUE-33: 데몬 HTTP는 기기 내 제어 평면(SQL/답장/제어) — 기본 bind 는 loopback.
+            // LAN 노출은 의도한 기능이며 (remote bind 요구 시 AdbConfig 차원의 별개 논의),
+            // 기본값은 127.0.0.1. AdbProcessClient 도 애초에 127.0.0.1 만 사용한다.
+            engineRef = embeddedServer(Netty, host = "127.0.0.1", port = AdbConfig.serverPort) {
                 install(WebSockets) {
                     contentConverter = KotlinxWebsocketSerializationConverter(lenientJson)
                 }

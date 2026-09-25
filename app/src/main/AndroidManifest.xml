@@ -15,14 +15,14 @@
 
     <application
         android:name=".IrisGUIApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:extractNativeLibs="true"
         android:icon="@mipmap/irislitelogo"
         android:label="IrisGUI"
         android:roundIcon="@mipmap/irislitelogo_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.IrisGUI"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".ui.MainActivity"
@@ -68,10 +68,12 @@
             android:name=".service.WatchdogReceiver"
             android:enabled="true"
             android:exported="true">
+            <!-- ISSUE-33: HEARTBEAT 는 manifest filter 에서 제거 — AlarmManager PendingIntent 의
+                 명시적 컴포넌트 브로드케이트로 계속 전달되며, 외부 앱의 action 남용으로 인한
+                 시작 경로 churn 을 줄인다. BOOT/MY_PACKAGE_REPLACED 는 시스템 보호 방송만 온다. -->
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="party.qwer.irisgui.HEARTBEAT" />
             </intent-filter>
         </receiver>
 
