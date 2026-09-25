@@ -60,6 +60,14 @@ class Main {
                 println("IrisGUI: ImageDeleter started (1h interval)")
 
                 // 5. ADB 전용 HTTP 서버 시작
+                // ISSUE-05: /process-command stop 은 데몬 워스(DB poller, 이미지 정리)까지
+                // 내려야 truly stop — UI 가 "정지"인데 백그라운드에서 관찰/답장이 계속되는
+                // 반-정지 상태를 막기 위해 stop 훅을 등록한다.
+                val workerStop = Runnable {
+                    runCatching { dbObserver.stopPolling() }
+                    runCatching { imageDeleter.stopDeletion() }
+                }
+                AdbServer.workerStopHook = workerStop
                 AdbServer.startServer()
                 println("IrisGUI: AdbServer started on port ${AdbConfig.serverPort}")
 

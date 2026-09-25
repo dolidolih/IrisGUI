@@ -624,13 +624,22 @@ object AdbServer {
                         val req = call.receive<AdbProcessCommandRequest>()
                         when (req.command) {
                             "stop" -> {
-                                stopServer()
-                                call.respond(ApiResponse(success = true, message = "Process stopped"))
+                                // ISSUE-05: 자기 엔진의 요청 스레드에서 stopServer() 하면
+                                // in-flight(자신 포함) 대기 + 응답 미전달 → 클라이언트가
+                                // "실패"로 오인해 pkill 로 직행한다. 먼저 응답하고 내려온다.
+                                call.respond(ApiResponse(success = true, message = "Process stopping"))
+                                scheduleLifecycle { stopServer() }
                             }
                             "restart" -> {
-                                stopServer()
-                                startServer()
-                                call.respond(ApiResponse(success = true, message = "Process restarted"))
+                                // stop → port 반환 확인 후 start: 같은 스레드에서 직렬 실행.
+                                call.respond(ApiResponse(success = true, message = "Process restarting"))
+                                scheduleLifecycle {
+                                    stopServer()
+                                    // engine.stop(...) 내부 join 으로 포트는 반납되지만,
+                                    // SO_REUSE 편승을 기다리기 위해 짧게 대기한다.
+                                    runCatching { Thread.sleep(300) }
+                                    startServer()
+                                }
                             }
                             else -> {
                                 call.respond(ApiResponse(success = false, message = "Unknown command: ${req.command}"))
@@ -646,6 +655,28 @@ object AdbServer {
             System.err.println("AdbServer failed to start: ${e.message}")
             e.printStackTrace()
         }
+    }
+
+    /**
+     * ISSUE-05: 정지 시 데몬 워스(스레드/폴러)까지 함께 내리기 위한 훅 —
+     * Main.kt가 DBObserver/ImageDeleter 를 등록한다. (hook 이 null 이면 기존 동작과 동일)
+     */
+    @JvmStatic
+    var workerStopHook: Runnable? = null
+
+    /**
+     * ISSUE-05: stop/restart 는 엔진 자신의 요청 스레드에서 수행하면 자기 엔진의
+     * grace timeout 을 태우고 응답 자체가 미전달된다. 응답을 먼저 내보낸 뒤
+     * detached 스레드에서 지연 실행한다.
+     */
+    private fun scheduleLifecycle(action: () -> Unit) {
+        Thread {
+            // 응답 플러시를 위한 짧은 유예 — 값은 응답 지연(100ms대)에만 영향,
+            // 정지/재시작 결과에는 영향이 없다.
+            runCatching { Thread.sleep(150) }
+            runCatching { action() }
+                .onFailure { println("AdbServer: deferred lifecycle action failed: ${it.message}") }
+        }.apply { isDaemon = true; name = "AdbServer-lifecycle" }.start()
     }
 
     /**
@@ -746,11 +777,8 @@ object AdbServer {
      * 리소스 정리
      */
     fun stopServer() {
-        // serverScope 정지 — handleTextReply/handleImageReply 코루틴 정리
-        // (ISSUE-01: scope은 startServer에서 매번 새로 만들어지므로 재사용 걱정 없음)
-        serverScope.cancel()
-        kakaoDb?.closeConnection()
-        kakaoDb = null
+        // ISSUE-05/17: 먼저 수접을 끊는다(new requests 차단, in-flight join) —
+        // handler 가 DB/scope 에 접근하지 않는 상태가 된 뒤에 워스를 정리한다.
         engineRef?.let {
             try {
                 val stopMethod = it.javaClass.getMethod("stop", Long::class.java, Long::class.java)
@@ -761,5 +789,15 @@ object AdbServer {
         }
         engineRef = null
         _isRunning = false
+        // serverScope 정지 — handleTextReply/handleImageReply 코루틴 정리
+        // (ISSUE-01: scope은 startServer에서 매번 새로 만들어지므로 재사용 걱정 없음)
+        serverScope.cancel()
+        // ISSUE-05: 데몬 워스(DB poller, 이미지 정리)까지 truly stop — 그래야
+        // "stop" 이후에도 답장/관측을 하는 반-정지(deamon은 살지만 포트만 반납) 상태가 남지 않는다.
+        runCatching { workerStopHook?.run() }
+            .onFailure { println("AdbServer: worker stop hook failed: ${it.message}") }
+        kakaoDb?.closeConnection()
+        kakaoDb = null
+        readHelper = null
     }
 }
