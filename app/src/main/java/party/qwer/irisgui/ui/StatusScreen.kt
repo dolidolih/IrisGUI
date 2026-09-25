@@ -51,6 +51,7 @@ import party.qwer.irisgui.AppState
 import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.backend.IrisServer
+import party.qwer.irisgui.service.NotificationListenerState
 import party.qwer.irisgui.models.ConfigRequest
 import party.qwer.irisgui.service.IrisService
 
@@ -81,6 +82,8 @@ fun StatusScreen(permission: PermissionStatus) {
     var pendingOff by remember { mutableStateOf(false) }
     var startingAt by remember { mutableLongStateOf(0L) }
     var starting by remember { mutableStateOf(false) }
+    // batch-2 의 실제 NLS bind 신호 (ISSUE-06) — 히어로 카드 확인용. 폴링 tick 에서 갱신.
+    var nlsBound by remember { mutableStateOf(NotificationListenerState.isBound) }
 
     // ON 은 백엔드 확인까지 기다리는 유예 시간 — 데몬 기동은 root 셸 확보 + DB 초기화 +
     // 포트 바인딩까지 최대 20 초 가량 걸릴 수 있다.
@@ -151,6 +154,7 @@ fun StatusScreen(permission: PermissionStatus) {
                 if (alive) state = true
                 else if (confirmed) state = false
             }
+            if (mode == AppMode.NON_ROOT) nlsBound = NotificationListenerState.isBound
             if (state != AppState.running) AppState.running = state
             running = AppState.running
             // 백오프 트리거는 "확인된 Down + 전이 대기 없음" 뿐 — Busy/전중은 base.
@@ -222,6 +226,9 @@ fun StatusScreen(permission: PermissionStatus) {
             stopPending = pendingOff,
             needsAttention = permission.needsAttention(mode),
             mode = mode,
+            // "작동 중" 이 실제로는 알림 미수신이면 안 된다 — startForegroundService
+            // 성공과 NLS bind 는 별개라는 신호(batch-2)를 히어로에 반영.
+            nlsUnbound = mode == AppMode.NON_ROOT && running && !nlsBound,
             onToggle = { on ->
                 if (on) {
                     running = true
@@ -279,6 +286,7 @@ private fun ServiceCard(
     stopPending: Boolean = false,
     needsAttention: Boolean,
     mode: AppMode,
+    nlsUnbound: Boolean = false,
     onToggle: (Boolean) -> Unit
 ) {
     val dropdownContext = LocalContext.current
@@ -417,6 +425,19 @@ private fun ServiceCard(
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
                             "권한 탭에서 처리하세요",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = AppColors.WarningVivid
+                        )
+                    }
+                }
+                if (nlsUnbound) {
+                    // ISSUE-06 신호 연동: ON 이어도 NLS 바인드가 아직 안 붙었으면
+                    // "알림 바인딩 대기" 로 정직하게 표시.
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        StatusPill(ok = false, label = "알림 바인딩 대기")
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            "권한 탭의 알림 접근을 확인하세요",
                             style = MaterialTheme.typography.labelMedium,
                             color = AppColors.WarningVivid
                         )
