@@ -18,8 +18,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
@@ -56,6 +58,9 @@ class IrisService : Service() {
         const val ACTION_RESTART_SERVICE = "party.qwer.irisgui.RESTART"
         const val NOTIFICATION_ID = 1001
 
+        /** ISSUE-07: EXIT 시 동기 데몬 정지 상한 — 초과하면 포기하고 종료 수순으로 넘긴다(ANR 회피). */
+        private const val EXIT_STOP_BUDGET_MS = 8_000L
+
         /** RuntimeLog source tag */
         private const val TAG = "IrisService"
     }
@@ -71,7 +76,16 @@ class IrisService : Service() {
 
         when (intent?.action) {
             ACTION_EXIT_SERVICE -> {
-                serviceScope.launch { stopLogic(reportUser = false) }
+                // ISSUE-07: 데몬 정지가 serviceScope 로 넘겨지면 프로세스 소멸과 경주해
+                // root 데몬(답장·관측 계속)이 고아로 남는다. EXIT 경로에서는 정지를
+                // bounded 블로킹으로 synchronously 수행한 뒤 소거한다.
+                runBlocking {
+                    withContext(Dispatchers.IO) {
+                        withTimeoutOrNull(EXIT_STOP_BUDGET_MS) {
+                            stopLogic(reportUser = false)
+                        } ?: RuntimeLog.warn(TAG, "EXIT: daemon stop 확인 유예(상한) 초과 — 종료 진행")
+                    }
+                }
                 cleanup()
                 stopForeground(Service.STOP_FOREGROUND_REMOVE)
                 stopSelf()
