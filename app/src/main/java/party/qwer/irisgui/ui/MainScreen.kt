@@ -102,7 +102,12 @@ fun MainScreen() {
         AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Description, Icons.Default.Shield)
         AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Description, Icons.Default.Shield)
     }
-    val selectedTabName = tabs.getOrNull(selectedTabIndex)
+    // ISSUE-39#3: 모드 전환 직후 selectedTabIndex 리셋이 한 프레임 늦으면
+    // getOrNull(null) 의 else 분기가 PermissionScreen 을 잠깐 비춘다 — 인덱스를
+    // 렌더 전에 clamp 에 노멀라이즈해 플래시를 제거한다.
+    val safeTabIndex = selectedTabIndex.coerceIn(tabs.indices)
+    if (safeTabIndex != selectedTabIndex) selectedTabIndex = safeTabIndex
+    val selectedTabName = tabs[safeTabIndex]
 
 
     Scaffold(

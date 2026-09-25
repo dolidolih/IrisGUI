@@ -21,6 +21,8 @@ object RuntimeLog {
     private const val MAX_ENTRIES = 200
     private val lock = Any()
     private val entries = ArrayList<Entry>()
+    /** ISSUE-39#5: captureStdout idempotency — 두 번 wrap 하면 모든 줄이 duplicated. */
+    @Volatile private var stdoutCaptured = false
 
     fun info(source: String, message: String) = log("INFO", source, message)
     fun warn(source: String, message: String) = log("WARN", source, message)
@@ -50,6 +52,12 @@ object RuntimeLog {
         private val level: String
     ) : PrintStream(delegate, true) {
         private val buffer = StringBuilder()
+
+        // ISSUE-39#5: write(byte[],int,int) 만 오버라이드하면 write(int) 경로
+        // (System.out.write(byte) 등) 는 tee 를 우회해 버린다 — 바이트 단위도 함께.
+        override fun write(b: Int) {
+            write(byteArrayOf(b.toByte()), 0, 1)
+        }
 
         override fun write(buf: ByteArray, off: Int, len: Int) {
             delegate.write(buf, off, len)
@@ -83,6 +91,11 @@ object RuntimeLog {
      * 데몬(app_process)에서 호출해 데몬 출력 전체를 로그 탭에 노출한다.
      */
     fun captureStdout(source: String) {
+        // ISSUE-39#5: 재호출 시 Tee 를 Tee 로 감싸 로그 전 줄이 복붙되는 사고 방지.
+        synchronized(lock) {
+            if (stdoutCaptured) return
+            stdoutCaptured = true
+        }
         System.setOut(LineTee(System.out, source, "INFO"))
         System.setErr(LineTee(System.err, source, "ERROR"))
     }
