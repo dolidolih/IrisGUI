@@ -94,9 +94,27 @@ object KakaoRoomResolver {
         nls: NotificationListenerService,
         context: Context,
         sbnKey: String,
-        conversationId: String
+        conversationId: String,
+        /**
+         * ISSUE-35: tag(conversationId) 없이 오는 알림용 identity — ranking 조회만 하고
+         * cache 에는 넣지 않는다 (sbn.key 를 방 id 로 착각해 cache 를 오염시키지 않게).
+         */
+        identityFallback: String? = null
     ): String? {
-        if (conversationId.isEmpty()) return null
+        if (conversationId.isEmpty()) {
+            // tag 가 비어있으면 conversationId 로는 아무것도 확정할 수 없다. ranking 은 key
+            // 로 조회되므로 논루팅에서는 여전히 방 이름을 얻을 수 있지만, 결과는 cache 하지
+            // 않는다 — 호출부는 닉네임 폴백을 탄다.
+            if (identityFallback == null) return null
+            misses.incrementAndGet()
+            return when (AppModeManager.ensureDetected()) {
+                AppMode.NON_ROOT -> rankingLabel(nls, sbnKey)
+                AppMode.ROOT_ADB -> {
+                    requestRoomRefresh(context)
+                    null
+                }
+            }
+        }
         loadPersisted(context)
         cachedName(conversationId)?.let { return it }
         misses.incrementAndGet()

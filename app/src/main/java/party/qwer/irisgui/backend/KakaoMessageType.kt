@@ -19,17 +19,23 @@ object KakaoMessageType {
 
     fun isOpenChat(type: Int): Boolean = (type and OPEN_CHAT_BIT) != 0
 
+    /** origin 만으로 삭제 계열인지 본다 (deleted_at 은 별개의 확인). */
+    fun isDeletionOrigin(origin: String): Boolean = origin == "SYNCDLMSG" || origin == "SYNCMODMSG"
+
     /** origin기반 "삭제 마크" 판별: SYNCDLMSG=작성자 삭제, SYNCMODMSG=방장(어드민) 삭제.
      *  deleted_at>0 이면서 origin 만 삭제 마크에 해당한다 (SYNCREWR 등 다른 deleted_at 행은 제외). */
     fun isDeletionEvent(origin: String, deletedAt: Long): Boolean =
-        deletedAt > 0L && (origin == "SYNCDLMSG" || origin == "SYNCMODMSG")
+        isDeletionOrigin(origin) && deletedAt > 0L
 
     /** type/origin을 "사람이 알아볼 문자열"로 매핑 (extension.type_name, 필터용).
      *  삭제 마크행이면 type/origin 을 보지 않고 "deleted" 로 분류한다. */
     fun classify(type: Int, origin: String): String = classify(type, origin, 0L)
 
     fun classify(type: Int, origin: String, deletedAt: Long): String {
-        if (isDeletionEvent(origin, deletedAt)) return "deleted"
+        // ISSUE-35: 삭제 마크 origin(SYNCDLMSG/SYNCMODMSG) 은 deleted_at 컬럼을 넘기지 않은
+        // 호출에서도 "deleted" 로 확정된다 — 2-arg classify 가 이를 놓치면 "deleted" 필터를
+        // 쓴 설정이 삭제 이벤트를 system 으로잘못 처리 한다. deleted_at 는 flag 로만 남긴다.
+        if (isDeletionOrigin(origin)) return "deleted"
         if (origin.isEmpty()) return "unknown"
         // 시스템(origin 기반)
         if (origin != "MSG" && origin != "MCHATLOGS" && origin != "SYNCMSG" && origin != "WRITE") {
@@ -90,14 +96,17 @@ object KakaoMessageType {
         includeSystem: Boolean
     ): Boolean {
         if (origin == "SYNCMSG") return false
-        val deletion = isDeletionEvent(origin, deletedAt)
-        if (!deletion && origin == "MCHATLOGS" && (filter == null || filter.isEmpty())) return false
+        val deletionMark = isDeletionOrigin(origin)
+        val deletion = deletionMark && deletedAt > 0L
+        if (!deletionMark && origin == "MCHATLOGS" && (filter == null || filter.isEmpty())) return false
         val systemOrigin = (origin != "MSG" && origin != "MCHATLOGS" && origin != "SYNCMSG" && origin != "WRITE")
         if (systemOrigin && !includeSystem) return false
         if (filter == null || filter.isEmpty()) return true
-        if (!deletion && origin == "MCHATLOGS") return "mchatlog" in filter
-        if (!deletion && origin == "WRITE") return "current_user" in filter
-        if (deletion) return "deleted" in filter
+        // ISSUE-35: 삭제 마크 계열은 deleted_at 값과 무관하게 "deleted" 필터를 따른다
+        // (이전엔 deleted_at==0 이면 "system" 으로빠져서 deleted 필터 설정이 조용히 실패했다).
+        if (deletionMark) return "deleted" in filter
+        if (origin == "MCHATLOGS") return "mchatlog" in filter
+        if (origin == "WRITE") return "current_user" in filter
         if (systemOrigin) return "system" in filter
         return classify(type, origin, deletedAt) in filter
     }
