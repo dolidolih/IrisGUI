@@ -14,6 +14,16 @@ import party.qwer.irisgui.AppConfig
 class KakaoDB {
     lateinit var connection: SQLiteDatabase
 
+
+    /**
+     * ISSUE-40: 이 인스턴스가 ATTACH 한 데이터 트리. KakaoTalk reinstall/restore 또는
+     * mirror↔default 전환으로 live 경로가 바뀌면 캐시된 커넥션이 옛 트리를 계속 읽을 수 있다 —
+     * drift 감지로 해결은 안 되고 커넥션을 새로 만들어야 하지만, 그 상태가 조용하지는 않게 한다
+     * (커넥션 cache key 교체는 backend/AdbServer.kt 소유, note 에 전달).
+     */
+    lateinit var dataRootPath: String
+        private set
+
     init {
         // ISSUE-03: a constructor that called System.exit(1) erased the whole process on a
         // transient attach failure (file lock, DB mid-write, retry after BindException).
@@ -22,6 +32,7 @@ class KakaoDB {
         // ISSUE-31/40: 경로는 생성 시작점에서 해석·검증한다 — 첫 질의 스레드가 lazy
         // exception 으로 죽거나, env 출처 문자열이 SQL 에 quotes 그대로 실려 들어가지 않게.
         val root = PathUtils.precompute() ?: throw IllegalStateException(PathUtils.describeMissing())
+        dataRootPath = root
         val db = try {
             SQLiteDatabase.openDatabase(":memory:", null, SQLiteDatabase.OPEN_READWRITE)
         } catch (e: SQLiteException) {
@@ -52,6 +63,9 @@ class KakaoDB {
             )
         }
     }
+
+    @Volatile
+    private var lastDriftCheckMs: Long = 0
 
     /**
      * ISSUE-34: 봇 user_id 해석 결과. 미해결을 0 으로 넘기면 salt 가 전부 0 으로 굳어서
@@ -481,6 +495,7 @@ class KakaoDB {
     }
 
     fun logToDict(logId: Long): Map<String, String?> {
+        warnIfPathDrifted()
         val dict: MutableMap<String, String?> = HashMap()
 
         connection.rawQuery("SELECT * FROM chat_logs ORDER BY _id DESC LIMIT 1", null)
@@ -513,9 +528,30 @@ class KakaoDB {
         }
     }
 
+    /**
+     * live 경로(또는 env)가 달라졌는데 이 커넥션이 옛 트리를 읽는지 질의 경로에서 대조한다.
+     * PathUtils 캐시(60s) 덕분에 추가 cost 는 stat 한 번/최대 60 초이고, 동작은 바꾸지 않고
+     * 경고만 남긴다. `dataRootPath` 를 공개한 이유는 커넥션 cache 키를 경로로 바꾸려는 쪽에서
+     * 쓸 수 있게 하기 위해서다 (AdbServer.readHelper — batch note 참조).
+     */
+    private fun warnIfPathDrifted() {
+        val now = System.currentTimeMillis()
+        if (now - lastDriftCheckMs < DRIFT_CHECK_MS) return
+        lastDriftCheckMs = now
+        val current = PathUtils.getAppPathOrNull() ?: return
+        if (current != dataRootPath) {
+            System.err.println(
+                "KakaoDB: WARNING path drift — this connection reads $dataRootPath but the live " +
+                    "path is now $current (KakaoTalk reinstall/restore, mirror switch, or env " +
+                    "change). ${PathUtils.describe()} recreate the connection to read current data."
+            )
+        }
+    }
+
     fun executeQuery(
         sqlQuery: String, bindArgs: Array<String?>?
     ): List<Map<String, String?>> {
+        warnIfPathDrifted()
         val resultList: MutableList<Map<String, String?>> = ArrayList()
         connection.rawQuery(sqlQuery, bindArgs).use { cursor ->
             val columnNames = cursor.columnNames
@@ -544,6 +580,9 @@ class KakaoDB {
         private const val NAME_MISS_TTL_MS = 30_000L
 
         private const val DB_DIR_NAME = "databases"
+
+        /** ISSUE-40: drift 체크 throttle — PathUtils cache 와 같은 주기. */
+        private const val DRIFT_CHECK_MS = 60_000L
 
         /** botId 조회의 최근 창 (row 수) — startup 에 테이블 전체를 훑지 않기 위한 상한. */
         private const val BOT_ID_RECENT_WINDOW = 5_000L
