@@ -74,6 +74,19 @@ fun LogsScreen() {
     /** 실행 로그 통의 펼침/접힘. 탭 전환/회전에서도 유지. */
     var logsExpanded by rememberSaveable { mutableStateOf(true) }
 
+    // ISSUE-29: LazyColumn key 는 유니크해야 하는데 daemon _idフォール백(=created_at)
+    // 과 NON_ROOT "${ts}:${roomId}" 키는 같은 방·같은 ms 카드와 충돌해
+    // "Key was already used" 크래스를 낸다. 첫出現 순서 기반 번호로 dup 을 제거한
+    // 로컬 키를 쓴다 (충돌 없는 monotone identity).
+    val keyedMessages = remember(messages.toList()) {
+        val seen = HashMap<String, Int>()
+        messages.map { m ->
+            val base = "${m.id}_${m.roomName}"
+            val n = seen.merge(base, 1) { _, v -> v + 1 }
+            ("$base#$n" to m)
+        }
+    }
+
     if (mode == AppMode.ROOT_ADB) {
         // ISSUE-28: lifecycle 게이트 + 실패 백오프. ISSUE-29: 조회 실패(null)로
         // messages 를 비우지 않는다 — transient busy 가 "수신 없음" flicker 가 된다.
@@ -195,7 +208,7 @@ fun LogsScreen() {
                 Text("수신된 메시지가 없습니다.", style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub)
             }
         } else {
-            items(messages, key = { "${it.id}_${it.roomName}" }) { msg ->
+            items(keyedMessages, key = { it.first }) { (_, msg) ->
                 MessageCard(msg)
             }
         }
