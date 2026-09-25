@@ -110,6 +110,10 @@ object DaemonLauncher {
             adb.execService("shell:${prefix}pkill -9 -f $MAIN_CLASS")
             delay(1_500)
 
+            // ISSUE-09: PATH1 처럼 로그 먼저 비운다 — 이전 실패 시동 잔여("Address already
+            // in use" 등)를 이번 기동의 진단으로 집어서 START_TIMEOUT 오탐을 내는 것을 방지.
+            adb.execService("shell:${prefix}rm -f $logPath")
+
             val execFailure = adb.execService("shell:${prefix}sh -c \"${daemonStartCommand(apkPath, logPath)}\"")
             if (execFailure != null) {
                 return@withContext StartResult.Failed(
