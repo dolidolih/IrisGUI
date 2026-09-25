@@ -148,7 +148,12 @@ fun RoomDropdownField(
         return
     }
     var expanded by remember { mutableStateOf(false) }
-    val display = rooms.firstOrNull { it.first == selectedId }?.let { (id, name) -> roomLabel(id, name) } ?: selectedId
+    // ISSUE-39#8: 방 목록 재구성 후에도 free-text 입력값이 라벨과 재매칭되도록
+    // id 직접 일치 → (유입된 목록의 name 일치로 간접 일치) 순으로 해석한다.
+    val display = rooms.firstOrNull { it.first == selectedId }?.let { (id, name) -> roomLabel(id, name) }
+        ?: rooms.firstOrNull { it.second == selectedId && selectedId.isNotBlank() }
+            ?.let { (id, name) -> roomLabel(id, name) }
+        ?: selectedId
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
         OutlinedTextField(
             value = display,

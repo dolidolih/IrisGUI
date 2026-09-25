@@ -465,10 +465,27 @@ private fun ServiceCard(
                                         "현재 서비스는 종료하고 새 모드로 자동 실행됩니다.",
                                     isError = false
                                 )
-                                dropdownContext.startForegroundService(
-                                    android.content.Intent(dropdownContext, IrisService::class.java)
-                                        .setAction(IrisService.ACTION_RESTART_SERVICE)
-                                )
+                                // ISSUE-39#2: onToggle 경로와 같이 runCatching +
+                                // 폴백 — OEM 의 background-start 예외가 삼켜지면
+                                // 모드 전환이 조용히 실패한다.
+                                val restart = android.content.Intent(
+                                    dropdownContext, IrisService::class.java
+                                ).setAction(IrisService.ACTION_RESTART_SERVICE)
+                                runCatching { dropdownContext.startForegroundService(restart) }
+                                    .onFailure {
+                                        RuntimeLog.error(
+                                            "StatusScreen",
+                                            "mode switch startForegroundService 실패: " +
+                                                "${it.javaClass.simpleName}: ${it.message}"
+                                        )
+                                        runCatching { dropdownContext.startService(restart) }
+                                            .onFailure {
+                                                RuntimeLog.error(
+                                                    "StatusScreen",
+                                                    "mode switch startService 폴백도 실패: ${it.message}"
+                                                )
+                                            }
+                                    }
                             }
                         }
                     )

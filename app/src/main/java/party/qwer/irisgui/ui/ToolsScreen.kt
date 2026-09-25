@@ -41,6 +41,9 @@ fun ToolsScreen() {
     var queryResult by remember { mutableStateOf<QueryResponse?>(null) }
     var queryError by remember { mutableStateOf<String?>(null) }
     var isQuerying by remember { mutableStateOf(false) }
+    // ISSUE-39#4: "텍스트 검색" 이 literal word 'text' 를 넣던 것 — 검색어를 먼저 묻는다.
+    var searchPrompt by remember { mutableStateOf(false) }
+    var searchTerm by remember { mutableStateOf("") }
 
     val quickQueries = listOf(
         "chat_logs 최근" to "SELECT * FROM chat_logs ORDER BY _id DESC LIMIT 20",
@@ -75,9 +78,16 @@ fun ToolsScreen() {
                                 scope.launch {
                                     isQuerying = true
                                     queryError = null
-                                    queryResult = AdbProcessClient.executeQuery(queryText)
+                                    val res = AdbProcessClient.executeQuery(queryText)
                                     isQuerying = false
-                                    queryResult?.error?.let { queryError = "에러: $it" }
+                                    queryResult = res
+                                    if (res == null) {
+                                        // ISSUE-39#4: transport 실패가 빈 결과처럼
+                                        // 보이던 것 — 명시 오류로 드러낸다.
+                                        queryError = "쿼리 전송 실패 — 서비스 실행/ 연결 상태 확인"
+                                    } else {
+                                        res.error?.let { queryError = "에러: $it" }
+                                    }
                                 }
                             }
                         },
@@ -110,7 +120,15 @@ fun ToolsScreen() {
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable { queryText = sql }
+                            .clickable {
+                                // 텍스트 검색은 검색어 입력을 받고 삽입한다.
+                                if (label == "텍스트 검색") {
+                                    searchTerm = ""
+                                    searchPrompt = true
+                                } else {
+                                    queryText = sql
+                                }
+                            }
                             .background(AppColors.ConfigTile)
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -159,6 +177,46 @@ fun ToolsScreen() {
             }
         }
     }
+
+    if (searchPrompt) {
+        SearchTermDialog(
+            term = searchTerm,
+            onTermChange = { searchTerm = it },
+            onApply = {
+                val t = searchTerm.replace("%", "").replace("'", "").ifBlank { "search" }
+                queryText = "SELECT * FROM chat_logs WHERE message LIKE '%$t%' " +
+                    "ORDER BY _id DESC LIMIT 10"
+                searchPrompt = false
+            },
+            onDismiss = { searchPrompt = false }
+        )
+    }
+}
+
+/** ISSUE-39#4: 빠른 "텍스트 검색"용 검색어 입력 dialogs. */
+@Composable
+private fun SearchTermDialog(
+    term: String,
+    onTermChange: (String) -> Unit,
+    onApply: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("메시지 검색어", fontWeight = FontWeight.Bold) },
+        text = {
+            OutlinedTextField(
+                value = term,
+                onValueChange = onTermChange,
+                singleLine = true,
+                placeholder = { Text("찾을 단어" ) },
+                shape = RoundedCornerShape(14.dp),
+                colors = irisFieldColors()
+            )
+        },
+        confirmButton = { TextButton(onClick = onApply) { Text("삽입") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } }
+    )
 }
 
 /** 한 행을 요약 + 펼침 상세로 표시하는 공용 결과 카드 */
