@@ -1,6 +1,7 @@
 package party.qwer.irisgui.backend
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -32,25 +33,65 @@ object AdbProcessClient {
         .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
-    private val json = Json { ignoreUnknownKeys = true }
+    // ISSUE-13: 관대한 디코딩 — 모르는 키 무시 + 입력 문자열 허용 + null/부결 필드는
+    // 기본값으로 치환. 데몬 JSON 이 진화해도(신규/삭제 필드) 상태 조회가 브레이크되지 않는다.
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
+
+    /** ISSUE-13: HTTP 응답은 받았으나 status 를 해석할 수 없는 경우의 "살아있되 불명" 값. */
+    private fun aliveUnknown(): AdbProcessStatusResponse = AdbProcessStatusResponse(
+        server_running = true,
+        port = AppConfig.serverPort,
+        bot_http_port = AppConfig.serverPort
+    )
 
     private val baseUrl: String
         get() = "http://127.0.0.1:${AppConfig.serverPort}"
 
     // ── Process Status / Control ──────────────────────────
 
-    /** app_process의 현재 상태 조회 (응답 파싱 실패 시 null) */
+    /**
+     * app_process의 현재 상태 조회.
+     *
+     * ISSUE-13 — "not running"(null) 은 접속 실패/타임아웃 에 대해서만 내린다:
+     *   - HTTP 응답(2xx 여부 무관)을 수령했다 = 접속 성공 ⇒ 살아있음.
+     *     본문이 부분적이거나 error-shape 이어도 aliveUnknown(기본값 상태) 반환.
+     *   - 커넥션 거부/타임아웃은 1회 재시도 후 null (StatusScreen 의 포트 오픈 확인과
+     *     합쳐 최종 판단 — 유령 Down 방지).
+     */
     suspend fun queryStatus(): AdbProcessStatusResponse? = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("$baseUrl/process-status").get().build()
-        try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val body = response.body?.string() ?: return@use null
-                json.decodeFromString<AdbProcessStatusResponse>(body)
+        repeat(2) { attempt ->
+            try {
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = runCatching { response.body?.string() }.getOrNull()
+                        val decoded = body?.let {
+                            runCatching { json.decodeFromString<AdbProcessStatusResponse>(it) }.getOrNull()
+                        }
+                        if (decoded != null) return@withContext decoded
+                        // HTTP 200 + 해석 불가 ⇒ 살아있음(파트셜/부분 기동/포맷 변화) — Down 판정 금지.
+                        println("AdbProcessClient: /process-status 응답은 받았으나 페이로드 불완전 (alive-unknown)")
+                        return@withContext aliveUnknown()
+                    }
+                    // HTTP 오류 응답(5xx/error body) — 접속 자체는 성공: 살아있음으로 취급한다.
+                    // 단, 일시적 오류 가능성에 한 번만 더 시도해 본다.
+                    if (attempt == 0) {
+                        delay(300)
+                    } else {
+                        println("AdbProcessClient: /process-status HTTP ${response.code} — 응답 수신했으므로 생존 취급")
+                        return@withContext aliveUnknown()
+                    }
+                }
+            } catch (e: Exception) {
+                // 접속 불가/타임아웃 — 아래 재시작 후에도 같으면 진짜 "정지" 후보.
+                if (attempt == 0) delay(300)
             }
-        } catch (e: Exception) {
-            null
         }
+        null
     }
 
     /**
