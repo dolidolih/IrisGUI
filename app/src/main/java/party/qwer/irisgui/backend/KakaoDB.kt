@@ -19,20 +19,24 @@ class KakaoDB {
         // transient attach failure (file lock, DB mid-write, retry after BindException).
         // Failure now propagates: callers decide (AdbServer.startServer already catches
         // Exception and tears the half-built server down, see ISSUE-17).
+        // ISSUE-31/40: 경로는 생성 시작점에서 해석·검증한다 — 첫 질의 스레드가 lazy
+        // exception 으로 죽거나, env 출처 문자열이 SQL 에 quotes 그대로 실려 들어가지 않게.
+        val root = PathUtils.precompute() ?: throw IllegalStateException(PathUtils.describeMissing())
         val db = try {
             SQLiteDatabase.openDatabase(":memory:", null, SQLiteDatabase.OPEN_READWRITE)
         } catch (e: SQLiteException) {
             throw IllegalStateException("KakaoDB: cannot open in-memory connection: ${e.message}", e)
         }
         try {
-            db.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk.db' AS db1")
-            db.execSQL("ATTACH DATABASE '$DB_PATH/KakaoTalk2.db' AS db2")
-            db.execSQL("ATTACH DATABASE '$DB_PATH/multi_profile_database.db' AS db3")
+            db.execSQL(attachStatement(root, "KakaoTalk.db", "db1"))
+            db.execSQL(attachStatement(root, "KakaoTalk2.db", "db2"))
+            db.execSQL(attachStatement(root, "multi_profile_database.db", "db3"))
         } catch (e: SQLiteException) {
             runCatching { db.close() }
+            val dir = dbPathOf(root)
             System.err.println("SQLiteException: " + e.message)
-            System.err.println("Cannot attach the KakaoTalk databases at $DB_PATH — check that KakaoTalk is installed and the process has permission.")
-            throw IllegalStateException("KakaoDB: cannot attach KakaoTalk databases at $DB_PATH: ${e.message}", e)
+            System.err.println("Cannot attach the KakaoTalk databases at $dir — check that KakaoTalk is installed and the process has permission.")
+            throw IllegalStateException("KakaoDB: cannot attach KakaoTalk databases at $dir: ${e.message}", e)
         }
         connection = db
         AppConfig.botId = botUserId
@@ -347,7 +351,13 @@ class KakaoDB {
                 // 1:1(DirectChat)은 private_meta/link_id 없음 → active_member_ids 의 bot 아닌 상대 이름으로 폴백.
                 if (resolvedName.isNullOrEmpty()) {
                     val rep = firstNonBotMember(c.getString(1))
-                    if (rep != 0L) resolvedName = queryUserName(c.getString(0).toLong(), rep)
+                    if (rep != 0L) {
+                        // ISSUE-40: 이름 폴백 하나의 예외가 방 map 전체를 버리게 하지 않는다.
+                        val fromMembers = runCatching {
+                            queryUserName(c.getString(0).toLong(), rep)
+                        }.getOrNull()
+                        if (!fromMembers.isNullOrEmpty()) resolvedName = fromMembers
+                    }
                 }
                 mapOf(
                     "id" to c.getString(0),
@@ -507,9 +517,16 @@ class KakaoDB {
         private const val NAME_HIT_TTL_MS = 10 * 60 * 1000L
         private const val NAME_MISS_TTL_MS = 30_000L
 
-        private val DB_PATH: String by lazy {
-            "${PathUtils.getAppPath()}databases"
-        }
+        private const val DB_DIR_NAME = "databases"
+
+        /** ISSUE-31: ATTACH 에 bind 변수가 없어 SQL quote 규칙('' doubling)로 안전화한다. */
+        private fun sqlStringLiteral(value: String): String = value.replace("'", "''")
+
+        private fun dbPathOf(root: String): String = "$root$DB_DIR_NAME/"
+
+        private fun attachStatement(root: String, file: String, alias: String): String =
+            "ATTACH DATABASE '${sqlStringLiteral(dbPathOf(root) + file)}' AS $alias"
+
         fun decryptRow(row: Map<String, String?>): Map<String, String?> {
             @Suppress("NAME_SHADOWING") var row = row.toMutableMap()
 
