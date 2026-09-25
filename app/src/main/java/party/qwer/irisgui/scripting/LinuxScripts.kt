@@ -216,8 +216,12 @@ object LinuxScripts {
             val r = ensureVenv(context, name)
             if (!r.ok) return r
         }
+        // ISSUE-11: .run.pid 에 시작 pid 를 남긴다 (sh exec 는 pid 유지 → python
+        // 시작 pid 가 그대로 기록된다). stop/탐지가 정확한 대상으로 참조한다.
+        runCatching { File(dir, RUN_PID).delete() }
         val inner = "export IRISGUI_SCRIPT=" + q(name) +
             "\nexport IRISGUI_API_URL=" + q("http://127.0.0.1:" + AppConfig.serverPort) +
+            "\necho $$ > " + q(RUN_PID) +
             "\nexec $py ${q(MAIN)} 2>&1"
         val logFile = File(dir, LOG)
         val p = UserlandRuntime.spawnBackground(context, inner,
@@ -272,9 +276,11 @@ object LinuxScripts {
 
     /** 서비스 종료 시 전체 정지. */
     fun stopAll(context: Context) {
-        synchronized(this) { processes.keys.toList() }.forEach {
-            runCatching { stop(context, it) }
-        }
+        // processes 맵은 앱 재탄생 후 비워진다 — /proc 정밀 스캔의 프로젝트도 함께
+        // 정지해야 고독 python 이 reply 파이프라인으로 살아남지 않는다 (ISSUE-22).
+        val names = (synchronized(this) { processes.keys.toList() } +
+            runningPidsByProject(context).keys).toSet()
+        names.forEach { runCatching { stop(context, it) } }
     }
 
     /** 프로젝트 로그 tail (host 파일). */
@@ -309,65 +315,76 @@ object LinuxScripts {
         UserlandRuntime.guestProject(context, name) + "/.venv/bin/python"
 
     /**
-     * 프로젝트별 실행 python pid 집합. proot 는 host pid ns 를 그대로 쓰기 때문에
-     * host /proc 에서 전부 보인다. 식별 우선순위:
-     *   1) cmdline 의 venv python 경로 — guest 바인드(/home/projects/<n>/.venv/...)든
-     *      host real path 든, 재실행/orphan 까지 잡는다. proot 는 host /proc cwd 를
-     *      / 에 고정하므로 cwd 는 primary 로 못 쓴다(wrapper 가 죽으면 python 자식은
-     *      init 에 딸려 살아남고 cmdline 만 남는다 — 실제 멈춤 실패의 원인).
-     *   2) proot wrapper cmdline 의 "-w <projects>/<name>" 마커.
-     *   3) host /proc cwd 가 프로젝트 안인 경우 (마지막 수단).
+     * 프로젝트별 실행 python pid 집합. ISSUE-11: 패턴/cwd 매칭을 버리고 정확히 —
+     *   1) .run.pid 에 기록된 시작 pid (wrapper 가 죽어도 살아남는 orphan python;
+     *      /proc cmdline 에 여전히 python 이라 읽혀야만 인정 — pid 재사용 안전장치)
+     *   2) /proc 정밀 주사: argv[0] 가 프로젝트 venv python 이고 argv 에 main.py
+     *      실행 인자가 있는 프로세스만. (터미널의 `python -m pip install`,
+     *      interactive bash, `python -m venv` 생성기 are 전부 제외)
+     *   3) IRISGUI_SCRIPT 마커가 있는 시작 proot wrapper cmdline 의 -w 마커.
+     * host /proc cwd 심링크 매칭은 interactive shell 도 걸려서 폐기 — cwd 가 아니라
+     * cmdline 는 proot 가 host 에 남기므로 orphan 추적에도 충분하다.
      */
     private fun runningPidsByProject(context: Context): Map<String, MutableSet<Int>> {
-        val hostBase = UserlandRuntime.projectsHostDir(context).canonicalFile.absolutePath + "/"
-        val guestBase = UserlandRuntime.GUEST_PROJECTS + "/"
-        val venvRe = Regex("(?:home/projects/)([^ /]+)/\\.venv/bin/python")
         val out = HashMap<String, MutableSet<Int>>()
+        fun add(name: String, pid: Int) {
+            if (name.isNotBlank()) out.getOrPut(name) { mutableSetOf() }.add(pid)
+        }
+
+        // 1) 기록된 시작 pid (pidfile 재사용 방지: /proc活着 + cmdline python 확인)
+        projectsDir(context).listFiles { f -> f.isDirectory && !f.name.startsWith(".") }
+            ?.forEach { d ->
+                recordedPids(File(d, RUN_PID)).forEach { pid ->
+                    if (cmdlineOf(pid).contains("python")) add(d.name, pid)
+                }
+            }
+
+        val guestBase = UserlandRuntime.GUEST_PROJECTS + "/"
+        val venvRe = Regex("home/projects/([^ /]+)/\\.venv/bin/python")
         val dirs = runCatching {
             File("/proc").listFiles { f -> f.isDirectory && f.name.all { c -> c.isDigit() } }
         }.getOrNull() ?: return out
         for (d in dirs) {
             val pid = d.name.toIntOrNull() ?: continue
-            val cmd = runCatching {
-                String(File(d, "cmdline").readBytes(), Charsets.ISO_8859_1)
-                    .replace('\u0000', ' ').trim()
-            }.getOrDefault("")
-            if (cmd.isBlank()) continue
-            if (cmd.contains("python")) {
-                val m = venvRe.find(cmd)
-                if (m != null) {
-                    val n = m.groupValues[1]
-                    if (n.isNotBlank()) out.getOrPut(n) { mutableSetOf() }.add(pid)
-                    continue
-                }
-            }
-            val fromW = Regex("-w " + Regex.escape(guestBase) + "([^ ]+)")
-                .find(cmd)?.groupValues?.getOrNull(1)
-            if (fromW != null) {
-                // 터미널도 같은 "-w <projects>/<name>" 래퍼를 쓴다. 그걸 스크립트로
-                // 오인하면 터미널 열기만으로도 카드가 "실행 중"이 된다. 실제 실행
-                // 프로세스만 계산: venv python 실행 경로 또는 IRISGUI_SCRIPT 마커.
-                if (cmd.contains("python") || cmd.contains("IRISGUI_SCRIPT")) {
-                    val pname = fromW.trim('/').substringBefore('/')
-                    if (pname.isNotBlank()) out.getOrPut(pname) { mutableSetOf() }.add(pid)
-                }
+            val argv = argvOf(pid)
+            if (argv.isEmpty()) continue
+            val cmd = argv.joinToString(" ")
+
+            // 3) 시작 wrapper 표식 — 우리 cmd 만 IRISGUI_SCRIPT 를 싣는다.
+            if (cmd.contains("IRISGUI_SCRIPT")) {
+                val fromW = Regex("-w " + Regex.escape(guestBase) + "([^ /]+)")
+                    .find(cmd)?.groupValues?.getOrNull(1)
+                if (fromW != null) add(fromW.trim('/').substringBefore('/'), pid)
                 continue
             }
-            val cwd = runCatching {
-                java.nio.file.Files.readSymbolicLink(d.toPath().resolve("cwd")).toString()
-            }.getOrNull()
-            if (cwd.isNullOrEmpty()) continue
-            val real = runCatching { File(cwd).canonicalFile.absolutePath }.getOrDefault(cwd)
-            val rest = when {
-                real.startsWith(hostBase) -> real.substringAfter(hostBase)
-                real.startsWith(guestBase) -> real.substringAfter(guestBase)
-                else -> continue
-            }
-            val name = rest.substringBefore('/')
-            if (name.isNotBlank()) out.getOrPut(name) { mutableSetOf() }.add(pid)
+
+            // 2) venv python + main.py 실행 인자 정확 일치.
+            val exe = argv.first()
+            if (!exe.contains("python")) continue
+            val m = venvRe.find(exe) ?: continue
+            if (argv.none { it.trim('\'') == MAIN }) continue
+            add(m.groupValues[1], pid)
         }
         return out
     }
+
+    /** .run.pid 파일의 살아있는 pid 목록. */
+    private fun recordedPids(pidFile: File): Set<Int> {
+        val pids = runCatching {
+            pidFile.readLines().mapNotNull { it.trim().toIntOrNull() }
+        }.getOrDefault(emptyList())
+        return pids.filter { it > 0 && File("/proc/$it").isDirectory }.toSet()
+    }
+
+    private fun cmdlineOf(pid: Int): String = runCatching {
+        String(File("/proc/$pid/cmdline").readBytes(), Charsets.ISO_8859_1)
+            .replace('\u0000', ' ').trim()
+    }.getOrDefault("")
+
+    private fun argvOf(pid: Int): List<String> = runCatching {
+        String(File("/proc/$pid/cmdline").readBytes(), Charsets.ISO_8859_1)
+            .split('\u0000').filter { it.isNotEmpty() }
+    }.getOrDefault(emptyList())
 
     /** 프로젝트에 딸린 실행 pid 전부 — proot wrapper + python + 고독(orphan) 포함. */
     fun pidsOf(context: Context, name: String): Set<Int> =
