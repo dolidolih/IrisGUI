@@ -292,8 +292,9 @@ object UserlandRuntime {
     fun ensureTrustStore(context: Context): Result {
         if (backend(context) == Backend.BIONIC) {
             val f = File(BionicRuntime.prefix(context), "usr/tls/certs/ca-certificates.crt")
+            if (!f.isFile) BionicRuntime.ensureTrustStore(context)
             return if (f.isFile) Result(true, "CA 준비됨")
-            else Result(false, "CA 번들 없음 — 환경 재설치 필요")
+            else Result(false, "CA 번들 없음 — 시스템 인증서 생성 실패")
         }
         val probe = exec(context, "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK",
             20_000)

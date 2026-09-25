@@ -185,7 +185,9 @@ object LinuxScripts {
         File(dir, VENV_LOG).writeText(VENV_PROGRESS + "\n")
         // 파이프 사용 금지: tail 의 exit code 가 pip 를 덮어써서 실패해도
         // .venv.done 이 만들어진다. -q 로 출력만 줄이고 exit code 는 그대로 탄다.
-        val cmd = "python3 -m venv .venv 2>&1 && .venv/bin/pip install -q irispy-client " +
+        // --system-site-packages: bionic 레이어는 Termux 자체 빌드 바이너리
+        // (python-pillow 등)을 이미 갖고 있으므로 venv가 이를 재사용한다 (소스 컴파일 금지).
+        val cmd = "python3 -m venv --system-site-packages .venv 2>&1 && .venv/bin/pip install -q --only-binary :all: irispy-client " +
             "2>&1 && touch .venv.done"
         val log = File(dir, VENV_LOG)
         val r = UserlandRuntime.exec(context, cmd, 1_800_000,

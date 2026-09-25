@@ -39,8 +39,12 @@ object BionicRuntime {
     private const val TAG = "Bionic"
     private const val REPO = "https://packages.termux.dev/apt/termux-main"
 
-    /** 실행 클로저: python + pip + 셸/도구 + CA. 의존 closure 는 Packages 로부터 계산. */
-    private val ROOT_PKGS = listOf("python", "python-pip", "bash", "coreutils", "ca-certificates")
+    /** 실행 클로저: python + pip + 셸/도구 + CA. 의존 closure 는 Packages 로부터 계산.
+     * python-ensurepip-wheels 는 Recommends 라 자동 포함되지 않는다 — venv의 ensurepip가
+     * 이 휠에 얹혀 있으므로 반드시 명시한다. */
+    private val ROOT_PKGS = listOf(
+        "python", "python-pip", "python-ensurepip-wheels", "bash", "coreutils",
+        "ca-certificates", "python-pillow")
 
     /** android abi → termux 패키지 arch. */
     private val ARCHES = mapOf(
@@ -170,9 +174,10 @@ object BionicRuntime {
         }
 
         if (!File(p, "usr/bin/python3").exists()) return UserlandRuntime.Result(false, "python 없음 — 설치 검증 실패")
+        ensureTrustStore(context)
         // 마커 쓰기 전에 venv/pip 왕복으로 실사용 확인. 실패하면 마커 없이 실패 반환.
         val probe = exec(context, "python3 -m venv --help >/dev/null 2>&1; " +
-            "python3 -c 'import ssl,sqlite3,venv.run,pip' && echo BIONIC_OK", 120_000)
+            "python3 -c 'import ssl,sqlite3,venv,ensurepip,pip' && echo BIONIC_OK", 120_000)
         if (!probe.output.contains("BIONIC_OK"))
             return UserlandRuntime.Result(false, "bionic python 검증 실패: ${probe.output.take(200)}")
         File(p, "home/projects").mkdirs()
@@ -181,33 +186,41 @@ object BionicRuntime {
         return UserlandRuntime.Result(true, "파이썬 환경 준비됨")
     }
 
-    /** Packages.gz(.gz 아님: gzip 인덱스) 로부터 ROOT_PKGS closure 계산.
-     * (name → pool path) 순서 유지. */
-    private fun resolveClosure(arch: String): List<Pair<String, String>> {
-        val index = HashMap<String, Pair<String, String>>() // name → (depends?, filename)
-        val allIndex = HashMap<String, Pair<String, String>>()
-        for (a in listOf(arch, "all")) {
-            val txt = fetchPackagesGz("$REPO/dists/stable/main/binary-$a/Packages.gz")
-            var name = ""
-            var depends = ""
-            var filename = ""
-            fun flush() {
-                if (name.isNotEmpty() && filename.isNotEmpty()) {
-                    (if (a == "all") allIndex else index)[name] = depends to filename
-                }
-                name = ""; depends = ""; filename = ""
-            }
-            txt.lineSequence().forEach { line ->
-                when {
-                    line.isEmpty() -> flush()
-                    line.startsWith("Package: ") -> name = line.substring(9).trim()
-                    line.startsWith("Depends: ") -> depends = line.substring(9)
-                    line.startsWith("Filename: ") -> filename = line.substring(10).trim()
-                }
-            }
-            flush()
+    /** Termux 는 ca-certificates 를 postinst 으로 생성하지만 우리에겐 postinst 가 없다.
+     *  Android 시스템 스토어(/system/etc/security/cacerts, 파일마다 PEM)를 통째로
+     *  이어붙여 python/pip 가 쓰는 SSL_CERT 파일을 만든다. */
+    internal fun ensureTrustStore(context: Context) {
+        val dest = File(prefix(context), "usr/tls/certs/ca-certificates.crt")
+        if (dest.isFile && dest.length() > 1024) return
+        val dir = File("/system/etc/security/cacerts")
+        val certs = dir.listFiles()?.filter { it.length() > 512 }?.sorted() ?: return
+        dest.parentFile?.mkdirs()
+        dest.outputStream().bufferedWriter().use { w ->
+            for (c in certs) runCatching { c.readText().let { if (it.contains("BEGIN CERTIFICATE")) w.write(it) } }
         }
-        // closure — ROOT_PKGS부터 dep 문자열의 첫 후보(all/arch 포함)를 따라간다.
+    }
+
+    /** Packages.gz 로부터 ROOT_PKGS closure 계산. Termux 는 binary-all 인덱스가 없고
+     * Architecture: all 패키지까지 binary-<arch>/에 색인하므로 arch 하나만 읽는다. */
+    private fun resolveClosure(arch: String): List<Pair<String, String>> {
+        val index = HashMap<String, Pair<String, String>>() // name → (depends, filename)
+        val txt = fetchPackagesGz("$REPO/dists/stable/main/binary-$arch/Packages.gz")
+        var name = ""
+        var depends = ""
+        var filename = ""
+        fun flush() {
+            if (name.isNotEmpty() && filename.isNotEmpty()) index[name] = depends to filename
+            name = ""; depends = ""; filename = ""
+        }
+        txt.lineSequence().forEach { line ->
+            when {
+                line.isEmpty() -> flush()
+                line.startsWith("Package: ") -> name = line.substring(9).trim()
+                line.startsWith("Depends: ") -> depends = line.substring(9)
+                line.startsWith("Filename: ") -> filename = line.substring(10).trim()
+            }
+        }
+        flush()
         val out = LinkedHashMap<String, String>()
         val queue = ArrayDeque(ROOT_PKGS)
         val seen = HashSet<String>()
@@ -215,7 +228,7 @@ object BionicRuntime {
             val n = queue.removeFirst()
             if (n in seen) continue
             seen += n
-            val entry = index[n] ?: allIndex[n] ?: continue
+            val entry = index[n] ?: continue
             val (dep, filename) = entry
             out[n] = filename
             parseDepends(dep).forEach { queue.addLast(it) }
@@ -238,41 +251,61 @@ object BionicRuntime {
 
     /** debian ar(.deb)의 data.tar.{xz,gz} 회원을 dest 트리에 언팩. */
     internal fun extractDeb(deb: File, dest: File): Boolean {
-        RandomAccessFile(deb, "r").use { raf ->
-            if (raf.length() < 120) return false
-            val head = ByteArray(8)
-            raf.readFully(head)
-            if (String(head) != "!<arch>\n") return false
-            var off = 8L
-            while (off + 60 <= raf.length()) {
-                raf.seek(off)
-                val hdr = ByteArray(60)
-                raf.readFully(hdr)
-                val h = String(hdr, Charsets.ISO_8859_1)
-                val name = h.substring(0, 16).trim()
-                val size = runCatching { h.substring(48, 58).trim().toLong() }.getOrNull()
-                    ?: return false
-                val bodyOff = off + 60
-                if (name != "`" && name.startsWith("data.tar")) {
-                    val body = ByteArray(size.toInt())
-                    raf.seek(bodyOff)
-                    raf.readFully(body)
-                    return extractDataTar(body, name, dest)
+        try {
+            RandomAccessFile(deb, "r").use { raf ->
+                if (raf.length() < 120) {
+                    RuntimeLog.warn(TAG, "deb 너무 작음: ${deb.name} ${deb.length()}")
+                    return false
                 }
-                off = bodyOff + size + (size % 2)
+                val head = ByteArray(8)
+                raf.readFully(head)
+                if (String(head) != "!<arch>\n") {
+                    RuntimeLog.warn(TAG, "deb magic 아님: ${deb.name} ${deb.length()} " +
+                        head.joinToString(" ") { "%02x".format(it) })
+                    return false
+                }
+                var off = 8L
+                while (off + 60 <= raf.length()) {
+                    raf.seek(off)
+                    val hdr = ByteArray(60)
+                    raf.readFully(hdr)
+                    val h = String(hdr, Charsets.ISO_8859_1)
+                    // deb 의 ar 멤버명은 트레일링 슬래시를 동반한다 ("data.tar.xz/").
+                    val name = h.substring(0, 16).trim().removeSuffix("/")
+                    val size = runCatching { h.substring(48, 58).trim().toLong() }.getOrNull()
+                        ?: return false
+                    val bodyOff = off + 60
+                    if (name != "`" && name.startsWith("data.tar")) {
+                        val body = ByteArray(size.toInt())
+                        raf.seek(bodyOff)
+                        raf.readFully(body)
+                        val ok = extractDataTar(body, name, dest)
+                        if (!ok) RuntimeLog.warn(TAG, "언팩 실패: ${deb.name} $name/$size")
+                        return ok
+                    }
+                    off = bodyOff + size + (size % 2)
+                }
+                RuntimeLog.warn(TAG, "deb에 data.tar 없음: ${deb.name}")
             }
+        } catch (e: Exception) {
+            RuntimeLog.error(TAG, "extractDeb ${deb.name}: $e")
         }
         return false
     }
 
     private fun extractDataTar(body: ByteArray, name: String, dest: File): Boolean {
-        val data = when {
-            name.endsWith(".xz") ->
-                XZInputStream(java.io.ByteArrayInputStream(body)).readBytes()
-            name.endsWith(".gz") ->
-                GZIPInputStream(java.io.ByteArrayInputStream(body)).readBytes()
-            name.endsWith(".bz2") -> return false // 미지원 — Termux 는 xz 고정
-            else -> body
+        val data = try {
+            when {
+                name.endsWith(".xz") ->
+                    XZInputStream(java.io.ByteArrayInputStream(body)).readBytes()
+                name.endsWith(".gz") ->
+                    GZIPInputStream(java.io.ByteArrayInputStream(body)).readBytes()
+                name.endsWith(".bz2") -> return false // 미지원 — Termux 는 xz 고정
+                else -> body
+            }
+        } catch (e: Exception) {
+            RuntimeLog.error(TAG, "xz/gz 디코딩 실패 ($name): $e")
+            return false
         }
         return untar(data, dest)
     }
@@ -280,7 +313,9 @@ object BionicRuntime {
     /** ustar/GNU tar 리더. symlink/hardlink/dir/file. prefix는 data/data/com.termux/files 제거. */
     private fun untar(bytes: ByteArray, dest: File): Boolean {
         var pos = 0
-        val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.BIG_ENDIAN)
+        var nfile = 0
+        var nlink = 0
+        var ndir = 0
         var longName: String? = null
         while (pos + 512 <= bytes.size) {
             if (bytes[pos] == 0.toByte()) { pos += 512; continue }
@@ -293,7 +328,7 @@ object BionicRuntime {
             }.getOrDefault(-1L)
             if (size < 0) return false
             var name = oct(0, 100)
-            val prefix = oct(345, 155)
+            val prefix = oct(345, 500)
             if (prefix.isNotEmpty()) name = "$prefix/$name"
             if (longName != null) { name = longName; longName = null }
             val type = (header[156].toInt() and 0xff).toChar()
@@ -321,14 +356,16 @@ object BionicRuntime {
             target.parentFile?.mkdirs()
             try {
                 when (type) {
-                    '/' -> target.mkdirs()
+                    '/' -> { target.mkdirs(); ndir++ }
                     '0', '\u0000' -> {
                         target.outputStream().use { it.write(body) }
                         android.system.Os.chmod(target.absolutePath, mode.toInt() and 0xfff)
+                        nfile++
                     }
                     '2' -> {
                         runCatching { target.delete() }
                         android.system.Os.symlink(link, target.absolutePath)
+                        nlink++
                     }
                     '1' -> {
                         // hardlink: 같은 트리 내 상대 링크로 재구성. 없으면 symlink 폴백.
@@ -346,6 +383,7 @@ object BionicRuntime {
                     RuntimeLog.warn(TAG, "tar 멤버 실패 $rel: ${e.message}")
             }
         }
+        RuntimeLog.info(TAG, "untar 완료: files=$nfile links=$nlink dirs=$ndir")
         return true
     }
 
@@ -360,7 +398,7 @@ object BionicRuntime {
             resp.body?.byteStream()?.use { ins ->
                 target.outputStream().use { out -> ins.copyTo(out) }
             } ?: return false
-            target.length() > 1024
+            target.length() >= 8
         }
     }.getOrDefault(false)
 }
