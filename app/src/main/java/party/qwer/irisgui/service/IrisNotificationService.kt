@@ -148,11 +148,15 @@ class IrisNotificationService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         isStarted = true
+        // ISSUE-06: 바인딩이 실제로 잡힌 시점만 state 객체에 남긴다 — startService 성공
+        // 만으로는 "실행 중"을 판단할 수 없기 때문.
+        NotificationListenerState.onConnected()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         isStarted = false
+        NotificationListenerState.onDisconnected()
         requestRebind(android.content.ComponentName(this, IrisNotificationService::class.java))
     }
 
