@@ -9,11 +9,18 @@ import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import party.qwer.irisgui.backend.Replier.Companion.SendMessageRequest
@@ -27,14 +34,38 @@ internal const val IMAGE_DIR_PATH = "/sdcard/Android/data/com.kakao.talk/files"
 class Replier {
     companion object {
         private val messageChannel = Channel<SendMessageRequest>(Channel.UNLIMITED)
-        private val coroutineScope = CoroutineScope(Dispatchers.IO)
-        private var messageSenderJob: Job? = null
+        private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        @Volatile private var messageSenderJob: Job? = null
         private val mutex = Mutex()
+
+        /** ISSUE-21: start/stop/restart 직렬화 — 경쟁하면 중복 consumer 가 뜬다. */
+        private val lifecycleLock = ReentrantLock()
+
+        @Volatile
+        private var running = false
+
+        /** pendingobservability: submitted 는 enqueue 성공, sent 는 consumer 통과. */
+        private val submitted = AtomicLong()
+        private val sent = AtomicLong()
+
+        /** 보내지지 않은 채 채널에 남아있는 요청 수 (재시작 churn 진단용). */
+        val pendingCount: Long get() = (submitted.get() - sent.get()).coerceAtLeast(0)
+
+        /** sender 가 실제로 도는 중인가 — stop hook 에서 확인 가능한 상태. */
+        val isRunning: Boolean get() = running
+
+        /** in-flight send 가 mutex 를 놓기를 기다리는 상한 — rate 가 크ても 넘기지 않는다. */
+        private const val QUIESCE_BUDGET_MS = 3_000L
 
         init {
             startMessageSender()
         }
 
+        /**
+         * sender 재시작 — 진행 중이던 send 를 도중에 잘라내지 않는다 (그게 churn 중
+         * 답장을 유실시켰다). 먼저 mutex 를 넘겨받아 현재 send 의 완료를 보장받고, join 한
+         * 뒤 새 consumer 를 세운다. `restartMessageSender` 와 같은 동작 (rate 변경 콜백).
+         */
         fun startMessageSender() {
             // ISSUE-04: 기동 시 설정 스냅샷으로 handshake 로그를 남긴다 — "UI에서는 바꿨는데
             // 데몬은 그대로"류의 문제를 로그 한 줄로 추적하기 위한 발판.
@@ -42,29 +73,76 @@ class Replier {
                 AdbConfig.reloadOverlayIfNeeded()
                 println("IrisGUI: daemon config ${AdbConfig.describe()}")
             }
-            // P19: 바깥 launch 제거 — messageSenderJob만 직접 관리하여 중첩 방지
-            if (messageSenderJob?.isActive == true) {
-                messageSenderJob?.cancel()  // cancelAndJoin는 suspend 함수이므로 cancel() 사용
-            }
-            messageSenderJob = coroutineScope.launch {
-                for (request in messageChannel) {
-                    try {
-                        mutex.withLock {
-                            request.send()
-                            // ISSUE-04: 데몬는 UI가 바꾼 전송레이트/필터를 재시작 없이
-                            // 따라간다 (앱이 발행한 live-config 오버레이 점검).
-                            if (!AppConfig.isInitialized) runCatching { AdbConfig.reloadOverlayIfNeeded() }
-                            delay(AppConfig.messageSendRate)
-                        }
-                    } catch (e: Exception) {
-                        System.err.println("Error sending message from channel: $e")
+            lifecycleLock.lock()
+            try {
+                val previous = messageSenderJob
+                if (previous != null && previous.isActive) {
+                    runBlocking {
+                        withTimeoutOrNull(QUIESCE_BUDGET_MS) { mutex.withLock { } }
+                        previous.cancelAndJoin()
                     }
                 }
+                running = true
+                messageSenderJob = coroutineScope.launch {
+                    for (request in messageChannel) {
+                        try {
+                            mutex.withLock {
+                                request.send()
+                                sent.incrementAndGet()
+                                // ISSUE-04: 데몬는 UI가 바꾼 전송레이트/필터를 재시작 없이
+                                // 따라간다 (앱이 발행한 live-config 오버레이 점검).
+                                if (!AppConfig.isInitialized) runCatching {
+                                    AdbConfig.reloadOverlayIfNeeded()
+                                }
+                                delay(AppConfig.messageSendRate)
+                            }
+                        } catch (e: Exception) {
+                            System.err.println("Error sending message from channel: $e")
+                        }
+                    }
+                }
+            } finally {
+                lifecycleLock.unlock()
             }
         }
 
         fun restartMessageSender() {
             startMessageSender()
+        }
+
+        /**
+         * ISSUE-05 후속: daemon stop hook 에서 호출할 sender 정지.
+         *
+         * 채널은 닫지 *않는다* — 닫으면 재기동 후 `enqueue` 가 ClosedSendChannelException
+         * 이 되어 churn 중 답장을 통째로 잃는다 (ISSUE-21 의 원인). 대기 항목은 채널에 그대로
+         * 남아 다음 start 시 소모되고, in-flight send 는 cancel 전에 mutex 를 넘겨받아 끝난다.
+         */
+        fun stop() {
+            lifecycleLock.lock()
+            try {
+                running = false
+                val job = messageSenderJob
+                messageSenderJob = null
+                if (job?.isActive == true) {
+                    runBlocking {
+                        val quiesced = withTimeoutOrNull(QUIESCE_BUDGET_MS) {
+                            mutex.withLock { }
+                            true
+                        }
+                        if (quiesced != true) {
+                            println("Replier: in-flight send 대기 상한(${QUIESCE_BUDGET_MS}ms) 초과 — 취소만 적용")
+                        }
+                        job.cancelAndJoin()
+                    }
+                }
+                if (pendingCount > 0) {
+                    println("Replier: sender stopped with $pendingCount request(s) queued")
+                } else {
+                    println("Replier: message sender stopped")
+                }
+            } finally {
+                lifecycleLock.unlock()
+            }
         }
 
         private fun sendMessageInternal(
@@ -99,6 +177,7 @@ class Replier {
         }
 
         fun sendMessage(referer: String, chatId: Long, msg: String, threadId: Long?) {
+            submitted.incrementAndGet()
             coroutineScope.launch {
                 messageChannel.send(SendMessageRequest {
                     sendMessageInternal(
@@ -110,6 +189,7 @@ class Replier {
 
 
         fun sendPhoto(room: Long, base64ImageDataString: String) {
+            submitted.incrementAndGet()
             coroutineScope.launch {
                 messageChannel.send(SendMessageRequest {
                     sendPhotoInternal(
@@ -120,6 +200,7 @@ class Replier {
         }
 
         fun sendMultiplePhotos(room: Long, base64ImageDataStrings: List<String>) {
+            submitted.incrementAndGet()
             coroutineScope.launch {
                 messageChannel.send(SendMessageRequest {
                     sendMultiplePhotosInternal(
@@ -135,8 +216,14 @@ class Replier {
 
         private fun sendMultiplePhotosInternal(room: Long, base64ImageDataStrings: List<String>) {
             val picDir = File(IMAGE_DIR_PATH)
-            if (!picDir.exists()) {
-                picDir.mkdirs()
+            // ISSUE-21: mkdirs() 결과와 쓰기 가능 여부를 확인한다. 기존 코드는 결과를 버리고
+            // writeBytes 가 던진 예외를 그냥 넘겼고, Android 11+ 비root 경로에서는 파일 이미지가
+            // 아예 못 만들어져도 사진 답장이 실패로 안 남았다.
+            if (!picDir.exists() && !picDir.mkdirs()) {
+                throw IOException("cannot create image dir ${IMAGE_DIR_PATH} (check storage permission)")
+            }
+            if (!picDir.canWrite()) {
+                throw IOException("image dir not writable: ${IMAGE_DIR_PATH}")
             }
 
             val uris = base64ImageDataStrings.mapIndexed { idx, base64ImageDataString ->
