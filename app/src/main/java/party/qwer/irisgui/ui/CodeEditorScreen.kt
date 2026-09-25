@@ -124,7 +124,10 @@ fun MonacoEditorScreen(name: String, onBack: () -> Unit) {
             }
             window?.setSoftInputMode(prevMode
                 ?: android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_UNSPECIFIED)
-            window?.also { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            // 창은 edge-to-edge 로 유지한다 — decorFit(true) 로 되돌리면 Android 15+
+            // 에서 무시되어 실기기는 status bar 겹침이 남고, 오래된 OS 만 레이아웃이
+            // 잘리는 비균일 상태가 된다. inset 는 Compose Scaffold 가 소비하므로
+            // 레이아웃 잔존값 없이 재계산만 시킨다.
             ViewCompat.requestApplyInsets(decorView)
             // IME 페이더다운 애니메이션 이후에도 최종 inset 이 재확인되도록
             decorView.postDelayed({ ViewCompat.requestApplyInsets(decorView) }, 350)

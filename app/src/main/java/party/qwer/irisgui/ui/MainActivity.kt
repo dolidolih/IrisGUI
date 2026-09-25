@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
@@ -16,6 +17,10 @@ import party.qwer.irisgui.AppTypography
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // targetSdk 35 는 Android 15+ 에서 edge-to-edge 강제 — 그보다 낮은 OS 와 동작을
+        // 맞추기 위해 명시 적용한다(이후 setDecorFitsSystemWindows 로 되돌리지 않는다;
+        // inset 은 Compose(Scaffold contentWindowInsets)에서만 소비한다).
+        enableEdgeToEdge()
         installSplashScreen()
         setContent {
             MaterialTheme(
