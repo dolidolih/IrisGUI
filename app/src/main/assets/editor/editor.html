@@ -286,14 +286,21 @@ const memberCache = {};
 function membersOf(mod) {
   const hit = memberCache[mod];
   if (hit && Date.now() - hit.at < 30000) return hit.list;
-  let list = [];
   try {
     const r = JSON.parse(B.members(mod));
-    if (r && r.members) list = r.members;
+    // 정적 파싱(프로젝트 파일)은 즉시, 설치 모듈은 pending + onMembers 콜백.
+    if (r && r.members && !r.pending) {
+      memberCache[mod] = { at: Date.now(), list: r.members };
+      return r.members;
+    }
+    if (r && r.pending && hit) return hit.list;   // 콜백 대기 중엔 직전 목록 유지
   } catch (e) {}
-  memberCache[mod] = { at: Date.now(), list: list };
-  return list;
+  return hit ? hit.list : [];
 }
+window.IrisEditor = window.IrisEditor || {};
+window.IrisEditor.onMembers = (mod, j) => {
+  memberCache[mod] = { at: Date.now(), list: (j && j.members) || [] };
+};
 function moduleBindings(doc) {
   const out = {};
   const txt = doc.getValue();
@@ -535,9 +542,21 @@ function refreshRun() {
     }, 15);
   });
 }
-$('btnRun').onclick = () => { save(true); busy(true, '실행 중…');
-  const r = JSON.parse(B.runScript()); busy(false);
-  toast(r.ok ? '실행됨 — 로그 탭에서 확인' : '실행 실패: ' + r.message); refreshRun(); };
+$('btnRun').onclick = () => { save(true); busy(true, '실행 준비 중…');
+  // async 가 있으면 venv 준비(30분)에도 터미널/저장 freezing 없이 백그라운드로 돈다.
+  if (B.runScriptAsync) {
+    let j = {ok:false, message:'run failed'};
+    try { j = JSON.parse(B.runScriptAsync()); } catch (e) {}
+    if (!j.ok) { busy(false); toast('실행 실패: ' + (j.message || 'unknown')); }
+    // ok=true, queued → 결과는 window.IrisEditor.onRunResult 에서 확정 처리
+  } else {
+    const r = JSON.parse(B.runScript()); busy(false);
+    toast(r.ok ? '실행됨 — 로그 탭에서 확인' : '실행 실패: ' + r.message); refreshRun();
+  } };
+window.IrisEditor = window.IrisEditor || {};
+window.IrisEditor.onRunResult = (j) => { busy(false);
+  toast(j && j.ok ? '실행됨 — 로그 탭에서 확인' : '실행 실패: ' + ((j && j.message) || 'unknown'));
+  refreshRun(); };
 $('btnStop').onclick = () => { const r = JSON.parse(B.stopScript());
   toast(r.ok ? '정지됨' : '정지 실패: ' + r.message); refreshRun(); };
 setInterval(() => { if (!document.hidden) refreshRun(); }, 5000);
