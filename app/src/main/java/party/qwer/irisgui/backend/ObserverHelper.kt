@@ -1,10 +1,7 @@
 package party.qwer.irisgui.backend
 
 import android.database.Cursor
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,9 +15,13 @@ import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppState
 
 class ObserverHelper(
-    private val db: KakaoDB, private val wsBroadcastFlow: SharedFlow<String>
+    private val db: KakaoDB,
+    // ISSUE-15: 이벤트 전송은 non-blocking sink — poller thread 가 WS send 에
+    // suspend/block 하지 않는다. @return 폐기 건수 (WsFanout.publish).
+    private val publish: (String) -> Long
 ) {
     private var lastLogId: Long = 0
+    private var publishDrops: Long = 0
     private val lastDecryptedLogs = LinkedList<Map<String, String?>>()
     // 읽기 전용 경로(/chat 조회)에서는 절대 쓰지 않는 스레드 풀이 생성자마다 뜨지 않도록 지연 초기화한다.
     private val httpRequestExecutor by lazy { Executors.newFixedThreadPool(8) }
@@ -69,8 +70,14 @@ class ObserverHelper(
                         if (frame != null) {
                             val data = JSONObject(frame).toString()
 
-                            runBlocking {
-                                (wsBroadcastFlow as kotlinx.coroutines.flow.MutableSharedFlow<String>).emit(data)
+                            // ISSUE-15: runBlocking{emit} 제거 — polling thread 는 절대
+                            // 대기하지 않고, 느린 WS 클라이언트가 DB 관찰을 막을 수 없다.
+                            val dropped = publish(data)
+                            if (dropped > 0) {
+                                publishDrops += dropped
+                                if (publishDrops <= 20 || publishDrops % 100 == 0L) {
+                                    println("ObserverHelper: WS event dropped for $dropped subscriber(s), total=$publishDrops")
+                                }
                             }
 
                             if (AppConfig.webEndpoint.isNotEmpty()) {
@@ -652,6 +659,7 @@ class ObserverHelper(
          * (SharedFlow 는 read-only 경로에서는 쓰여지지 않는다.)
          */
         fun forReads(db: KakaoDB): ObserverHelper =
-            ObserverHelper(db, MutableSharedFlow(extraBufferCapacity = 1))
+            // ISSUE-15: 읽기 전용 인스턴스는 브로드캐스트 없음 (호출되지 않는다).
+            ObserverHelper(db) { _ -> 0L }
     }
 }
