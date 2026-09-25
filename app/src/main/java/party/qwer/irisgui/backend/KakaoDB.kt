@@ -39,26 +39,52 @@ class KakaoDB {
             throw IllegalStateException("KakaoDB: cannot attach KakaoTalk databases at $dir: ${e.message}", e)
         }
         connection = db
-        AppConfig.botId = botUserId
+        // ISSUE-34: 감지 실패로 저장된 botId 를 0 으로 되돌리지 않는다. 감지되면 그대로 갱신하고,
+        // 못 찾으면 값은 유지한 채 unresolved 로 남긴다.
+        val resolvedBotId = botUserId
+        if (resolvedBotId != 0L) {
+            if (resolvedBotId != AppConfig.botId) AppConfig.botId = resolvedBotId
+            println("KakaoDB: bot user_id = $resolvedBotId")
+        } else {
+            System.err.println(
+                "KakaoDB: WARNING bot user_id unresolved — keeping AppConfig.botId=${AppConfig.botId}. " +
+                    "If that is 0 too, encrypted self-messages will not decrypt."
+            )
+        }
     }
+
+    /**
+     * ISSUE-34: 봇 user_id 해석 결과. 미해결을 0 으로 넘기면 salt 가 전부 0 으로 굳어서
+     * (genSalt 의 `user_id <= 0` branch) 봇 자신의 복호가 조용히 전부 깨진다. 그래서
+     * 해석 실패는 null/`botIdResolved=false` 로 남기고, 이미 저장돼 있던 값을 0 으로
+     * 덮어쓰지는 않는다.
+     */
+    @Volatile
+    private var detectedBotId: Long? = null
+
+    /** 봇 id 를 확인했는가 — 상태 화면/로그에서 "id unresolved" 를 표시할 수 있게. */
+    @Volatile
+    var botIdResolved: Boolean = false
+        private set
 
     val botUserId: Long
         get() {
-            return connection.rawQuery(
-                "SELECT user_id FROM chat_logs WHERE v LIKE '%\"isMine\":true%' ORDER BY _id DESC LIMIT 1;",
-                null
-            ).use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val botUserId = cursor.getLong(0)
-                    println("Bot user_id is detected: $botUserId")
-
-                    botUserId
-                } else {
-                    System.err.println("Warning: Bot user_id not found in chat_logs with isMine:true. Decryption might not work correctly.")
-
-                    0
-                }
+            detectedBotId?.let { return it }
+            val resolved = runCatching {
+                KakaoDB.resolveBotUserId { sql -> connection.rawQuery(sql, null) }
+            }.getOrNull()
+            if (resolved == null) {
+                System.err.println(
+                    "KakaoDB: bot user_id could not be resolved from chat_logs(isMine:true). " +
+                        "Decryption of the bot's own rows will fail loudly (no zero-salt fallback). " +
+                        "Stored botId=${AppConfig.botId}"
+                )
+                botIdResolved = AppConfig.botId != 0L
+                return 0L
             }
+            botIdResolved = true
+            detectedBotId = resolved
+            return resolved
         }
 
 
@@ -518,6 +544,42 @@ class KakaoDB {
         private const val NAME_MISS_TTL_MS = 30_000L
 
         private const val DB_DIR_NAME = "databases"
+
+        /** botId 조회의 최근 창 (row 수) — startup 에 테이블 전체를 훑지 않기 위한 상한. */
+        private const val BOT_ID_RECENT_WINDOW = 5_000L
+
+        /**
+         * ISSUE-34: bot user_id 후보 질의 (low-cost → high-cost). `isMine:true` 가 카톡의
+         * 사실상 유일한 signal 이므로, 테이블 전체 LIKE 스캔을 startup 마다 하지 않고
+         * 최근 창만 먼저 본다.
+         */
+        fun botIdQueryCandidates(): List<String> = listOf(
+            "SELECT user_id FROM chat_logs WHERE _id > (SELECT MAX(_id) - $BOT_ID_RECENT_WINDOW FROM chat_logs)" +
+                " AND v LIKE '%\"isMine\":true%' ORDER BY _id DESC LIMIT 1",
+            "SELECT user_id FROM chat_logs WHERE v LIKE '%\"isMine\":true%' ORDER BY _id DESC LIMIT 1"
+        )
+
+        /**
+         * Shared resolver for `KakaoDB` and `AdbConfig.detectBotId`.
+         * @return the resolved id, or null when nothing decided — callers must not substitute 0.
+         */
+        fun resolveBotUserId(query: (String) -> android.database.Cursor?): Long? {
+            for (sql in botIdQueryCandidates()) {
+                val id = runCatching {
+                    query(sql)?.use { c -> if (c.moveToFirst()) c.getLong(0) else 0L } ?: 0L
+                }.getOrElse {
+                    System.err.println("KakaoDB: botId candidate query failed: $it")
+                    0L
+                }
+                if (id > 0L) {
+                    if (sql.indexOf("MAX(_id)") < 0) {
+                        println("KakaoDB: bot user_id $id found by full-table scan (recent window miss)")
+                    }
+                    return id
+                }
+            }
+            return null
+        }
 
         /** ISSUE-31: ATTACH 에 bind 변수가 없어 SQL quote 규칙('' doubling)로 안전화한다. */
         private fun sqlStringLiteral(value: String): String = value.replace("'", "''")

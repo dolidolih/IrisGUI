@@ -2,6 +2,7 @@ package party.qwer.irisgui
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import party.qwer.irisgui.backend.KakaoDB
 import party.qwer.irisgui.backend.PathUtils
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -74,39 +75,55 @@ object AdbConfig {
     )
 
     /**
+     * ISSUE-34: botId 감지 상태. false 이면서 botId 가 0 이면 salt 가 통째로 0 인 채로
+     * 돌아가므로 봇 자신의 메시지 복호가 조용히 깨진다 — 조용한 0 을 남기지 말고 여기로
+     * 표시해라. (KakaoDB init 가 같은 resolver 를 공유한다.)
+     */
+    @Volatile
+    var botIdResolved: Boolean = false
+        private set
+
+    /**
      * KakaoTalk DB에서 botId 자동 감지
      * chat_logs에서 isMine:true인 사용자의 user_id를 찾는다.
      * AdbServer.kt에서 KakaoDB를 초기화하면 자동으로 botId가 설정됨.
+     *
+     * ISSUE-34: 예전엔 startup 에 테이블 전체 LIKE 스캔을 했고, 한 건도 못 찾으면 조용히
+     * 유지했었다. 이제 (1) 최근 창 질의부터 쓰는 shared resolver(KakaoDB.resolveBotUserId)를
+     * 타고, (2) 미파악이면 botIdResolved=false 로 loud 하게 남긴다.
      */
     fun detectBotId() {
         try {
             val appPath = PathUtils.getAppPathOrNull()
             if (appPath == null) {
-                println("AdbConfig: KakaoTalk 이 설치되지 않음. botId=${config.botId} 유지.")
+                botIdResolved = false
+                System.err.println("AdbConfig: KakaoTalk 미설치 — botId=${config.botId} 유지 (unresolved)")
                 return
             }
             val dbPath = "${appPath}databases/KakaoTalk.db"
             if (!File(dbPath).exists()) {
-                println("AdbConfig: KakaoTalk 은 설치되어 있나 DB 파일이 없음. path=$dbPath")
+                botIdResolved = false
+                System.err.println("AdbConfig: KakaoTalk 은 설치됐지만 DB 파일이 없음 path=$dbPath — botId=${config.botId} 유지")
                 return
             }
-            val db = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY)
-            db.rawQuery(
-                "SELECT user_id FROM chat_logs WHERE v LIKE '%\"isMine\":true%' ORDER BY _id DESC LIMIT 1",
-                null
-            ).use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val detectedId = cursor.getLong(0)
-                    if (detectedId != config.botId) {
-                        mutate { it.copy(botId = detectedId) }
-                        println("AdbConfig: botId auto-detected: $detectedId")
-                    }
-                } else {
-                    println("AdbConfig: KakaoTalk DB를 찾았지만 내 계정의 isMine 레코드가 없어 botId 미파악. botId=${config.botId} 유지.")
-                }
+            val detected = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                KakaoDB.resolveBotUserId { sql -> db.rawQuery(sql, null) }
             }
-            db.close()
+            if (detected == null) {
+                botIdResolved = config.botId != 0L
+                System.err.println(
+                    "AdbConfig: WARNING botId 미파악 (isMine:true 레코드 없음/신규 설치/DB sync 중) — " +
+                        "current botId=${config.botId}. 0 이면 salt 가 0 이 되어 자기 메시지 복호가 실패한다."
+                )
+                return
+            }
+            botIdResolved = true
+            if (detected != config.botId) {
+                mutate { it.copy(botId = detected) }
+                println("AdbConfig: botId auto-detected: $detected")
+            }
         } catch (e: Exception) {
+            botIdResolved = config.botId != 0L
             println("AdbConfig: Failed to detect botId: ${e.message}")
         }
     }
@@ -221,7 +238,7 @@ object AdbConfig {
     fun describe(): String =
         "AdbConfig{rev=$revision mode=${config.appMode} port=${config.serverPort} " +
             "sendRate=${config.sendRate} msgRate=${config.messageSendRate} dbRate=${config.dbPollingRate} " +
-            "botId=${config.botId} botName=${config.botName}}"
+            "botId=${config.botId}${if (botIdResolved) "" else " (unresolved!) "}botName=${config.botName}}"
 
     // ── 접근자 ────────────────────────────────────────────
 

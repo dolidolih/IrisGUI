@@ -181,6 +181,9 @@ class KakaoDecrypt {
 
         private fun genSalt(user_id: Long, encType: Int): ByteArray {
             if (user_id <= 0) {
+                // ISSUE-34: 조용한 zero-salt 지점. bot user_id 를 해석하지 못하면(0) salt 가
+                // 전부 0 으로 굳어 복호가 "성공처럼" 깨진다 — 카운터/로그로 남긴다.
+                noteFailure("user_id<=0 — zero-filled salt (bot id unresolved?) enc=$encType", "")
                 return ByteArray(16)
             }
 
