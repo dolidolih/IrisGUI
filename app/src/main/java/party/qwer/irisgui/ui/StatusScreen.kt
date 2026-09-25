@@ -94,8 +94,11 @@ fun StatusScreen(permission: PermissionStatus) {
     // 한창 바쁜(또는 막 뜨는) 구간에서 예외를 내보내는데, 그때를 '정지'로 오인하면
     // 토글 ON 직후 스위치가 즉시 OFF 로 되돌아간다(작동 안 하는 것처럼 보이는 원인).
     // 그래서 HTTP 응답이 없을 때는 TCP 포트 개방 여부로 살아있음/정지를 가린다.
-    LaunchedEffect(mode) {
-        while (true) {
+    // ISSUE-28: STARTED-일 때만 도는 백오프 폴링 (ui/Polling.kt). 응답 실패가
+    // 쌓이면 base→2base→…15s — Down 상태에서 800ms socket churn 중단.
+    // start/pending 전이는 busy 로 취급해 base cadence 유지, Up/bisys 는 성공 취급.
+    StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L,
+        isBusy = { starting || pendingOff }) {
             val probed: BackendProbe = when (mode) {
                 AppMode.ROOT_ADB -> {
                     val status = AdbProcessClient.queryStatus()
@@ -150,8 +153,8 @@ fun StatusScreen(permission: PermissionStatus) {
             }
             if (state != AppState.running) AppState.running = state
             running = AppState.running
-            delay(if (alive) 3000L else 800L)
-        }
+            // 백오프 트리거는 "확인된 Down + 전이 대기 없음" 뿐 — Busy/전중은 base.
+            !(probed == BackendProbe.Down && !starting && !pendingOff)
     }
 
     // 값 변경 팝업 대상
@@ -281,12 +284,17 @@ private fun ServiceCard(
     val dropdownContext = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
 
-    val pulse = rememberInfiniteTransition(label = "halo")
-    val halo by pulse.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing), RepeatMode.Restart),
-        label = "haloScale"
-    )
+    // ISSUE-28: rememberInfiniteTransition 은 매 프레임 무효화를 만들기 때문에
+    // 정지 상태에서는 만들지 않는다 — halo 는 running/pending 일 때만 존재.
+    val showHalo = running || startPending || stopPending
+    val halo = if (showHalo) {
+        val pulse = rememberInfiniteTransition(label = "halo")
+        pulse.animateFloat(
+            initialValue = 0f, targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing), RepeatMode.Restart),
+            label = "haloScale"
+        ).value
+    } else 0f
 
     SurfaceCard(modifier = modifier, contentPadding = PaddingValues(16.dp)) {
         ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
