@@ -162,36 +162,43 @@ fun StatusScreen(permission: PermissionStatus) {
         // 서비스 상태는 위 히어로 카드가 이미 보여주므로settings 타일에서는 중복을
         // 피하고, 읽고 수정하는 값만 남긴다.
         add(GridValue("포트", port.toString(), Icons.Default.Memory) {
+            // ISSUE-12: 범위 검증 — 죽던 ConfigScreen 에만 있던 가드를 live 경로에 붙였다.
+            // 오타 하나가 AppConfig.serverPort 에 영구 저장되어 status 서브시스템 전체를
+            // 내는(self-inflicted outage) 일을 막는다.
             editor = ValueEditor("포트", port.toString(), numeric = true) { v ->
-                val p = v.toIntOrNull() ?: return@ValueEditor false
+                val p = v.toIntOrNull() ?: return@ValueEditor "숫자를 입력하세요"
+                if (!isValidPort(p)) return@ValueEditor "포트는 1–65535 사이어야 합니다"
                 AppConfig.serverPort = p; port = p
                 scope.launch { AdbProcessClient.updateConfig("botport", ConfigRequest(port = p)) }
-                true
+                null
             }
         })
         add(GridValue("엔드포인트", endpoint.ifBlank { "미설정" }, Icons.Default.Cable) {
             editor = ValueEditor("엔드포인트", endpoint) { v ->
+                if (v.isBlank()) return@ValueEditor "엔드포인트 값을 입력하세요"
                 AppConfig.webEndpoint = v; endpoint = v
                 scope.launch { AdbProcessClient.updateConfig("endpoint", ConfigRequest(endpoint = v)) }
-                true
+                null
             }
         })
         if (mode == AppMode.ROOT_ADB) {
             add(GridValue("DB 폴링", "${dbPoll}ms", Icons.Default.Timer) {
                 editor = ValueEditor("DB 폴링 (ms)", dbPoll.toString(), numeric = true) { v ->
-                    val r = v.toLongOrNull() ?: return@ValueEditor false
+                    val r = v.toLongOrNull() ?: return@ValueEditor "숫자를 입력하세요"
+                    if (r !in 50L..600_000L) return@ValueEditor "50–600000 ms 범위가 적절합니다"
                     AppConfig.dbPollingRate = r; dbPoll = r
                     scope.launch { AdbProcessClient.updateConfig("dbrate", ConfigRequest(rate = r)) }
-                    true
+                    null
                 }
             })
         }
         add(GridValue("발송 주기", "${send}ms", Icons.Default.Send) {
             editor = ValueEditor("발송 주기 (ms)", send.toString(), numeric = true) { v ->
-                val r = v.toLongOrNull() ?: return@ValueEditor false
+                val r = v.toLongOrNull() ?: return@ValueEditor "숫자를 입력하세요"
+                if (r !in 10L..3_600_000L) return@ValueEditor "10–3600000 ms 범위가 적절합니다"
                 AppConfig.sendRate = r; AppConfig.messageSendRate = r; send = r
                 scope.launch { AdbProcessClient.updateConfig("sendrate", ConfigRequest(rate = r)) }
-                true
+                null
             }
         })
     }
@@ -502,13 +509,16 @@ private class ValueEditor(
     val title: String,
     initial: String,
     val numeric: Boolean = false,
-    val onConfirm: (String) -> Boolean
+    /** null 이 성공, 그 외 문자열은 입력 아래 빨갛게 띄우는 오류 문구 (ISSUE-12/39). */
+    val onConfirm: (String) -> String?
 ) {
     var text by mutableStateOf(initial)
 }
 
 @Composable
 private fun ValueEditorDialog(editor: ValueEditor, onDismiss: () -> Unit) {
+    // ISSUE-39#1: error 를 set 만 하고 렌더하지 않아 저장 버튼이 조용히 실패하던 것을
+    // 필드 아래 오류 문구 + isError 테두리로 드러낸다.
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -516,8 +526,12 @@ private fun ValueEditorDialog(editor: ValueEditor, onDismiss: () -> Unit) {
         text = {
             OutlinedTextField(
                 value = editor.text,
-                onValueChange = { editor.text = it },
+                onValueChange = { editor.text = it; if (error != null) error = null },
                 singleLine = true,
+                isError = error != null,
+                supportingText = error?.let {
+                    { Text(it, color = AppColors.ErrorVivid) }
+                },
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                     keyboardType = if (editor.numeric) KeyboardType.Number else KeyboardType.Uri
                 ),
@@ -527,8 +541,8 @@ private fun ValueEditorDialog(editor: ValueEditor, onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = {
-                if (editor.onConfirm(editor.text.trim())) onDismiss()
-                else error = "유효한 값을 입력하세요"
+                val e = editor.onConfirm(editor.text.trim())
+                if (e == null) onDismiss() else error = e
             }) { Text("저장", fontWeight = FontWeight.Bold) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } }
