@@ -15,6 +15,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -25,6 +26,7 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.models.*
+import party.qwer.irisgui.scripting.BionicRuntime
 import party.qwer.irisgui.service.ReplyManager
 import java.io.File
 
@@ -147,6 +149,34 @@ object IrisServer {
                         call.respond(ApiResponse(success = true, message = "Enqueued"))
                     }
 
+                    // ── bionic userland 패키지 설치 (게스트 iris-pk 등) ──
+                    post("/pkg-install") {
+                        val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+                        val names = body?.optJsonArrayStrings("packages") ?: emptyList()
+                        if (names.isEmpty()) {
+                            call.respond(mapOf("ok" to false, "message" to "packages 없음"))
+                            return@post
+                        }
+                        val (accepted, msg) = BionicRuntime.startAsync(context, names)
+                        call.respondText(
+                            "{\"ok\":" + accepted + ",\"started\":true,\"message\":" +
+                                org.json.JSONObject.quote(msg) + "}",
+                            io.ktor.http.ContentType.Application.Json)
+                    }
+
+                    get("/pkg-install-status") {
+                        val m = BionicRuntime.statusJson()
+                        fun q(s: String) = org.json.JSONObject.quote(s)
+                        call.respondText("{" +
+                            "\"running\":" + m["running"] + "," +
+                            "\"current\":" + q(m["current"].toString()) + "," +
+                            "\"done\":" + m["done"] + "," +
+                            "\"total\":" + m["total"] + "," +
+                            "\"message\":" + q(m["message"].toString()) + "," +
+                            "\"error\":" + q(m["error"].toString()) + "}",
+                            io.ktor.http.ContentType.Application.Json)
+                    }
+
                     // ── 논루팅 모드: /reply 외 엔드포인트 없음 ──
 
                 }
@@ -162,6 +192,11 @@ object IrisServer {
             return false
         }
     }
+
+    /** /pkg-install 바디 헬퍼: {"packages": ["a","b"]} → [a,b]. */
+    private fun JsonObject.optJsonArrayStrings(key: String): List<String> =
+        (this[key] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: emptyList()
 
     /** L3: ReplyManager 시작 (인프로세스 서버는 논루팅(알림) 모드 전용) */
     fun startReplyManager() {

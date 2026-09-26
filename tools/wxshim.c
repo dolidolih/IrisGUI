@@ -350,15 +350,17 @@ static int spawn_common(spawn_fn real_spawn, const char *sym, pid_t *pid,
         }
         if (rc != 0)
             return rc;
-        /*
-         * Spawn succeeded. Note: reaping here is the price of the literal
-         * "check child status for 126/2" strategy used by this shim; the
-         * caller's subsequent waitpid may return ECHILD for an already
-         * finished child. For launcher-style fire-and-forget execs this is
-         * acceptable and keeps the fallback logic simple.
+        /* 성공적으로 실행되었다. 주의: 여기서 blocking waitpid 로 자식을 회수하면
+         * 안마당(python subprocess 등)이 waitpid 를 기다리는 경우 ECHILD 파국이 온다.
+         * 과거 버전의 이=reap 는 제거됐다 — W^X 실패 탐지만 비방식으로 확인한다:
+         * 아직 떠닥거리는 자식만 1초 정도 지켜보고 즉시 죽은 exit126/2 면 fallback.
          */
         int status;
-        pid_t r = waitpid(*pid, &status, 0);
+        /* 자식이 exec 로 즉시 죽는 사례(W^X)만 노린다: 1ms 후에 비방식으로 한 번
+         * 들여다보고, 그래도 살아있으면 회수하지 않고 반환한다
+         * (대기자는 python 이 알아서 wait 한다). */
+        usleep(1000);
+        pid_t r = waitpid(*pid, &status, WNOHANG);
         if (r == *pid && WIFEXITED(status) &&
             (WEXITSTATUS(status) == 126 || WEXITSTATUS(status) == 2)) {
             /* Child could not exec due to W^X: retry through our fork +
