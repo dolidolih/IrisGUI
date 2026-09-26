@@ -29,6 +29,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import party.qwer.irisgui.*
+import party.qwer.irisgui.scripting.BionicRuntime
 import party.qwer.irisgui.models.*
 import java.io.File
 
@@ -38,6 +39,23 @@ import java.io.File
  * 원본 Iris(IrisServer.kt)와 동일한 엔드포인트를 제공하며, 채팅 이벤트는 DBObserver가 전송한다.
  */
 object AdbServer {
+    private fun pkgStatusJson(): String {
+        val m = BionicRuntime.statusJson()
+        fun q(s: String) = org.json.JSONObject.quote(s)
+        return "{" +
+            "\"running\":" + m["running"] + "," +
+            "\"current\":" + q(m["current"].toString()) + "," +
+            "\"done\":" + m["done"] + "," +
+            "\"total\":" + m["total"] + "," +
+            "\"message\":" + q(m["message"].toString()) + "," +
+            "\"error\":" + q(m["error"].toString()) + "}"
+    }
+
+    /** /pkg-install 바디: {"packages": ["a","b"]} → [a,b]. */
+    private fun JsonObject.optJsonArrayStringsAdb(key: String): List<String> =
+        (this[key] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: emptyList()
+
     // ISSUE-17: start/stop 은 UI 스레드(startOrStop), Netty 워커(/process-command),
     // 서비스/워치독에서 동시에 도달한다 — 모든 변경부는 @Synchronized 로 직렬화하고
     // 공개 필드는 @Volatile 로 발행한다.
@@ -195,6 +213,27 @@ object AdbServer {
                             }
                         }
                         call.respond(ApiResponse(success = true, message = "Enqueued"))
+                    }
+
+                    // ── bionic userland 패키지 설치 (게스트 iris-pk) ──
+                    post("/pkg-install") {
+                        val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+                        val names = body?.optJsonArrayStringsAdb("packages") ?: emptyList()
+                        if (names.isEmpty()) {
+                            call.respond(ApiResponse(success = false, message = "packages 없음"))
+                            return@post
+                        }
+                        // 접수 즉시 응답 — 설치는 백그라운드 스레드, 클라이언트는 GET
+                        // /pkg-install-status 로 넘겨받는다 (짧은 왕복 유지).
+                        val (accepted, msg) = BionicRuntime.startAsync(null, names)
+                        call.respondText(
+                            "{\"success\":" + accepted + ",\"started\":true,\"message\":" +
+                                org.json.JSONObject.quote(msg) + "}",
+                            ContentType.Application.Json)
+                    }
+
+                    get("/pkg-install-status") {
+                        call.respondText(pkgStatusJson(), ContentType.Application.Json)
                     }
 
                     // ── 루팅 모드 전용 엔드포인트 ─────────────
