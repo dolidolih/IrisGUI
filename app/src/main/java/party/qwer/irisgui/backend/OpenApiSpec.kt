@@ -116,7 +116,12 @@ private const val JSON = """
             "examples": {
               "text": { "value": { "room": "123", "type": "text", "data": "안녕" } },
               "image": { "value": { "room": "123", "type": "image", "data": "iVBOR…" } },
-              "images": { "value": { "room": "123", "type": "image_multiple", "data": ["a.jpg", "b.jpg"] } }
+              "images": { "value": { "room": "123", "type": "image_multiple", "data": ["a.jpg", "b.jpg"] } },
+              "named_images": { "value": { "room": "123", "type": "image_multiple",
+                "data": [{ "name": "cat.png", "b64": "iVBOR…" }] } },
+              "media": { "value": { "room": "123", "type": "media",
+                "data": { "name": "강아지.mp4", "mime": "video/mp4", "b64": "AAAA…" } },
+                "description": "video/audio/file 는 단일 항목 전용 — 이름은 카톡 첨부화면 그대로 표시된다." }
             } } } },
         "responses": {
           "200": { "description": "처리", "content": { "application/json": { "schema": { "@@REF@@": "#/components/schemas/ApiResponse" } } } },
@@ -451,8 +456,8 @@ private const val JSON = """
         "type": "object", "required": ["room", "type", "data"],
         "properties": {
           "room": { "type": "string", "description": "chat_id" },
-          "type": { "type": "string", "enum": ["text", "image", "image_multiple"] },
-          "data": { "description": "type=text: 문자열. image: b64/URL 문자열. image_multiple: 배열." },
+          "type": { "type": "string", "enum": ["text", "image", "image_multiple", "media", "video", "audio", "file"] },
+          "data": { "description": "type=text: 문자열. image/image_multiple: b64 문자열(或), 또는 항목 object {name, b64[, mime, kind]}. media/video/audio/file: object 하나 {name, b64[, mime]} — multiple 는 이미지만 허용." },
           "threadId": { "type": ["string", "null"], "description": "스레드(원래 스노우플레이크) id" }
         }
       },
