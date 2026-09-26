@@ -37,6 +37,7 @@ import party.qwer.irisgui.AppColors
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.scripting.LinuxScripts
+import party.qwer.irisgui.scripting.UserlandInstall
 import party.qwer.irisgui.scripting.UserlandRuntime
 
 /**
@@ -211,36 +212,55 @@ fun ScriptScreen() {
                         color = if (busy) AppColors.TextSub else AppColors.TextMain
                     )
                 }
+                // 설치는 UserlandInstall 전역 상태 — 이 화면의 remember 와 무관하게
+                // 프로세스 코루틴에서 도므로 탭을 몇 번 건너도 진행/로그/성공여부가
+                // 살아난다. (과거엔 scope.launch 라 remember 를 탔고, 이탈 시 설치까지
+                // 취소돼 “tab 이동하면 설치 초기화”가 실제로 일어나 있었다.)
+                val instRunning = UserlandInstall.running.value
+                if (UserlandInstall.stage.value.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "설치: ${UserlandInstall.stage.value}" +
+                            (if (UserlandInstall.current.value.isNotEmpty())
+                                " — ${UserlandInstall.current.value} (${UserlandInstall.done.value}/${UserlandInstall.total.value})"
+                             else ""),
+                        style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    val frac = UserlandInstall.progress()
+                    if (instRunning && frac != null) {
+                        LinearProgressIndicator(
+                            progress = { frac }, modifier = Modifier.fillMaxWidth()
+                        )
+                    } else if (instRunning) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                val instResult = UserlandInstall.result.value
+                if (!envReady && instResult != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        instResult, style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextMain
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 if (!envReady) {
                     Button(
-                        enabled = !busy,
+                        enabled = !instRunning,
                         onClick = {
-                            busy = true
                             message = null
-                            scope.launch {
-                                try {
-                                    val r = runCatching {
-                                        withContext(Dispatchers.Default) {
-                                            UserlandRuntime.provision(context)
-                                        }
-                                    }.getOrElse {
-                                        UserlandRuntime.Result(false, it.message ?: "설치 실패")
-                                    }
-                                    if (r.ok) runCatching {
-                                        withContext(Dispatchers.Default) {
-                                            LinuxScripts.bootstrapDefault(context)
-                                        }
-                                    }
-                                    message = r.message
-                                    runCatching { refresh() }
-                                } finally {
-                                    busy = false
-                                }
-                            }
+                            UserlandInstall.start(context)
                         }
-                    ) { Text(if (busy) if (env.state == UserlandRuntime.State.NOT_INSTALLED)
-                        "설치 중… (시간 소요)" else "설치 준비…" else "리눅스 환경 설치") }
+                    ) { Text(if (instRunning) "설치 중… (백그라운드 계속)" else "리눅스 환경 설치") }
+                    if (instRunning) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "탭을 이동해도 설치는 계속됩니다. 로그 탭의 `UserlandInstall:` 라벨로도 " +
+                                "추적할 수 있습니다.",
+                            style = MaterialTheme.typography.bodySmall, color = AppColors.TextSub
+                        )
+                    }
                 }
             }
         }

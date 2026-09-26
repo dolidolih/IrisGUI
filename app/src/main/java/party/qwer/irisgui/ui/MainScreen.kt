@@ -126,7 +126,11 @@ fun MainScreen() {
             // code 편집 화면(WebView) 중에는 탭 바를 완전히 감춘다 — 화면 전체를 코딩에 쓴다.
             if (!codeEditorOpen.value) {
             NavigationBar(
-                windowInsets = WindowInsets(0),
+                // 기본(navigationBars) inset 소비 — redroid 처럼 시스템 navbar 가 실재하는
+                // 기기에서 탭 항목이 nav bar 에 가려지는 일을 막는다 (바 배경이 그 위로
+                // 그려져 흰 띠 없음). gesture 는 mandatory 기호만 추가 — 기본값 유지가
+                // 표준 배치. (과거 windowInsets(0) 은 바 두께만 v0.0.2 와 맞추려다 항목
+                // 숨김을 냈다.)
                 containerColor = AppColors.BottomNavBg,
                 contentColor = AppColors.TextSub,
                 tonalElevation = 0.dp
