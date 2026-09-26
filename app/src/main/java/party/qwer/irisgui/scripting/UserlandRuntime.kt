@@ -111,13 +111,18 @@ object UserlandRuntime {
      * enforcing(S26U 실측: proot exec 거부) → bionic 고정,
      * permissive/disabled(redroid 등) → proot — 모드와 무관하게 기기마다 일관. */
     internal fun installTarget(context: Context): Backend {
-        // /sys/fs/selinux 존재 여부가 아니라 실제 enforcing 여부를 본다 —
-        // redroid 는 selinuxfs 마다 없어서 readText 기반으론 "파일 없음=기본 true" 로
-        // Disabled 기기가 enforcing 오판정된다. isSELinuxEnforced() 는 kernel 에
-        // SELinux 자체가 없는 경우까지 false (Disabled/permissive 둘다 → proot).
+        // SELinux 판별의 세 층 (실측: enforcing 기기 의 앱은 /sys/fs/selinux/enforce
+        // READ 가 도메인 거부된다 — readText 예외=Disabled 로 보면 enforcing 기기가
+        // proot 로 빠져 exec EACCES. rc12/rc14 실측.).
+        // 1) selinuxfs 마운트 부존재 (stat 은 읽기 권한 불필요, redroid 실측) = 커넥
+        //    SELinux 자체 부재 → Disabled 취급 → proot Eligible.
+        // 2) 마운트됨 + 읽기성공 = 값 그대로.
+        // 3) 마운트됨 + 읽기거부 = enforcing 의 전형적 동작(도메인 거부) — 보수적으로
+        //    enforcing, 즉 bionic. (permissive 는 거부되지 않아 이 항에 해당 안 됨.)
+        if (!File("/sys/fs/selinux").exists()) return Backend.PROOT
         val enforcing = runCatching {
             File("/sys/fs/selinux/enforce").readText().trim() == "1"
-        }.getOrDefault(false) // selinuxfs 자체가 없는건 Disabled 라는 사실 (redroid 실측)
+        }.getOrDefault(true)
         return if (enforcing) Backend.BIONIC else Backend.PROOT
     }
 
@@ -357,9 +362,23 @@ object UserlandRuntime {
         if (!base.ok) return base
         UserlandInstall.begin("python + apt 패키지 설치 (proot 안 apt)")
         val py = ensurePython(context)
-        if (!py.ok) return py
+        if (!py.ok) return prootDeniedFallback(context, py)
         UserlandInstall.begin("CA 인증서 설치")
-        return ensureTrustStore(context)
+        val ca = ensureTrustStore(context)
+        return if (!ca.ok) prootDeniedFallback(context, ca) else ca
+    }
+
+    /** 판정보다 실집행이 우선: detection 을 빗나가 proot 를 골라도, exec 가
+     * 도메인에 거부(EACCES)되면 즉석에서 bionic 으로 갈아탄다 (한 번의 재시도는
+     * 다운로드 재사용이라 저비용). */
+    private fun prootDeniedFallback(context: Context, r: Result): Result {
+        if (r.message.contains("Permission denied", ignoreCase = true) ||
+            r.message.contains("EACCES", ignoreCase = true)
+    ) {
+            RuntimeLog.warn("UserlandInstall", "proot exec 거부 감지 — bionic 으로 자동 전환: " + r.message.take(120))
+            return BionicRuntime.provision(context)
+        }
+        return r
     }
 
     /** host 루프백 포트가 열려있는지. */
