@@ -90,11 +90,18 @@ object UserlandRuntime {
     /** 현재 동작 백엔드. 설치된 것이 있으면 그쪽 우선, 없으면 신규 설치 대상 판정. */
     enum class Backend { PROOT, BIONIC }
 
-    fun backend(context: Context): Backend = when {
-        File(prootRoot(context), ".ready_python").exists() &&
-            prootPath(context).exists() -> Backend.PROOT
-        BionicRuntime.installed(context) -> Backend.BIONIC
-        else -> installTarget(context)
+    fun backend(context: Context): Backend {
+        // 기기 상태(차단)가 설치 산물보다 먼저다. enforcing 에서는 proot(setuid)
+        // 물리 불가 — 옛 버전 잔여물이 설치 우선 규칙으로 기기 상태를 덮으면
+        // 안 된다 (S26U 실측 rc13: files/linux/.ready_python 잔존 → PROOT 선택 →
+        // "setsid: exec .../.proot: Permission denied").
+        if (installTarget(context) == Backend.BIONIC) return Backend.BIONIC
+        return when {
+            File(prootRoot(context), ".ready_python").exists() &&
+                prootPath(context).exists() -> Backend.PROOT
+            BionicRuntime.installed(context) -> Backend.BIONIC
+            else -> installTarget(context)
+        }
     }
 
     /** 신규 설치 대상 — 기기 상태(SELinux enforcing 여부)만의 함수.
@@ -332,7 +339,19 @@ object UserlandRuntime {
 
     /** 전체 준비: rootfs + python + ca. 멱등. blocking. 백엔드 자동 분기. */
     fun provision(context: Context): Result {
-        if (backend(context) == Backend.BIONIC) return BionicRuntime.provision(context)
+        if (backend(context) == Backend.BIONIC) {
+            // enforcing 기기에서 옛 proot 잔여물(rootfs ~350MB)은 동작도 불가능하고
+            // 공간만 먹는다 — bionic provision 진입 시 1회 정리. Disabled 기기(redroid)는
+            // 이 문장 자체를 타지 않아 사용자 설치물이 보존된다.
+            val stale = prootRoot(context)
+            if (installTarget(context) == Backend.BIONIC && stale.exists() &&
+                !BionicRuntime.installed(context)
+            ) {
+                RuntimeLog.info("UserlandInstall", "proot 잔여물 정리 (enforcing 기기): ${stale.absolutePath}")
+                stale.deleteRecursively()
+            }
+            return BionicRuntime.provision(context)
+        }
         UserlandInstall.begin("ubuntu rootfs (~350MB) 언팩 — proot 경로")
         val base = ensureBase(context)
         if (!base.ok) return base
