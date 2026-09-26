@@ -143,12 +143,21 @@ object IrisServer {
                                 handleTextReply(context, roomId, text, req.threadId)
                             }
                             "image_multiple", "image" -> {
-                                val images = if (req.data is JsonArray) {
-                                    req.data.jsonArray.map { it.jsonPrimitive.content }
-                                } else {
-                                    listOf(req.data.jsonPrimitive.content)
+                                handleMediaReply(context, roomId, MediaPayload.parseImages(req.data))
+                            }
+                            "media", "video", "audio", "file" -> {
+                                val kind = when (req.type) {
+                                    "video" -> MediaKind.VIDEO
+                                    "audio" -> MediaKind.AUDIO
+                                    "file" -> MediaKind.FILE
+                                    else -> MediaKind.FILE
                                 }
-                                handleImageReply(context, roomId, images)
+                                val item = MediaPayload.parseSingle(req.data, kind)
+                                if (item == null) {
+                                    call.respond(ApiResponse(success = false, message = "Invalid media payload"))
+                                    return@post
+                                }
+                                handleMediaReply(context, roomId, listOf(item))
                             }
                             else -> {
                                 call.respond(ApiResponse(success = false, message = "Unknown reply type: ${req.type}"))
@@ -252,19 +261,26 @@ object IrisServer {
     }
 
     private fun handleImageReply(context: Context, room: String, base64Images: List<String>) {
-        // PendingIntent 기반 replyAction 사용 (논루팅(알림) 모드)
+        handleMediaReply(context, room, base64Images.map { b64 ->
+            MediaItem("image.png", "image/png", MediaKind.IMAGE, Base64.decode(b64, Base64.DEFAULT))
+        })
+    }
+
+    /**
+     * 미디어 답장 (image/video/audio/file) — 논루팅 모드.
+     * cacheDir 에 "주어진 파일명 그대로" 저장 후 FileProvider URI 로 건넨다.
+     * Kakao 는 content URI 의 DISPLAY_NAME(= 파일명)를 첨부 이름으로 쓴다.
+     */
+    private fun handleMediaReply(context: Context, room: String, items: List<MediaItem>) {
         ReplyManager.enqueue {
             val savedFiles = mutableListOf<File>()
-            val uris = base64Images.mapNotNull { base64 ->
+            val sentItems = mutableListOf<MediaItem>()
+            val used = mutableSetOf<String>()
+            val uris = items.mapNotNull { item ->
                 try {
-                    val bytes = Base64.decode(base64, Base64.DEFAULT)
-
-                    // ISSUE-17: millis 파일명 충돌(동일 ms 요청) 덮어쓰기 방지
-                    val file = File.createTempFile("iris_temp_", ".png", context.cacheDir)
-
-                    file.outputStream().use { it.write(bytes) }
+                    val file = MediaPayload.writeTo(context.cacheDir, item, used)
                     savedFiles.add(file)
-
+                    sentItems.add(item)
                     androidx.core.content.FileProvider.getUriForFile(
                         context,
                         "${context.packageName}.fileprovider",
@@ -277,17 +293,12 @@ object IrisServer {
             }
 
             if (uris.isNotEmpty()) {
-                val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                    setPackage("com.kakao.talk")
-                    type = "image/*"
-                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                    putExtra("key_id", room.toLongOrNull() ?: 0L)
-                    putExtra("key_type", 1)
-                    putExtra("key_from_direct_share", true)
-
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                }
+                val intent = MediaPayload.buildSendIntent(
+                    sentItems,
+                    ArrayList(uris),
+                    room.toLongOrNull() ?: 0L,
+                    grantRead = true
+                )
 
                 try {
                     context.startActivity(intent)

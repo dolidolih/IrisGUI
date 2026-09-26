@@ -192,8 +192,8 @@ class Replier {
             submitted.incrementAndGet()
             coroutineScope.launch {
                 messageChannel.send(SendMessageRequest {
-                    sendPhotoInternal(
-                        room, base64ImageDataString
+                    sendMediaInternal(
+                        room, listOf(decodeLegacyImage(base64ImageDataString))
                     )
                 })
             }
@@ -203,18 +203,32 @@ class Replier {
             submitted.incrementAndGet()
             coroutineScope.launch {
                 messageChannel.send(SendMessageRequest {
-                    sendMultiplePhotosInternal(
-                        room, base64ImageDataStrings
+                    sendMediaInternal(
+                        room, base64ImageDataStrings.map { decodeLegacyImage(it) }
                     )
                 })
             }
         }
 
-        private fun sendPhotoInternal(room: Long, base64ImageDataString: String) {
-            sendMultiplePhotosInternal(room, listOf(base64ImageDataString))
+        /**
+         * 미디어 답장 (image/video/audio/file 공통) — 항목마다 원본 파일명으로
+         * IMAGE_DIR 에 적는다. Kakao 는 URI DISPLAY_NAME 을 그대로 쓰므로 이게 곧
+         * "파일명이 보여야 한다" 의 구현이다.
+         */
+        fun sendMedia(room: Long, items: List<MediaItem>) {
+            submitted.incrementAndGet()
+            coroutineScope.launch {
+                messageChannel.send(SendMessageRequest {
+                    sendMediaInternal(room, items)
+                })
+            }
         }
 
-        private fun sendMultiplePhotosInternal(room: Long, base64ImageDataStrings: List<String>) {
+        private fun decodeLegacyImage(base64: String): MediaItem =
+            MediaItem("image.png", "image/png", MediaKind.IMAGE,
+                Base64.decode(base64, Base64.DEFAULT))
+
+        private fun sendMediaInternal(room: Long, items: List<MediaItem>) {
             val picDir = File(IMAGE_DIR_PATH)
             // ISSUE-21: mkdirs() 결과와 쓰기 가능 여부를 확인한다. 기존 코드는 결과를 버리고
             // writeBytes 가 던진 예외를 그냥 넘겼고, Android 11+ 비root 경로에서는 파일 이미지가
@@ -226,37 +240,25 @@ class Replier {
                 throw IOException("image dir not writable: ${IMAGE_DIR_PATH}")
             }
 
-            val uris = base64ImageDataStrings.mapIndexed { idx, base64ImageDataString ->
-                val decodedImage = Base64.decode(base64ImageDataString, Base64.DEFAULT)
-                val timestamp = System.currentTimeMillis().toString()
-
-                val imageFile = File(picDir, "${timestamp}_${idx}.png")
-                imageFile.writeBytes(decodedImage)
-
-                val imageUri = Uri.fromFile(imageFile)
-                mediaScan(imageUri)
-                imageUri
+            val used = mutableSetOf<String>()
+            val uris = items.map { item ->
+                val file = MediaPayload.writeTo(picDir, item, used)
+                val uri = Uri.fromFile(file)
+                mediaScan(uri)
+                uri
             }
 
             if (uris.isEmpty()) {
-                System.err.println("No image URIs created, cannot send multiple photos.")
+                System.err.println("No media URIs created, cannot send media reply.")
                 return
             }
 
-            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                setPackage("com.kakao.talk")
-                type = "image/*"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                putExtra("key_id", room)
-                putExtra("key_type", 1)
-                putExtra("key_from_direct_share", true)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
+            val intent = MediaPayload.buildSendIntent(items, ArrayList(uris), room, grantRead = false)
 
             try {
                 AndroidHiddenApi.startActivity(intent)
             } catch (e: Exception) {
-                System.err.println("Error starting activity for sending multiple photos: $e")
+                System.err.println("Error starting activity for sending media: $e")
                 throw e
             }
         }
