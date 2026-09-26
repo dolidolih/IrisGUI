@@ -200,12 +200,21 @@ object AdbServer {
                                 handleTextReply(roomId, text, req.threadId)
                             }
                             "image_multiple", "image" -> {
-                                val images = if (req.data is JsonArray) {
-                                    req.data.jsonArray.map { it.jsonPrimitive.content }
-                                } else {
-                                    listOf(req.data.jsonPrimitive.content)
+                                handleImageReply(roomId, MediaPayload.parseImages(req.data))
+                            }
+                            "media", "video", "audio", "file" -> {
+                                val kind = when (req.type) {
+                                    "video" -> MediaKind.VIDEO
+                                    "audio" -> MediaKind.AUDIO
+                                    "file" -> MediaKind.FILE
+                                    else -> MediaKind.FILE // "media" — 이름/mime 로 판정, 실패 시 file
                                 }
-                                handleImageReply(roomId, images)
+                                val item = MediaPayload.parseSingle(req.data, kind)
+                                if (item == null) {
+                                    call.respond(ApiResponse(success = false, message = "Invalid media payload"))
+                                    return@post
+                                }
+                                handleMediaReply(roomId, listOf(item))
                             }
                             else -> {
                                 call.respond(ApiResponse(success = false, message = "Unknown reply type: ${req.type}"))
@@ -775,22 +784,34 @@ object AdbServer {
         }
     }
 
-    private fun handleImageReply(roomId: String, images: List<String>) {
+    private fun handleImageReply(roomId: String, items: List<MediaItem>) {
         serverScope.launch {
             try {
                 val chatId = roomId.toLongOrNull()
                 if (chatId != null) {
-                    if (images.size == 1) {
-                        Replier.sendPhoto(chatId, images[0])
-                    } else {
-                        Replier.sendMultiplePhotos(chatId, images)
-                    }
+                    Replier.sendMedia(chatId, items)
                 }
                 // 답장 ACK 를 /ws 로 브로드캐스트하면 irispy-client 에서는 'json' 키가
                 // 없어 KeyError 가 발생하므로 로그만 남긴다.
-                println("AdbServer: image reply sent room=$roomId count=${images.size}")
+                println("AdbServer: image reply sent room=$roomId count=${items.size}")
             } catch (e: Exception) {
                 System.err.println("AdbServer Replier image error: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /** media/video/audio/file 답장 (single 항목 전용). */
+    private fun handleMediaReply(roomId: String, items: List<MediaItem>) {
+        serverScope.launch {
+            try {
+                val chatId = roomId.toLongOrNull()
+                if (chatId != null) {
+                    Replier.sendMedia(chatId, items)
+                }
+                println("AdbServer: media reply sent room=$roomId kind=${items.firstOrNull()?.kind} name=${items.firstOrNull()?.name}")
+            } catch (e: Exception) {
+                System.err.println("AdbServer Replier media error: ${e.message}")
                 e.printStackTrace()
             }
         }
