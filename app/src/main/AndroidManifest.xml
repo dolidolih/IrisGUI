@@ -34,20 +34,6 @@
             </intent-filter>
         </activity>
 
-        <!-- W^X 실측 하네스(임시, 연구 후 제거) — adb 로 am start 하여 logcat 에서 확인. -->
-        <activity
-            android:name=".WxProbeActivity"
-            android:exported="true"
-            android:theme="@style/Theme.IrisGUI" />
-        <activity
-            android:name=".WxProbe2Activity"
-            android:exported="true"
-            android:theme="@style/Theme.IrisGUI" />
-        <activity
-            android:name=".WxProbe3Activity"
-            android:exported="true"
-            android:theme="@style/Theme.IrisGUI" />
-
         <service
             android:name=".service.IrisService"
             android:enabled="true"

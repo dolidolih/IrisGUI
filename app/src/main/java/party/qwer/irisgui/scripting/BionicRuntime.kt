@@ -366,10 +366,8 @@ object BionicRuntime {
                 val deb = File(tmp, "$name.deb")
                 if (!download("$REPO/$filename", deb, 300_000))
                     return UserlandRuntime.Result(false, "$name 다운로드 실패")
-                if (!extractDeb(deb, p)) {
-                    runCatching { File("/data/local/tmp/keep").mkdirs(); deb.copyTo(File("/data/local/tmp/keep/$name.deb"), overwrite = true) }
+                if (!extractDeb(deb, p))
                     return UserlandRuntime.Result(false, "$name 언팩 실패")
-                }
                 runCatching { deb.delete() }
                 if (i % 4 == 3) RuntimeLog.info(TAG, "bionic: ${i + 1}/${pkgs.size} 패키지 설치")
             }
