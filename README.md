@@ -60,7 +60,7 @@ IrisGUI는 HTTP와 WebSocket으로 정보를 주고 받습니다. 모든 요청�
 
 | 엔드포인트 | ROOT_ADB | NON_ROOT | 설명 |
 |---|---|---|---|
-| `/reply` | ✅ | ✅ | 채팅방에 메시지/사진 발송 |
+| `/reply` | ✅ | ✅ | 채팅방에 메시지/사진/영상/오디오/파일 발송 |
 | `/ws` | ✅ | ✅ | 이벤트 스트림 (WebSocket) |
 | `/config`, `/config/{name}` | ✅ | ❌ | 설정 조회/변경 (endpoint, botname, dbrate, sendrate, botport) |
 | `/query` | ✅ | ❌ | 카카오톡 DB SQL 쿼리 |
@@ -76,15 +76,27 @@ IrisGUI는 HTTP와 WebSocket으로 정보를 주고 받습니다. 모든 요청�
 
 ```json
 {
-  "type": "text",       // 또는 "image", "image_multiple"
+  "type": "text",            // 또는 "image", "image_multiple", "media", "video", "audio", "file"
   "room": "[CHAT_ROOM_ID]",  // 채팅방 ID (문자열)
-  "data": "[MESSAGE_TEXT]"   // text: 메시지, image: Base64, image_multiple: Base64 배열
+  "data": "[MESSAGE_TEXT]"   // text: 메시지 | image_multiple: b64 문자열 배열(或 {name,b64}) |
+                             // media/video/audio/file: object 하나 {name, b64[, mime]}
 }
 ```
 
+파일 첨부(`video`/`audio`/`file`)와 이름 지정 이미지는 `data`의 `name`을 그대로 카톡
+첨부화면에 노출한다. 복붙용 규칙: **여러 장 전송은 이미지만 허용**, `media`/`video`/
+`audio`/`file` 은 항상 단일 항목. 기존 이미지 요청(`b64` 문자열만 보낸 `image_multiple`)
+은 이전과 동일하게 동작한다.
+
 ```shell
+# 텍스트 답장
 curl -X POST -H "Content-Type: application/json" \
   -d '{"type": "text", "room": "1234567890", "data": "hello from IrisGUI"}' \
+  http://[DEVICE_IP]:3000/reply
+
+# 이름 지정 파일 첨부
+curl -X POST -H "Content-Type: application/json" \
+  -d "{\"type\": \"file\", \"room\": \"1234567890\", \"data\": {\"name\": \"명세.pdf\", \"b64\": \"$(base64 -w0 명세.pdf)\"}}" \
   http://[DEVICE_IP]:3000/reply
 ```
 
