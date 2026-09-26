@@ -20,6 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
+import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.AppState
 import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.backend.IrisServer
@@ -61,13 +62,24 @@ class IrisNotificationService : NotificationListenerService() {
     private var cachedDaemonLiveAt: Long = 0
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (!AppConfig.isServiceEnabled || sbn.packageName != "com.kakao.talk") return
+        if (!AppConfig.isServiceEnabled) {
+            throttleWarn("설정에서 서비스가 꺼짐 — 알림이 와도 무시 (상태 탭에서 실행 필요)")
+            return
+        }
+        if (sbn.packageName != "com.kakao.talk") return
 
         val notification = sbn.notification
         val extras = notification.extras ?: return
 
         // 해석은 shared 파서 하나(KakaoNotificationParser)에만 위임한다 — NLS와 루팅 폴러가 동일 규칙.
-        val parsed = KakaoNotificationParser.parse(notification) ?: return
+        val parsed = runCatching { KakaoNotificationParser.parse(notification) }.getOrNull()
+        if (parsed == null) {
+            parsedNullCounter++
+            if (parsedNullCounter % 10L == 1L) {
+                RuntimeLog.info("NLS", "카톡 알림 도착 — 파싱 불가로 건너뜀 (누적 $parsedNullCounter)")
+            }
+            return
+        }
 
         val senderName = parsed.senderName
         val senderId = parsed.senderId
@@ -79,7 +91,7 @@ class IrisNotificationService : NotificationListenerService() {
         // 말고 key 기반 ranking 조회로 방 이름을 해결하고, 로그에 원인을 남긴다.
         val roomId = sbn.tag ?: ""
         if (roomId.isEmpty()) {
-            println("IrisNls: sbn.tag 없음(thread/구 build 형식?) — conversationId 빈 chat_id 로 전송, key 로 방 해결 시도")
+            RuntimeLog.warn("NLS", "sbn.tag 없음(thread/구형 build?) — key 로 방 해결 시도")
         }
         val chatLogId = extras.getLong("chatLogId", 0L)
 
@@ -89,7 +101,7 @@ class IrisNotificationService : NotificationListenerService() {
         // ISSUE-14: 같은 메시지의 재표시(요약 재구성/화면 재노출)마다 /ws 와 webhook 이
         // 한 번씩 더 나간다. (roomId, chatLogId) 기준 bounded LRU 로 중복을 막는다.
         if (isDuplicateEvent(roomId, chatLogId, text, sbn.key)) {
-            println("IrisNls: 중복 이벤트 무시 (room=$roomId chatLogId=$chatLogId) — 브로드캐스트 생략")
+            RuntimeLog.info("NLS", "중복 이벤트 무시(room=$roomId, id=$chatLogId) — 브로드캐스트 생략")
             extractAndStoreReplyAction(notification, (conversationTitleExtra ?: senderName), roomId)
             return
         }
@@ -117,9 +129,10 @@ class IrisNotificationService : NotificationListenerService() {
             }
             val isGroupChat = parsed.isGroupConversation
 
-            println(
-                "IrisNls(P26): room=\"$room\" src=$roomSource isGroup=$isGroupChat " +
-                    "tag=$roomId senderId=\"$senderId\" text=\"$text\""
+            RuntimeLog.info(
+                "NLS",
+                "이벤트: room=\"$room\" src=$roomSource group=$isGroupChat " +
+                    "sender=\"$senderName\" text=\"${text.take(60)}\""
             )
 
             val event = NotificationEvent(
@@ -175,7 +188,12 @@ class IrisNotificationService : NotificationListenerService() {
             // 내보내는데에도 daemon DBObserver 가 같은 메시지를 스트림에 올려 이중 이벤트가
             // 된다. 그래서 캐시된 모드문자열만 보지 않고 daemon 생존 여부까지 본다.
             if (!daemonOwnsEventStream()) {
-                IrisServer.broadcastToClients(jsonPayload)
+                val drops = IrisServer.broadcastToClients(jsonPayload)
+                RuntimeLog.info(
+                    "NLS",
+                    "ws 브로드캐스트: 접속수=${IrisServer.wsSubscribers}" +
+                        if (drops > 0) " — 일부 유실(drop 누=$drops)" else ""
+                )
 
                 val endpoint = AppConfig.webEndpoint
                 if (endpoint.isNotBlank()) {
@@ -201,7 +219,7 @@ class IrisNotificationService : NotificationListenerService() {
         // NON_ROOT 라서 detectMode 되기 전까지 ROOT_ADB 에서도 NLS 가 스트림에 중복으로
         // 올라탈 수 있다.
         val mode = AppModeManager.ensureDetected()
-        println("IrisNls: listener connected, mode=$mode, " + NotificationListenerState.describe(this))
+        RuntimeLog.info("NLS", "알림리서비스 연결됨 mode=$mode " + NotificationListenerState.describe(this))
     }
 
     override fun onListenerDisconnected() {
@@ -268,9 +286,20 @@ class IrisNotificationService : NotificationListenerService() {
         }
         cachedDaemonLiveAt = now
         cachedDaemonLive = live
-        if (live) println("IrisNls: mode=NON_ROOT 이지만 daemon 생존 — 이벤트 스트림은 daemon 차지")
+        if (live) RuntimeLog.warn("NLS", "NON_ROOT 인데 daemon 생존 — 이벤트 스트림은 daemon 차지 (중복 방지 의도적 생략)")
         return live
     }
+
+    private var lastThrottleMs = 0L
+    private fun throttleWarn(msg: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastThrottleMs > 30_000) {
+            lastThrottleMs = now
+            RuntimeLog.warn("NLS", msg)
+        }
+    }
+
+    private var parsedNullCounter = 0L
 
     private fun dumpBundle(bundle: Bundle?): Map<String, Any?> {
         val map = mutableMapOf<String, Any?>()
