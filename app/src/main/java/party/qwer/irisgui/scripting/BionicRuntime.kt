@@ -52,7 +52,7 @@ object BionicRuntime {
         "armeabi-v7a" to "arm", "armeabi" to "arm", "x86" to "i686",
     )
 
-    private const val MARKER = ".ready_runtime2"  // v2: shebang 경로 재배선 언팩 포함
+    private const val MARKER = ".ready_runtime3"  // v2: shebang 경로 재배선 언팩 포함
 
     fun prefix(context: Context): File = File(context.filesDir, "bionic")
 
@@ -96,6 +96,9 @@ object BionicRuntime {
             "SHELL" to File(p, "usr/bin/bash").absolutePath,
             "TERM" to "xterm-256color",
             "SSL_CERT_FILE" to File(p, "usr/tls/certs/ca-certificates.crt").absolutePath,
+            // TUR 의 android 전용 wheel 인덱스 — pandas/numpy/scipy 같은 C 확장도
+            // 온-디바이스 컴파일 없이 android_<api>_<abi> 태그 왕복으로 설치된다.
+            "PIP_EXTRA_INDEX_URL" to "https://termux-user-repository.github.io/pypi/",
             "IRISGUI_API_URL" to "http://127.0.0.1:" + AppConfig.serverPort,
         )
     }
@@ -175,6 +178,7 @@ object BionicRuntime {
 
         if (!File(p, "usr/bin/python3").exists()) return UserlandRuntime.Result(false, "python 없음 — 설치 검증 실패")
         ensureTrustStore(context)
+        ensureAptSources(p)
         // 마커 쓰기 전에 venv/pip 왕복으로 실사용 확인. 실패하면 마커 없이 실패 반환.
         val probe = exec(context, "python3 -m venv --help >/dev/null 2>&1; " +
             "python3 -c 'import ssl,sqlite3,venv,ensurepip,pip,PIL' && echo BIONIC_OK", 120_000)
@@ -202,6 +206,19 @@ object BionicRuntime {
 
     /** Packages.gz 로부터 ROOT_PKGS closure 계산. Termux 는 binary-all 인덱스가 없고
      * Architecture: all 패키지까지 binary-<arch>/에 색인하므로 arch 하나만 읽는다. */
+    /** pkg(터미눅 셸)의 업뎃 거울검사 는 apt sources.list 원본을 본다. dpkg/apt
+     * 바이너리 자체는 우리 런타임에 없으므로 `pkg install` 은 불가하고 python
+     * 확장 은 pip(TUR android wheel 인덱스 연동)를 쓴다. 파일만 만들어
+     * 'No such file' 노이즈 를 없앤다. */
+    private fun ensureAptSources(p: File) {
+        val f = File(p, "usr/etc/apt/sources.list")
+        if (f.isFile) return
+        runCatching {
+            f.parentFile?.mkdirs()
+            f.writeText("deb $REPO stable main\n")
+        }
+    }
+
     private fun resolveClosure(arch: String): List<Pair<String, String>> {
         val index = HashMap<String, Pair<String, String>>() // name → (depends, filename)
         val txt = fetchPackagesGz("$REPO/dists/stable/main/binary-$arch/Packages.gz")

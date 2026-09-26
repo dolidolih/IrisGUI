@@ -177,10 +177,12 @@ object LinuxScripts {
         if (venv.isDirectory && File(dir, VENV_DONE).exists() &&
             File(venv, "bin/python").isFile
         ) {
-            // 백과 없이 넘어가면 rc1 잔해(PIL/irispy 없이 partial 생성된 venv) 영구
-            // 고정. 실제 import 왕복으로 진짜 준비된 venv만 신뢰한다.
+            // 백과 없이 넘어가면 rc1 잔해(PIL/iris 없이 partial 생성된 venv) 영구
+            // 고정. 실제 import 왕복으로 진짜 준비된 venv만 신뢰한다 — irispy-client
+            // 는 유통명이고 모듈명은 iris. import irispy_client 로 쳤으면
+            // 멀쩡한 venv 를 startup 마다 통째로 갈아엎는 자폭이 된다.
             val probe = UserlandRuntime.exec(context,
-                ".venv/bin/python -c 'import irispy_client, PIL' && echo VENV_VOCAL", 90_000,
+                ".venv/bin/python -c 'from iris.bot import Bot; import PIL' && echo VENV_VOCAL", 90_000,
                 UserlandRuntime.guestProject(context, name))
             if (probe.output.contains("VENV_VOCAL"))
                 return UserlandRuntime.Result(true, "venv 이미 있음")
@@ -464,6 +466,46 @@ object LinuxScripts {
         # main.py — IrisGUI 스크립트
         #
         # irispy-client 를 사용합니다. 필요하면 편집기 터미널에서
+        # `pip install <패키지>` 로 추가로 설치하세요 — C 확 장(numpy/pandas/scipy)
+        # 도 TUR android wheel 인덱스가 자동 연동되어 컴파일 없이 들어갑니다.
+        #
+        # 주의: reply() 는 실제 대화방에 메시지가 전송됩니다.
+        #   필요할 때만 사용하세요.
+        import os
+        import sys
+        import traceback
+        from iris.bot import Bot
+
+        iris_url = os.environ.get("IRISGUI_API_URL", "http://127.0.0.1:3000")
+        print(f"[main] 연결 시도: {iris_url}/ws", flush=True)
+        bot = Bot(iris_url)
+
+
+        @bot.on_event("message")
+        def on_message(ctx):
+            # 모든 메시지에 응답하지 않습니다. "!hhhi" 일 때만 인사합니다.
+            # print(f"message: {ctx.message}", flush=True)  # 필요하면 수신 로그
+            if ctx.message.command == "!hhhi":
+                ctx.reply("hey from irisgui!")
+
+
+        if __name__ == "__main__":
+            try:
+                bot.run()
+            except KeyboardInterrupt:
+                pass
+            except Exception:
+                # 서버 기동/포트/권한 문제 — 조용 로그에 살아남아야 진단한다.
+                print("[main] bot.run() 빠져나옴:\n" + traceback.format_exc(),
+                      file=sys.stderr, flush=True)
+                raise
+    """.trimIndent() + "\n"
+
+    /** rc4 이전(진단 로그 없는) 샘플 그대로 — 마이그레이션 판별용. */
+    private val SAMPLE_MAIN_LEGACY = """
+        # main.py — IrisGUI 스크립트
+        #
+        # irispy-client 를 사용합니다. 필요하면 편집기 터미널에서
         # `pip install <패키지>` 로 추가로 설치하세요.
         #
         # 주의: reply() 는 실제 대화방에 메시지가 전송됩니다.
@@ -486,12 +528,16 @@ object LinuxScripts {
             bot.run()
     """.trimIndent() + "\n"
 
-    /** main.py 가 없거나 비어있으면 샘플을 넣는다 (pre-load 보장). */
+    /** main.py 가 없거나 비어있으면 샘플을 넣는다 (pre-load 보장). 이전 샘플
+     * 그 대로면 진단 로그新版으로 승격 — 손을 댄 흔적이면 절대 덮지 않는다. */
     fun ensureSampleMain(context: Context, name: String) {
         val f = File(projectDir(context, name), MAIN)
         if (!f.isFile || f.readText().isBlank()) {
             f.parentFile?.mkdirs()
             f.writeText(SAMPLE_MAIN)
+        } else if (f.readText() == SAMPLE_MAIN_LEGACY) {
+            f.writeText(SAMPLE_MAIN)
+            RuntimeLog.info(TAG, "샘플 승격: $name main.py 진단로그版")
         }
     }
 }
