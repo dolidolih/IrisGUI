@@ -174,8 +174,21 @@ class IrisNotificationService : NotificationListenerService() {
                 e.printStackTrace()
             }
 
-            val innerJson = IrisJsonData(id = chatLogId.toString(), chat_id = roomId, user_id = senderId, message = text)
-            val payload = NotificationPayload(msg = text, room = room, sender = senderName, isLite = false, is_group_chat = isGroupChat, profile_image = profileImageBase64, json = innerJson)
+            // IrisLite 규격: 알림 기반 이벤트는 DB 열이 없으므로 client 의 라우팅 근거
+            // (json.v.origin 또는 is_lite) 중 하나는 반드시 실려야 `message` 이벤트가
+            // 발생한다. 이 두 장식이 없으면 클라이언트는 unknown 만.emit하고
+            // on_event("message") 는 조용히 스루가 된다 — NON_ROOT 의 !hhhi 무응답
+            // 실측 원인 (2026-09, ws 접속/브로드캐스트는 정상이었을 때).
+            val liteCreatedAt = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(System.currentTimeMillis())
+            val innerJson = IrisJsonData(
+                id = chatLogId.toString(),
+                chat_id = roomId,
+                user_id = senderId,
+                message = text,
+                created_at = (System.currentTimeMillis() / 1000).toString(),
+                v = """{"notDecoded":false,"origin":"MSG","c":"$liteCreatedAt","modifyRevision":0}""",
+            )
+            val payload = NotificationPayload(msg = text, room = room, sender = senderName, isLite = true, is_group_chat = isGroupChat, profile_image = profileImageBase64, json = innerJson)
             val json = Json { encodeDefaults = true }
             val jsonPayload = json.encodeToString(payload)
 
