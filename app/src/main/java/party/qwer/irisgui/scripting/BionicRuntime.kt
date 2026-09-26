@@ -120,6 +120,10 @@ object BionicRuntime {
             // TUR 의 android 전용 wheel 인덱스 — pandas/numpy/scipy 같은 C 확장도
             // 온-디바이스 컴파일 없이 android_<api>_<abi> 태그 왕복으로 설치된다.
             "PIP_EXTRA_INDEX_URL" to "https://termux-user-repository.github.io/pypi/",
+            // 실기기 판별결과: 두 인덱스 max-version 이 sdist-전용(신버전)이면 왕을
+            // 버리고 소스컴파일로 빠져 실패한다(pandas 함정). 기본은 "설치 가능만"
+            // 으로 하고, 컴파일 의사는 pip 플래그(--no-binary)로 명시 opt-in 한다.
+            "PIP_ONLY_BINARY" to ":all:",
             // 온-기기 C 컴파일(pip sdist) 왕복: clang 기본 prefix 가 com.termux 를
             // 박아놓고 태어남 → 우리 트리는 CPATH/LDFLAGS 로 붙여 쓴다.
             "CPATH" to File(p, "usr/include").absolutePath,

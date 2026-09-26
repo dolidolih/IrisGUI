@@ -25,6 +25,7 @@ import io.ktor.websocket.send
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import party.qwer.irisgui.AppConfig
+import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.models.*
 import party.qwer.irisgui.scripting.BionicRuntime
 import party.qwer.irisgui.service.ReplyManager
@@ -80,6 +81,9 @@ object IrisServer {
     /** WS 이벤트 전달 (non-blocking). @return 버퍼 만충으로 폐기한 건수. */
     fun broadcastToClients(message: String): Long = wsFanout.publish(message)
 
+    /** ws 에 붙어있는 클라이언트 수 — NLS 이벤트가 흘러갈 좌표가 살아있는지 로그로 본다. */
+    val wsSubscribers: Int get() = wsFanout.subscriberCount
+
     /**
      * 인프로세스 서버 기동.
      * @return 기동 성공 여부 — 실패 시 [lastError]에 원인이 남는다.
@@ -113,12 +117,17 @@ object IrisServer {
                     webSocket("/ws") {
                         // ISSUE-15: 연결별 수신 채널 — 다른 연결/publisher 무영향.
                         val sub = wsFanout.subscribe()
+                        RuntimeLog.info(
+                            "Server", "ws 접속 — 현재 접속 수 ${wsFanout.subscriberCount} " +
+                                "(이 값 없이 이벤트만 나란하면 유입 단 문제)"
+                        )
                         try {
                             for (msg in sub.channel) {
                                 send(msg)
                             }
                         } finally {
                             wsFanout.unsubscribe(sub)
+                            RuntimeLog.info("Server", "ws 종료 — 잔여 접속 수 ${wsFanout.subscriberCount}")
                         }
                     }
 
