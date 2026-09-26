@@ -194,6 +194,8 @@ object BionicRuntime {
             return UserlandRuntime.Result(false, "패키지 목록 읽기 실패: ${e.message}")
         }
         RuntimeLog.info(TAG, "bionic userland 준비 시작 (arch=$arch, ${pkgs.size} packages)")
+        UserlandInstall.begin("termux bionic 패키지 ${pkgs.size}개 다운로드/언팩")
+        UserlandInstall.total.value = pkgs.size
         p.mkdirs()
 
         val ok = installLock.tryAcquire(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -363,6 +365,7 @@ object BionicRuntime {
             for ((i, pair) in pkgs.withIndex()) {
                 val (name, filename) = pair
                 PkgJob.current = name; PkgJob.done = i; PkgJob.total = pkgs.size
+                if (UserlandInstall.running.value) UserlandInstall.step(name, i, pkgs.size)
                 val deb = File(tmp, "$name.deb")
                 if (!download("$REPO/$filename", deb, 300_000))
                     return UserlandRuntime.Result(false, "$name 다운로드 실패")

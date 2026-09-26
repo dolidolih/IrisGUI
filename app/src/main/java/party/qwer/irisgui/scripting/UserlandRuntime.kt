@@ -104,9 +104,13 @@ object UserlandRuntime {
      * enforcing(S26U 실측: proot exec 거부) → bionic 고정,
      * permissive/disabled(redroid 등) → proot — 모드와 무관하게 기기마다 일관. */
     internal fun installTarget(context: Context): Backend {
+        // /sys/fs/selinux 존재 여부가 아니라 실제 enforcing 여부를 본다 —
+        // redroid 는 selinuxfs 마다 없어서 readText 기반으론 "파일 없음=기본 true" 로
+        // Disabled 기기가 enforcing 오판정된다. isSELinuxEnforced() 는 kernel 에
+        // SELinux 자체가 없는 경우까지 false (Disabled/permissive 둘다 → proot).
         val enforcing = runCatching {
             File("/sys/fs/selinux/enforce").readText().trim() == "1"
-        }.getOrDefault(true)
+        }.getOrDefault(false) // selinuxfs 자체가 없는건 Disabled 라는 사실 (redroid 실측)
         return if (enforcing) Backend.BIONIC else Backend.PROOT
     }
 
@@ -299,26 +303,43 @@ object UserlandRuntime {
         val probe = exec(context, "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK",
             20_000)
         if (probe.output.contains("CA_OK")) return Result(true, "CA 준비됨")
-        // base 이미지엔 apt lists 가 비어있다 -> update 먼저. keyring 실패(NO_PUBKEY)로
-        // update 가 warn 을 낸해도 다른 컴포넌트는 남아 install 은 동작한다.
-        val (_, out) = exec(context, APT_PREP + APT +
-            "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
-            "update -q 2>&1 | tail -3; " + APT +
-            "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
-            "install -y -q --no-install-recommends ca-certificates 2>&1 | tail -5", 600_000)
-        val after = exec(context,
-            "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK", 20_000)
-        return if (after.output.contains("CA_OK")) Result(true, "CA 인증서 설치됨")
-        else Result(false, "CA 인증서 설치 실패: " + out.take(200))
+        // DNS/apt 소스 warm-up 은 이 경로에서도 예외 없다 (bionic 에서 축적된 교훈) —
+        // 첫 update 가 빈 목록으로 끝나면 install 이 candidate 없이 실패하므로 최대
+        // 4 회, 대기 후 대기로 재시도한다. keyring GPG 경고(--allow-unauthenticated 로
+        // 무시되는)와 달리 여기는 실제 네트워크 준비 타이밍 문제다.
+        var lastOut = ""
+        var attempt = 0
+        while (attempt < 4) {
+            attempt++
+            val (_, out) = exec(context, APT_PREP + APT +
+                "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
+                "update -q 2>&1 | tail -3; " + APT +
+                "-o Acquire::AllowInsecureRepositories=true --allow-unauthenticated " +
+                "install -y -q --no-install-recommends ca-certificates 2>&1 | tail -5", 600_000)
+            lastOut = out
+            val after = exec(context,
+                "test -f /etc/ssl/certs/ca-certificates.crt && echo CA_OK", 20_000)
+            if (after.output.contains("CA_OK")) {
+                if (attempt > 1) RuntimeLog.info("UserlandInstall", "CA 인증서 ${attempt}회 만에 성공")
+                return Result(true, "CA 인증서 설치됨")
+            }
+            RuntimeLog.warn("UserlandInstall",
+                "CA 인증서 $attempt/.4 실패 — 1.5s 대기 후 재시도: " + lastOut.take(120))
+            Thread.sleep(1_500)
+        }
+        return Result(false, "CA 인증서 설치 실패 (${attempt}회): " + lastOut.take(200))
     }
 
     /** 전체 준비: rootfs + python + ca. 멱등. blocking. 백엔드 자동 분기. */
     fun provision(context: Context): Result {
         if (backend(context) == Backend.BIONIC) return BionicRuntime.provision(context)
+        UserlandInstall.begin("ubuntu rootfs (~350MB) 언팩 — proot 경로")
         val base = ensureBase(context)
         if (!base.ok) return base
+        UserlandInstall.begin("python + apt 패키지 설치 (proot 안 apt)")
         val py = ensurePython(context)
         if (!py.ok) return py
+        UserlandInstall.begin("CA 인증서 설치")
         return ensureTrustStore(context)
     }
 
