@@ -77,8 +77,18 @@ object AdbProcessClient {
                         println("AdbProcessClient: /process-status 응답은 받았으나 페이로드 불완전 (alive-unknown)")
                         return@withContext aliveUnknown()
                     }
-                    // HTTP 오류 응답(5xx/error body) — 접속 자체는 성공: 살아있음으로 취급한다.
-                    // 단, 일시적 오류 가능성에 한 번만 더 시도해 본다.
+                    // HTTP 오류 응답 — 구별 필요:
+                    //  * 404/405 는 「포트에 무언가는 응답하지만 daemon 라우터가 없다」 뜻.
+                    //    NON_ROOT 에서 앱 IrisServer 가 같은 포트(3000) 를 차지하고
+                    //    자기 자신에게 /process-status 를 물어볼 때 이 응답이 나온다 —
+                    //    이를 생존 취급하면 NLS 가 “이벤트는 daemon 차지”라며 의도적으로
+                    //    브로드캐스트를 끊어버려 ws 가 완전정지한다. (2026-09 실기기
+                    //    로그로 확인: 이벤트 유입·ws 접속 정상인데 응답만 없는 현상의 원인)
+                    //  * 5xx 등은 StatusPages 를 탄 실제 daemon 후보 — 기존대로 재시도.
+                    if (response.code == 404 || response.code == 405) {
+                        println("AdbProcessClient: /process-status HTTP ${response.code} — daemon 이 아닌 응답(자기도시 포함), 정지 판정")
+                        return@withContext null
+                    }
                     if (attempt == 0) {
                         delay(300)
                     } else {
