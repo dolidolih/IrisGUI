@@ -4,8 +4,6 @@ import android.content.Context
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import party.qwer.irisgui.AppConfig
-import party.qwer.irisgui.AppMode
-import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.RuntimeLog
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -99,15 +97,17 @@ object UserlandRuntime {
         else -> installTarget(context)
     }
 
-    /** 신규 설치 대상. enforcing 실기기(S26U 검증 완료)는 proot exec 가 도메인에서
-     * 거부되므로 무조건 bionic. permissive/disabled(redroid) 만 기존 모드 정책
-     * (루팅→Ubuntu proot) 을 유지한다. */
+    /** 신규 설치 대상 — 기기 상태(SELinux enforcing 여부)만의 함수.
+     * 앱 모드(ROOT_ADB/NON_ROOT)는 판정에서 완전히 제외한다: 모드는 이벤트 소스
+     * (DB 폴링/NLS)를 고르는 선택지일 뿐이고, userland 를 교체하면 그 자체가
+     * "모드가 환경을 망치는" 설계 결함이기 때문 (2026-09 사용자 설계 지적).
+     * enforcing(S26U 실측: proot exec 거부) → bionic 고정,
+     * permissive/disabled(redroid 등) → proot — 모드와 무관하게 기기마다 일관. */
     internal fun installTarget(context: Context): Backend {
         val enforcing = runCatching {
             File("/sys/fs/selinux/enforce").readText().trim() == "1"
         }.getOrDefault(true)
-        return if (!enforcing && AppModeManager.currentMode == AppMode.ROOT_ADB) Backend.PROOT
-        else Backend.BIONIC
+        return if (enforcing) Backend.BIONIC else Backend.PROOT
     }
 
     /** UI 가 보는 공용 root — 백엔드별 루트 디렉터리. */
