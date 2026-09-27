@@ -117,7 +117,10 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
     private var input: InputStream? = null
     private var output: OutputStream? = null
     private var proto: Proto = Proto.NEW
-    private var sessionId = 0
+    /** ADB 프로토콜: 클라이언트가 여는(개시하는) local id 는 홀수 — adbd(특히 API 31+) 는 짝수 OPEN 을
+     *  "서버发起" 로 보고 OKAY 없이 CLSE 로 거른다. 순증(+1)은 홀/짝 교대가 되어
+     *  커맨드가 번갈아 거부되는 원인이 된다 (실측: su 0 idCLSE, su -c id 성공…). */
+    private var nextLocalId = 1
 
     @Volatile
     private var closed = false
@@ -309,11 +312,17 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
      * ISSUE-30: EOF/CLSE 만으로 성공 처리하면 OPEN 거절(su 거부 등)이 성공으로 위장한다 —
      * OKAY(실제 서비스 open) 없이 종료되면 ExecFailed 로 되돌린다. WRTE 에는 flow-control
      * ACK(OKAY) 를 회신한다 — CLASSIC adbd 는 ACK 없이 다음 데이터를 보내지 않는다.
+     *
+     * ISSUE(x): adbd(v2) 는 이미 끝난 스트림의 프레임을 지연/재송신한다(중복 CLSE,
+     * stale OKAY echo) — "내 스트림(arg1==localId)" 인 페이로드만 상태를 바꾸고,
+     * 남의 스트림 참조에는 CLSE 로 응답만 하고 넘어간다. 안 그러면 이전 exec 의迟到
+     * 프레임이 다음 exec 를 "CLSE without OKAY" 로 오판하게 된다 (redroid API34 실측).
      */
     fun execService(service: String): Failure? {
         if (closed) return Failure.NoAdbd("not connected")
         lastOutput = ""
-        val localId = ++sessionId
+        val localId = nextLocalId
+        nextLocalId += 2
         val payload = service.toByteArray(Charsets.UTF_8)
         println("LocalAdb: OPEN $service")
         when (proto) {
@@ -322,6 +331,17 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
         }
         val sb = StringBuilder()
         var remoteId = -1
+        /** 사용 포기 스트림: CLSE 로 알려 zombie 잔여 프레임 유입을 막는다. */
+        fun abandon(detail: String): Failure {
+            runCatching {
+                when (proto) {
+                    Proto.NEW -> sendNew("CLSE", localId, remoteId, ByteArray(0), 0)
+                    Proto.CLASSIC -> sendClassic(A_CLSE, localId, remoteId, ByteArray(0))
+                }
+            }
+            lastOutput = sb.toString()
+            return Failure.ExecFailed(service, detail)
+        }
         try {
             while (true) {
                 val msg = receive() ?: run {
@@ -329,30 +349,42 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
                     lastOutput = sb.toString()
                     if (remoteId == -1) {
                         println("LocalAdb: service rejected (no OKAY before close): $service")
-                        return Failure.ExecFailed(service, "adbd closed before OKAY: out=" + sb.toString().take(200))
+                        return abandon("adbd closed before OKAY: out=" + sb.toString().take(200))
                     }
                     println("LocalAdb: connection closed during service ($service), out=${sb.length}B")
                     return null
+                }
+                val framed = msg.cmd == "OKAY" || msg.cmd == "WRTE" || msg.cmd == "WRAP" || msg.cmd == "CLSE"
+                if (framed && msg.arg1 != localId) {
+                    if (msg.cmd == "OKAY") {
+                        // stale ack echo — 아무 영향 없음
+                    } else {
+                        // 종료된(혹은 포기된) 스트림 참조: close 를 알려주고 넘어간다
+                        runCatching {
+                            when (proto) {
+                                Proto.NEW -> sendNew("CLSE", msg.arg1, msg.arg0, ByteArray(0), 0)
+                                Proto.CLASSIC -> sendClassic(A_CLSE, msg.arg1, msg.arg0, ByteArray(0))
+                            }
+                        }
+                    }
+                    continue
                 }
                 when (msg.cmd) {
                     "OKAY" -> remoteId = msg.arg0
                     "RTOK" -> Unit
                     "WRTE", "WRAP" -> {
-                        if (remoteId == -1 || msg.arg0 == remoteId) {
-                            sb.append(String(msg.data, Charsets.UTF_8))
-                        }
+                        sb.append(String(msg.data, Charsets.UTF_8))
                         // flow-control ACK (adbd 가 다음 WRTE/종료를 진행하기 위해 필요)
-                        val ackRemote = if (remoteId != -1) remoteId else msg.arg0
                         when (proto) {
-                            Proto.NEW -> sendNew("OKAY", localId, ackRemote, ByteArray(0), 0)
-                            Proto.CLASSIC -> sendClassic(A_OKAY, localId, ackRemote, ByteArray(0))
+                            Proto.NEW -> sendNew("OKAY", localId, remoteId, ByteArray(0), 0)
+                            Proto.CLASSIC -> sendClassic(A_OKAY, localId, remoteId, ByteArray(0))
                         }
                     }
                     "CLSE" -> {
                         lastOutput = sb.toString()
                         if (remoteId == -1) {
                             println("LocalAdb: service rejected ($service): CLSE without OKAY")
-                            return Failure.ExecFailed(service, "adbd rejected service: out=" + sb.toString().take(200))
+                            return abandon("adbd rejected service: out=" + sb.toString().take(200))
                         }
                         println("LocalAdb: service closed ($service), out=${lastOutput.length}B")
                         return null
@@ -361,9 +393,8 @@ class LocalAdb(private val context: Context, private val port: Int = 5555) {
                 }
             }
         } catch (e: Exception) {
-            lastOutput = sb.toString()
             println("LocalAdb: exec failed ($service): ${e.javaClass.simpleName}: ${e.message}")
-            return Failure.ExecFailed(service, e.message ?: e.javaClass.simpleName)
+            return abandon("${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
