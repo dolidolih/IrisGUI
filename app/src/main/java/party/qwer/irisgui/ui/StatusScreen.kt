@@ -488,10 +488,18 @@ private fun ServiceCard(
                                 AppState.running = false
                                 AppModeManager.setMode(opt)
                                 AppConfig.appMode = opt
-                                // 전환 안내 — 현재 서비스는 종료하고 새 모드로 자동 재시작된다.
+                                // 전환 안내 — 실행 중이면 종료 후 자동 재시작, 꺼져 있으면
+                                // 모드만 교체(정지 상태 유지)로 안내한다. 봉측이 실제보다
+                                // 먼저 "자동 실행"을 약속하면 안 된다 (RESTART 는 미실행
+                                // 상태에서 기동하지 않는다).
                                 AppState.postFeedback(
-                                    "서비스 모드를 ${modeLabelOf(opt)} 으로 전환합니다. " +
-                                        "현재 서비스는 종료하고 새 모드로 자동 실행됩니다.",
+                                    if (running) {
+                                        "서비스 모드를 ${modeLabelOf(opt)} 으로 전환합니다. " +
+                                            "현재 서비스는 종료하고 새 모드로 자동 실행됩니다."
+                                    } else {
+                                        "서비스 모드를 ${modeLabelOf(opt)} 으로 전환합니다. " +
+                                            "정지 상태이므로 스위치를 켤 때 새 모드로 실행됩니다."
+                                    },
                                     isError = false
                                 )
                                 // ISSUE-39#2: onToggle 경로와 같이 runCatching +

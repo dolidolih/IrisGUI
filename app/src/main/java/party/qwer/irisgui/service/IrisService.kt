@@ -87,6 +87,17 @@ class IrisService : Service() {
         // 토글처럼 "서비스를 시작했습니다" 를 되풀이해 뿌리지 않는다.
         val userRequested = (flags and Service.START_FLAG_REDELIVERY) == 0
 
+        // Foreground 서비스는 startForegroundService 직후 (대략 5s 내) main thread 에서
+        // synchronous 로 startForeground 를 호출해야 한다. dispatch(서비스 코루틴) 보다
+        // 먼저 승격시켜야 "정지/미실행 해체" 경로와 경주하지 않는다 — 코루틴 쪽
+        // stopForeground/stopSelf 가 선행되면 승격이 그 뒤를 덮어써서 봉사가 다시 살아난다.
+        val notification = buildServiceNotification(AppConfig.isServiceEnabled)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
         when (intent?.action) {
             ACTION_EXIT_SERVICE -> {
                 // ISSUE-07: 데몬 정지가 serviceScope 로 넘겨지면 프로세스 소멸과 경주해
@@ -105,13 +116,29 @@ class IrisService : Service() {
                 return START_NOT_STICKY
             }
             // 모드 전환/재시작: 이전 모드 백엔드가 완전히 내려간 뒤 새 모드를 기동한다.
-            // 정지를 기다리지 않으면 이전 모드가 쓰던 포트가 남아 BindException(포트 사용 중)이 발생한다.
+            // 정지를 기다리지 않으면 이전 모드가 쓰던 포트가 남아 BindException(포트 사용 중)이
+            // 발생한다.
+            // 서비스가 애초에 꺼져 있었다면 "모드만 교체" — 기동 요구는 없다. RESTART 가
+            // 미실행 서비스를 조용히 기동해 버리면, 직후 토글 START 과 겹쳐
+            // "서비스는 이미 실행 중입니다" 오표시로 되돌아온다 (교차 모드 전환에서
+            // 재현된 패턴 — 드롭다운 자동 재시작과 수동 토글의 이중 기동).
             ACTION_RESTART_SERVICE -> serviceScope.launch {
+                val wasRunning = AppConfig.isServiceEnabled
                 stopLogic(reportUser = false)
+                if (!wasRunning) {
+                    RuntimeLog.info(
+                        TAG,
+                        "RESTART — 서비스 미실행: 모드만 교체하고 기동하지 않는다 " +
+                            "(mode=${AppModeManager.detectMode()})"
+                    )
+                    // startForegroundService 가 기동시킨 빈 포인터 기록만 되돌린다.
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
+                }
                 awaitBackendDown()
                 startLogic(reportUser = userRequested)
             }
-            ACTION_START_SERVICE -> serviceScope.launch { startLogic(reportUser = userRequested) }
             ACTION_START_SERVICE -> serviceScope.launch { startLogic(reportUser = userRequested) }
             ACTION_STOP_SERVICE -> serviceScope.launch {
                 stopLogic(reportUser = true)
@@ -131,17 +158,7 @@ class IrisService : Service() {
             }
         }
 
-        // Foreground 서비스는 startForegroundService 직후 (대략 5s 내) main thread 에서
-        // synchronous 로 startForeground 를 호출해야 한다. 여기서 기동용 notification 을
-        // 올리고, startLogic/stopLogic 의 실제 동작 결과가 확정되면 updateForegroundNotification()
-        // 으로 문구만 갱신한다.
-        val notification = buildServiceNotification(AppConfig.isServiceEnabled)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-
+        // startForeground 는 dispatch 직전(상단)에서 이미 승격시켰다.
         return START_STICKY
     }
 
@@ -157,23 +174,30 @@ class IrisService : Service() {
         // 편집기 웹 리모트(/editor, 전용 포트 기본 3100) — 백엔드 생존 여부와 무관하게
         // 앱 프로세스에는 항상 뜬다(userland/bridge 거주지). 멱등이라 매호출 안전.
         EditorWeb.start(applicationContext)
-        // 백엔드 생존 여부를 직접 확인한다 — AppConfig.isServiceEnabled만 믿으면
-        // 데몬이 죽은 뒤에도 "실행 중"으로 보여 기동이 스킵된다.
-        if (backendRunning()) {
-            AppState.running = true
-            AppConfig.isServiceEnabled = true
-            if (reportUser) toast("서비스는 이미 실행 중입니다")
-            RuntimeLog.info(TAG, "start skipped — backend already running")
-            return true
-        }
-
-        wakeLock?.let { if (!it.isHeld) it.acquire() }
-        AppConfig.isServiceEnabled = true
-
+        // 모드는 백엔드 생존 판정에 선행해야 한다 — currentMode가 직전 모드에 남은 채로
+        // backendRunning()을 부르면 "다른 모드 백엔드"로 "이미 실행 중"을 오판한다
+        // (모드 전환 후 교차 모드 기동에서 반복 재현된 오표시의 원인).
         // UI 경유 없이 서비스가 기동되면(adb am, 워치독, 부팅 후 재시작 등)
         // currentMode가 default(NON_ROOT)에 머물러 있어 영속화된 모드를 먼저 반영한다.
         AppModeManager.detectMode()
         val mode = AppModeManager.currentMode
+
+        // 백엔드 생존 여부를 직접 확인한다 — AppConfig.isServiceEnabled만 믿으면
+        // 데몬이 죽은 뒤에도 "실행 중"으로 보여 기동이 스킵된다. 반대로 플래그가
+        // 꺼진 채 백엔드만 남아있으면(교차 모드 잔여/재전달 경주) 그건 "실행 중"이
+        // 아니라 정리 대상 — 스킵하지 않고 아래 반납 경로로 통과시킨다.
+        if (backendRunning() && AppConfig.isServiceEnabled) {
+            AppState.running = true
+            if (reportUser) toast("서비스는 이미 실행 중입니다")
+            RuntimeLog.info(TAG, "start skipped — backend already running (mode=$mode, enabled=true)")
+            return true
+        }
+        if (backendRunning()) {
+            RuntimeLog.info(TAG, "start — stale backend (enabled=false) 을 반납 후 재기동 (mode=$mode)")
+        }
+
+        wakeLock?.let { if (!it.isHeld) it.acquire() }
+        AppConfig.isServiceEnabled = true
         RuntimeLog.info(TAG, "start requested, mode=$mode")
 
         val port = AppConfig.serverPort
@@ -185,9 +209,11 @@ class IrisService : Service() {
         runCatching {
             withContext(Dispatchers.IO) {
                 // 앱 프로세스 내부 백엔드(HayulBackend/IrisServer)는 in-pro세스 반납 —
-                // HayulBackend.stop 은 멱등이라 모드와 무관하게 부른다.
+                // 모드와 무관하게 살아있으면 항상.stop한다 (멱등). " 플래그 꺼진 채
+                // 살아있던 잔여 백엔드"까지 통과시킨 이상, 여기 안 내리면
+                // 같은 포트 BindException 으로 직후 기동이 실패한다.
                 HayulBackend.stop()
-                if (mode != AppMode.NON_ROOT) IrisServer.stop()
+                IrisServer.stop()
                 //그래도 포트에 응답이 남으면 프로세스 밖 daemon(app_process)의 것 —
                 // ROOT_ADB으로 갈아탈 때만 그대로 둔다(HAYUL/NON_ROOT 는 무조건 반납).
                 if (mode != AppMode.ROOT_ADB && AdbProcessClient.queryStatus() != null) {
