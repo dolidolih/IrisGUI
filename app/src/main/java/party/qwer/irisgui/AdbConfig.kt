@@ -55,6 +55,8 @@ object AdbConfig {
         val webEndpoint: String = "",
         val sendRate: Long = 500L,
         val serverPort: Int = 3000,
+        /** /editor 웹 편집기 전용 바인드(앱 프로세스, serverPort 와 별개). */
+        val editorPort: Int = 3100,
         val botName: String = "Iris",
         val botId: Long = 0L,
         val dbPollingRate: Long = 100L,
@@ -261,6 +263,10 @@ object AdbConfig {
     var serverPort: Int
         get() = config.serverPort
         set(value) { mutate { it.copy(serverPort = value) } }
+
+    var editorPort: Int
+        get() = config.editorPort
+        set(value) { mutate { it.copy(editorPort = value) } }
 
     var botName: String
         get() = config.botName

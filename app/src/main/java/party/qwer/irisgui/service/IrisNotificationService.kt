@@ -285,12 +285,13 @@ class IrisNotificationService : NotificationListenerService() {
 
     /**
      * 이벤트 스트림의 주인이 NLS 인가, daemon(DBObserver) 인가.
-     * ROOT_ADB 이면 daemon, NON_ROOT 이면 NLS. 판별이 밀려서 모드는 NON_ROOT 인데 daemon 이
+     * ROOT_ADB 이면 daemon, HAYUL 이면 앱 내장 DBObserver(카톡 DB 직독) — 둘 다 NLS 는
+     * 주인이 아니다. NON_ROOT 판별이 밀려서 모드는 NON_ROOT 인데 daemon 이
      * 이미 도는 상태(기동 직후 / 자동감지 실패)에서는 중복을 막기 위해 생존 확인을 한다 —
      * local loopback 의 /process-status GET 한 번만, throttled 로. root/adb 명령은 쓰지 않는다.
      */
     private suspend fun daemonOwnsEventStream(): Boolean {
-        if (AppModeManager.ensureDetected() == AppMode.ROOT_ADB) return true
+        if (AppModeManager.ensureDetected() != AppMode.NON_ROOT) return true
         val now = System.currentTimeMillis()
         val last = cachedDaemonLiveAt
         if (last != 0L && now - last < DAEMON_LIVENESS_TTL_MS) return cachedDaemonLive

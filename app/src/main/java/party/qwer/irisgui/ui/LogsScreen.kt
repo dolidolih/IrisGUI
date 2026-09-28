@@ -54,6 +54,7 @@ import party.qwer.irisgui.models.NotificationEvent
  * 수신 메시지 소스는 모드별로 다르지만 동일 형태(카드)로 렌더링한다.
  *   ROOT_ADB : DB 로그(AppState.lastChatLogs)
  *   NON_ROOT : 수신 알림(AppState.notificationHistory)
+ *   HAYUL    : ROOT_ADB 와 동일 — 앱 내장 서버의 DB 로그 (HTTP 왕복 없이 같은 프로세스)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,7 +90,7 @@ fun LogsScreen() {
         }
     }
 
-    if (mode == AppMode.ROOT_ADB) {
+    if (mode != AppMode.NON_ROOT) {
         // ISSUE-28: lifecycle 게이트 + 실패 백오프. ISSUE-29: 조회 실패(null)로
         // messages 를 비우지 않는다 — transient busy 가 "수신 없음" flicker 가 된다.
         StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L) {

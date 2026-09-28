@@ -92,8 +92,8 @@ private const val JSON = """
   "info": {
     "title": "IrisGUI HTTP API",
     "version": "1.0.0",
-    "summary": "ROOT_ADB 데몬(Ktor/Netty) API",
-    "description": "KakaoTalk bot 데몬(HTTP) + 이벤트 스트리밍(`/ws`) 명세. 데몬(`app_process`)은 루팅 모드에서만 구동하므로 표시 없는 항목은 논루팅(NON_ROOT, 앱 내장) 모드에서 제공되지 않습니다. irispy-client 호환 계약은 `json` 키 필드명/경로 변경 금지가 최상위 규격입니다.\n\n`/ws` 는 OpenAPI 로 설명 불가하므로 `x-websocket` 으로 나타냅니다.",
+    "summary": "ROOT_ADB/HAYUL 백엔드(Ktor/Netty) API",
+    "description": "KakaoTalk bot 백엔드(HTTP) + 이벤트 스트리밍(`/ws`) 명세. ROOT_ADB 는 데몬(`app_process`)에서, HAYUL 은 동일 스택을 앱 내장(HayulBackend) 으로 구동하므로 전체 엔드포인트가 제공된다. NON_ROOT(알림) 모드에서는 `/reply`·`/ws` 만 제공됩니다. irispy-client 호환 계약은 `json` 키 필드명/경로 변경 금지가 최상위 규격입니다.\n\n`/ws` 는 OpenAPI 로 설명 불가하므로 `x-websocket` 으로 나타냅니다.",
     "contact": { "name": "IrisGUI" }
   },
   "servers": [ { "url": "__SERVER_URL__", "description": "요청 Host 기준 (기기 IP · forward 포트 포함)" } ],

@@ -109,7 +109,7 @@ object KakaoRoomResolver {
             misses.incrementAndGet()
             return when (AppModeManager.ensureDetected()) {
                 AppMode.NON_ROOT -> rankingLabel(nls, sbnKey)
-                AppMode.ROOT_ADB -> {
+                AppMode.ROOT_ADB, AppMode.HAYUL -> {
                     requestRoomRefresh(context)
                     null
                 }
@@ -132,8 +132,8 @@ object KakaoRoomResolver {
                 }
             }
 
-            AppMode.ROOT_ADB -> {
-                // 데몬 DB로 방 이름을 해결하되, emit 코루틴에서 HTTP 를 기다리지 않는다.
+            AppMode.ROOT_ADB, AppMode.HAYUL -> {
+                // 데몬 DB(또는 Hayul 직독 DB)로 방 이름을 해결하되, emit 코루틴에서 HTTP 를 기다리지 않는다.
                 // 백그라운드 refresh 를 깨우고 이번엔 null(호출측은 발신자 닉네임으로 폴백),
                 // 다음 이벤트부터 이름이 붙는다.
                 requestRoomRefresh(context)

@@ -55,6 +55,14 @@ import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.AppState
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * AppState.lastFeedback 노출을 process-scope 로 1 회만 보장하는 추적자.
+ * remember 은 compositor 재생성 시 초기화되므로 "백그라운드에서 왔을 때" 조용히
+ * 마지막 안내를 복제해서 띄운다 — static 이어야 하는 이유.
+ */
+private val shownFeedbackId = AtomicLong(0L)
 
 /**
  * MainScreen — IrisGUI 셸.
@@ -63,6 +71,7 @@ import party.qwer.irisgui.AppState
  *
  *   ROOT_ADB : 상태 / 로그 / 도구
  *   NON_ROOT : 상태 / 로그
+ *   HAYUL    : 상태 / 로그 / 도구 / 스크립트 / 권한 (adb 모드와 동일 — 앱 내장 백엔드)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,23 +92,29 @@ fun MainScreen() {
 
     // 서비스 시작/정지 결과 — Toast 는 백그라운드에서 OS 가 폐기하므로 스낵바로 확정 표시한다.
     // id 가 변할 때만 노출하므로 동일 메시지도 다시 뜬다.
+    // 회귀 방지: Activity 가 백그라운드 소거/재생성으로 처음 compositor 에 들어오면
+    // LaunchedEffect key(feedback?.id) 가 "변화"가 아니어도 최초 실행된다 — process-scope
+    // counter 로 이미 노출된 id 를 기억해야 "앱 나갔다 옴" 만에 조용히 재노출되지 않는다.
     val feedback = AppState.lastFeedback
     LaunchedEffect(feedback?.id) {
         feedback?.let {
-            snackbarHostState.showSnackbar(
-                message = it.message,
-                duration = if (it.isError) SnackbarDuration.Long else SnackbarDuration.Short
-            )
+            if (shownFeedbackId.get() != it.id) {
+                shownFeedbackId.set(it.id)
+                snackbarHostState.showSnackbar(
+                    message = it.message,
+                    duration = if (it.isError) SnackbarDuration.Long else SnackbarDuration.Short
+                )
+            }
         }
     }
 
 
     val tabs = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf("상태", "로그", "도구", "스크립트", "권한")
+        AppMode.ROOT_ADB, AppMode.HAYUL -> listOf("상태", "로그", "도구", "스크립트", "권한")
         AppMode.NON_ROOT -> listOf("상태", "로그", "스크립트", "권한")
     }
     val icons = when (currentMode) {
-        AppMode.ROOT_ADB -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Description, Icons.Default.Shield)
+        AppMode.ROOT_ADB, AppMode.HAYUL -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Storage, Icons.Default.Description, Icons.Default.Shield)
         AppMode.NON_ROOT -> listOf(Icons.Default.Dashboard, Icons.Default.History, Icons.Default.Description, Icons.Default.Shield)
     }
     // ISSUE-39#3: 모드 전환 직후 selectedTabIndex 리셋이 한 프레임 늦으면
@@ -192,4 +207,5 @@ fun MainScreen() {
 internal fun modeLabelOf(mode: AppMode): String = when (mode) {
     AppMode.ROOT_ADB -> "루팅(ADB)"
     AppMode.NON_ROOT -> "논루팅(알림)"
+    AppMode.HAYUL -> "Hayul(공유 uid)"
 }

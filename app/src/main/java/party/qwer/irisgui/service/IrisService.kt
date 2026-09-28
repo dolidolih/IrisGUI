@@ -31,6 +31,8 @@ import party.qwer.irisgui.RuntimeLog
 import party.qwer.irisgui.R
 import party.qwer.irisgui.backend.AdbProcessClient
 import party.qwer.irisgui.backend.DaemonLauncher
+import party.qwer.irisgui.backend.EditorWeb
+import party.qwer.irisgui.backend.HayulBackend
 import party.qwer.irisgui.backend.IrisServer
 
 /**
@@ -40,6 +42,8 @@ import party.qwer.irisgui.backend.IrisServer
  * - 논루팅(알림): NLS 서비스 시작 + 인프로세스 IrisServer(/reply, /ws)
  * - 루팅 ADB: 앱 프로세스 내 서버 없음. 데몬(app_process)을 기기 내 자체 ADB 연결로
  *   자율 기동 (DaemonLauncher) — host PC의 adb 불필요
+ * - Hayul(shared-uid): 데몬/NLS 없음 — HayulBackend 가 카톡 DB 직독 앱 내 워스셋
+ *   (DBObserver+Replier+AdbServer) 을 기동. 시작 전 읽기 가능 게이트가 관문.
  */
 class IrisService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
@@ -78,6 +82,11 @@ class IrisService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
 
+        // 재전달(sticky restart)은 사용자 요청이 아니다 — HAYUL 은 백엔드가 이
+        // 프로세스 안에서 도므로, 백그라운드 소거 후 재전달되면 조용히 복구만 하고
+        // 토글처럼 "서비스를 시작했습니다" 를 되풀이해 뿌리지 않는다.
+        val userRequested = (flags and Service.START_FLAG_REDELIVERY) == 0
+
         when (intent?.action) {
             ACTION_EXIT_SERVICE -> {
                 // ISSUE-07: 데몬 정지가 serviceScope 로 넘겨지면 프로세스 소멸과 경주해
@@ -100,12 +109,25 @@ class IrisService : Service() {
             ACTION_RESTART_SERVICE -> serviceScope.launch {
                 stopLogic(reportUser = false)
                 awaitBackendDown()
-                startLogic(reportUser = true)
+                startLogic(reportUser = userRequested)
             }
-            ACTION_START_SERVICE -> serviceScope.launch { startLogic(reportUser = true) }
-            ACTION_STOP_SERVICE -> serviceScope.launch { stopLogic(reportUser = true) }
+            ACTION_START_SERVICE -> serviceScope.launch { startLogic(reportUser = userRequested) }
+            ACTION_START_SERVICE -> serviceScope.launch { startLogic(reportUser = userRequested) }
+            ACTION_STOP_SERVICE -> serviceScope.launch {
+                stopLogic(reportUser = true)
+                // stopLogic 은 백엔드(서버/데몬/워스셋)만 내린다. 포그라운드 서비스
+                // 자체(알림+프로세스)를 해체하지 않으면 "정지" 후에도 알림창은 그대로
+                // 남고 dumpsys 상 foreground 서비스로 잔존한다. EXIT 경로처럼 명시 해체.
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
             else -> serviceScope.launch {
-                if (AppConfig.isServiceEnabled) startLogic(reportUser = false) else stopLogic(reportUser = false)
+                if (AppConfig.isServiceEnabled) startLogic(reportUser = false)
+                else {
+                    stopLogic(reportUser = false)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
 
@@ -132,6 +154,9 @@ class IrisService : Service() {
         logicMutex.withLock { startLogicLocked(reportUser) }
 
     private suspend fun startLogicLocked(reportUser: Boolean): Boolean {
+        // 편집기 웹 리모트(/editor, 전용 포트 기본 3100) — 백엔드 생존 여부와 무관하게
+        // 앱 프로세스에는 항상 뜬다(userland/bridge 거주지). 멱등이라 매호출 안전.
+        EditorWeb.start(applicationContext)
         // 백엔드 생존 여부를 직접 확인한다 — AppConfig.isServiceEnabled만 믿으면
         // 데몬이 죽은 뒤에도 "실행 중"으로 보여 기동이 스킵된다.
         if (backendRunning()) {
@@ -159,13 +184,18 @@ class IrisService : Service() {
         // 새 백엔드가 BindException(포트 사용 중)으로 실패한다. 먼저 반납시킨다.
         runCatching {
             withContext(Dispatchers.IO) {
-                if (mode == AppMode.NON_ROOT && AdbProcessClient.queryStatus() != null) {
+                // 앱 프로세스 내부 백엔드(HayulBackend/IrisServer)는 in-pro세스 반납 —
+                // HayulBackend.stop 은 멱등이라 모드와 무관하게 부른다.
+                HayulBackend.stop()
+                if (mode != AppMode.NON_ROOT) IrisServer.stop()
+                //그래도 포트에 응답이 남으면 프로세스 밖 daemon(app_process)의 것 —
+                // ROOT_ADB으로 갈아탈 때만 그대로 둔다(HAYUL/NON_ROOT 는 무조건 반납).
+                if (mode != AppMode.ROOT_ADB && AdbProcessClient.queryStatus() != null) {
                     DaemonLauncher.stopDaemon(applicationContext)
                     DaemonLauncher.waitForDaemonDown()
                 }
             }
         }
-        if (mode == AppMode.ROOT_ADB && IrisServer.isStarted) IrisServer.stop()
 
         when (mode) {
             AppMode.ROOT_ADB -> {
@@ -229,6 +259,18 @@ class IrisService : Service() {
                     }
                 }
             }
+            AppMode.HAYUL -> {
+                // Hayul(shared-uid): 카톡 DB 읽기 게이트 통과 시에만 앱 내 워스셋을 띄운다.
+                // 패치 미적용으로 half-start 되지 않고, 사유가 그대로 실패 문구가 된다
+                // (HayulBackend.start 는 실패 시 아무것도 남기지 않는다).
+                failure = withContext(Dispatchers.IO) { HayulBackend.start(applicationContext) }
+                if (failure == null) {
+                    started = true
+                    RuntimeLog.info(TAG, "Hayul in-process backend started (shared uid, port $port)")
+                } else {
+                    RuntimeLog.error(TAG, "Hayul start aborted: $failure")
+                }
+            }
         }
 
         if (started) {
@@ -251,6 +293,7 @@ class IrisService : Service() {
     private suspend fun backendRunning(): Boolean = when (AppModeManager.currentMode) {
         AppMode.ROOT_ADB -> AdbProcessClient.queryStatus()?.server_running == true
         AppMode.NON_ROOT -> IrisServer.isStarted
+        AppMode.HAYUL -> HayulBackend.isRunning
     }
 
     /**
@@ -264,11 +307,11 @@ class IrisService : Service() {
             val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
                 val daemonGone = AdbProcessClient.queryStatus() == null
-                val serverGone = !IrisServer.isStarted
+                val serverGone = !IrisServer.isStarted && !HayulBackend.isRunning
                 if (daemonGone && serverGone) return@withContext true
                 kotlinx.coroutines.delay(200)
             }
-            AdbProcessClient.queryStatus() == null && !IrisServer.isStarted
+            AdbProcessClient.queryStatus() == null && !IrisServer.isStarted && !HayulBackend.isRunning
         }
 
     /**
@@ -291,6 +334,9 @@ class IrisService : Service() {
         } catch (e: Exception) {
             RuntimeLog.warn(TAG, "NLS 정지 실패: ${e.message}")
         }
+
+        // Hayul 백엔드도 모드-무관 반납 — AdbServer/워스셋이 앱 프로세스에 살아있을 수 있다.
+        withContext(Dispatchers.IO) { HayulBackend.stop() }
 
         // 데몬은 서비스 바깥의 별개 프로세스이므로 모드를 바꿔도 항상 정리한다.
         // (정지를 await 하지 않으면 이전 모드 포트가 점유된 채로 새 모드가.BindException 된다.)
@@ -475,6 +521,7 @@ class IrisService : Service() {
 
     private fun cleanup() {
         IrisServer.stop()
+        EditorWeb.stop()
         // proot 로 도는 python 스크립트는 서비스 종료와 별개로 살아남을 수 있으므로
         // IO 에서 먼저 전부 정지한다.
         serviceScope.launch(Dispatchers.IO) {

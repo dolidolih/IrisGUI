@@ -6,7 +6,8 @@ package party.qwer.irisgui.backend
  *
  * Key derivation (offline + live verified):
  *   rawKey = AndroidKeyStore HMAC key held under alias "crypto_db_passphrase_key"
- *            (software-backed KM blob, read only as root — see KeystoreRawKey)
+ *            (software-backed KM blob — read via root dump in ROOT_ADB, or via the
+ *             shared-uid framework KeyStore API in HAYUL mode — see KeystoreRawKey)
  *   K      = HMAC-SHA256(rawKey, "crypto_database")   // 32 bytes
  *   Open with sqlite3_key_v2(db,"main",K,32) — passphrase mode, SQLCipher-4 defaults.
  *   Feeding K as a raw key (`PRAGMA key="x'…'"`) fails with "file is not a database".

@@ -17,26 +17,59 @@ import javax.crypto.spec.SecretKeySpec
  * `keyentry`(namespace=카톡 uid, alias) → `blobentry`(subcomponent_type=0) blob.
  * blob은 software-backed KM blob("PKMblob" 매직 + 4B type + LE uint32 keyLen + rawKey).
  *
+ * HAYUL(shared-uid) 경로: persistent.sqlite 는 keystore uid 영역 — root 없이 읽을 수
+ * 없다. 대신 uid 를 공유하므로 AndroidKeyStore 프레임워크 API 로 카톡의 alias 를
+ * 그대로 사용할 수 있다 (getEntry → HMAC 도는 rawKey 추출/사용 가능). hmacKeyFor 는
+ * blob → keystore-API 순서로 시도하므로 모드와 무관하게 동작한다.
+ *
+ * namespace = 실제 카톡 uid — 예전 하드코딩(10089)은 기기마다 다른 값이었으므로
+ * context 가능 시 packageManager 로 해석하고, daemon 은 env(KAKAOTALK_APP_UID) 우선.
+ *
  * 주의: hardware-backed(TZB/TEE) keystore 기기에서는 blob에 평문 rawKey가 없어 null을
  * 반환한다. 그 경우 카톡 uid 도메인에서 `Mac.doFinal`을 수행하는 probe가 필요 (§10).
  * null이면 호출측은 조용히 폴백한다 (crash/오류 없음).
  */
 object KeystoreRawKey {
     private const val PERSISTENT = "/data/misc/keystore/persistent.sqlite"
-    private const val KAKAO_UID = 10089
+    private const val KAKAO_UID_FALLBACK = 10089
     private const val BLOB_MAGIC = "PKMblob"
 
+    /** keystore namespace — 카톡의 실제 uid (shared-uid 이면 이 process uid 와 동일). */
+    internal fun kakaoUid(): Int =
+        System.getenv("KAKAOTALK_APP_UID")?.trim()?.toIntOrNull() ?: runCatching {
+            val app = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null) as? android.app.Application
+            app?.packageManager?.getPackageInfo("com.kakao.talk", 0)?.applicationInfo?.uid
+        }.getOrNull() ?: KAKAO_UID_FALLBACK
+
     /** alias의 raw HMAC key(32B), 없거나 파싱 불가 시 null. */
-    fun hmacRawKey(alias: String, uid: Int = KAKAO_UID): ByteArray? =
+    fun hmacRawKey(alias: String, uid: Int = kakaoUid()): ByteArray? =
         runCatching { parseFromPersistent(alias, uid) }.getOrNull()
 
     /** K = HMAC-SHA256(rawKey(alias), message). rawKey 불가 시 null. */
-    fun hmacKeyFor(alias: String, message: String, uid: Int = KAKAO_UID): ByteArray? {
-        val raw = hmacRawKey(alias, uid) ?: return null
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(raw, "HmacSHA256"))
-        return mac.doFinal(message.toByteArray(Charsets.UTF_8))
+    fun hmacKeyFor(alias: String, message: String, uid: Int = kakaoUid()): ByteArray? {
+        val raw = hmacRawKey(alias, uid)
+        if (raw != null) {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(raw, "HmacSHA256"))
+            return mac.doFinal(message.toByteArray(Charsets.UTF_8))
+        }
+        // root 없이 alias 가 reachable 한 상태(HAYUL shared-uid) — 프레임워크 keystore 로
+        // 직접 HMAC 을 탄다 (동일 수식: K = Mac_rawKey(message)).
+        return hmacViaFrameworkKeyStore(alias, message)
     }
+
+    /** AndroidKeyStore 의 SecretKeyEntry(alias) 로 HMAC-SHA256(message) — 실패 시 null. */
+    private fun hmacViaFrameworkKeyStore(alias: String, message: String): ByteArray? =
+        runCatching {
+            val ks = java.security.KeyStore.getInstance("AndroidKeyStore")
+            ks.load(null)
+            val key = (ks.getEntry(alias, null) as? java.security.KeyStore.SecretKeyEntry)?.secretKey
+                ?: return null
+            Mac.getInstance("HmacSHA256").apply { init(key) }
+                .doFinal(message.toByteArray(Charsets.UTF_8))
+        }.onFailure { System.err.println("KeystoreRawKey: framework keystore HMAC unavailable: ${it.message}") }
+            .getOrNull()
 
     /**
      * offset 하드코딩 대신 KM blob 헤더를 따라간다: 매직("PKMblob" NUL-terminated) 뒤

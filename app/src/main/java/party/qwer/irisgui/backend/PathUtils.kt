@@ -9,6 +9,11 @@ import java.io.File
  * 환경변수라서, 반드시 숫자만 통과시킨다. (숫자 검증 없으면 `'; DROP …` 류의 값을
  * `ATTACH DATABASE '<path>/KakaoTalk.db'` 문자열에 그대로 심게 된다.)
  *
+ * 모드와 경로: ROOT_ADB daemon(uid 0) 은 env uid 로 /data_mirror 트리를 먼저 탄다 —
+ * 다른 사용자/네임스페이스에서 CE 데이터를 보는 안전한 시점이라. HAYUL(shared-uid)
+ * 은 앱 프로세스가 곧 카톡 uid 이므로 mirror 필요 없이 /data/data/com.kakao.talk 가
+ * 곧 제자리 — env 는 unset 이고 defaultPath 가 정확히 그 경로를 탄다.
+ *
  * ISSUE-40: 경로는 처음 해석될 때 캐시하고(60s TTL) 이후 stat 을 피한다. 해석 실패를
  * 첫 질의 스레드에서 조용히 던지지 않도록 `precompute()` 로 start-up 에 확인하고,
  * 캐시된 값은 `describe()` 로 로그에 남긴다.

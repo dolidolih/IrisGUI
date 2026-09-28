@@ -10,6 +10,7 @@ import party.qwer.irisgui.AppConfig
 import party.qwer.irisgui.AppMode
 import party.qwer.irisgui.AppModeManager
 import party.qwer.irisgui.backend.AdbProcessClient
+import party.qwer.irisgui.backend.HayulBackend
 import party.qwer.irisgui.backend.IrisServer
 
 /**
@@ -71,11 +72,13 @@ class WatchdogReceiver : BroadcastReceiver() {
         }
     }
 
-    /** 모드별 실제 백엔드 probe. ROOT_ADB 는 데몬 HTTP, NON_ROOT 는 인프로세스 서버. */
+    /** 모드별 실제 백엔드 probe. ROOT_ADB 는 데몬 HTTP, HAYUL 은 앱 내장 HayulBackend, NON_ROOT 는 인프로세스 서버. */
     private fun backendAlive(mode: AppMode): Boolean = runBlocking {
         when (mode) {
             AppMode.ROOT_ADB ->
                 AdbProcessClient.queryStatus() != null || AdbProcessClient.isHttpPortOpen()
+            AppMode.HAYUL ->
+                HayulBackend.isRunning || AdbProcessClient.queryStatus() != null
             AppMode.NON_ROOT -> IrisServer.isStarted
         }
     }

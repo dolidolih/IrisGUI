@@ -17,6 +17,7 @@ interface ConfigStore {
     var webEndpoint: String
     var sendRate: Long
     var serverPort: Int
+    var editorPort: Int
     var botName: String
     var botId: Long
     var dbPollingRate: Long
@@ -75,6 +76,10 @@ class SharedPrefConfigStore : ConfigStore {
     override var serverPort: Int
         get() = prefs.getInt("serverPort", 3000)
         set(v) = edit { putInt("serverPort", v).apply() }
+
+    override var editorPort: Int
+        get() = prefs.getInt("editorPort", 3100)
+        set(v) = edit { putInt("editorPort", v).apply() }
 
     override var botName: String
         get() = prefs.getString("botName", "Iris") ?: "Iris"
@@ -140,6 +145,10 @@ class JsonConfigStore : ConfigStore {
     override var serverPort: Int
         get() = AdbConfig.serverPort
         set(v) { AdbConfig.serverPort = v }
+
+    override var editorPort: Int
+        get() = AdbConfig.editorPort
+        set(v) { AdbConfig.editorPort = v }
 
     override var botName: String
         get() = AdbConfig.botName

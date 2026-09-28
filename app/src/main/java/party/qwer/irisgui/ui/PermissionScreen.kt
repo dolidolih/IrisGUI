@@ -31,6 +31,7 @@ import party.qwer.irisgui.backend.AdbProcessClient
  * 모드별로 실제로 필요한 항목만 카드한다:
  *   NON_ROOT : 알림 표시 · 배터리 예외 · 알림 접근(NLS) · 다른 앱 위에 그리기
  *   ROOT_ADB : 알림 표시 · 배터리 예외 · 백그라운드 데몬 상태
+ *   HAYUL    : 알림 표시 · 배터리 예외 · 백그라운드(앱 내장 HayulBackend) 상태
  *
  * "다른 앱 위에 그리기"는 NON_ROOT 의 사진 발송(IrisServer)에서만 사용하므로
  * ROOT_ADB 에서는 노출하지 않는다.
@@ -46,11 +47,12 @@ fun PermissionScreen(permission: PermissionStatus) {
         ActivityResultContracts.RequestPermission()
     ) { /* 상태 갱신은 ON_RESUME 에서 */ }
 
-    // ROOT_ADB — 백그라운드 데몬(app_process) 생존 상태. 정지된 채로 권한만 허용되어도
-    // 동작하지 않으므로 상태 표시를 함께 제공한다.
+    // ROOT_ADB/HAYUL — 백그라운드 워스셋 생존 상태. 정지된 채로 권한만 허용되어도
+    // 동작하지 않으므로 상태 표시를 함께 제공한다. (Hayul 은 같은 포트의 앱 내장
+    // AdbServer 가 /process-status 를 응답 — 조회 경로 동일.)
     var daemonRunning by remember { mutableStateOf(false) }
     var daemonPort by remember { mutableStateOf(0) }
-    if (mode == AppMode.ROOT_ADB) {
+    if (mode != AppMode.NON_ROOT) {
         // ISSUE-28: 백오프 있는 lifecycle 폴링 — daemon 이 내려간 채로 매번 full
         // timeout 소음을 내지 않게 실패 시 지수 증가.
         StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L) {
@@ -123,24 +125,29 @@ fun PermissionScreen(permission: PermissionStatus) {
             }
         } else {
             item {
-                DaemonStatusCard(running = daemonRunning, port = daemonPort)
+                DaemonStatusCard(running = daemonRunning, port = daemonPort, hayul = mode == AppMode.HAYUL)
             }
         }
     }
 }
 
-/** 루팅 모드 — 백그라운드 프로세스(deemon) 상태 카드. 처리 버튼 없이 상태만 표시한다. */
+/** 루팅/하이율 모드 — 백그라운드 워스셋(deemon / 앱 내장 HayulBackend) 상태 카드. 처리 버튼 없이 상태만 표시한다. */
 @Composable
-private fun DaemonStatusCard(running: Boolean, port: Int) {
+private fun DaemonStatusCard(running: Boolean, port: Int, hayul: Boolean) {
     SurfaceCard {
         SectionTitle(
-            "백그라운드 프로세스(ADB)",
+            if (hayul) "백그라운드 프로세스(Hayul)" else "백그라운드 프로세스(ADB)",
             icon = Icons.Default.Shield,
             trailing = { StatusPill(ok = running, label = if (running) "실행 중" else "정지됨") }
         )
         Text(
-            if (running) "app_process 데몬이 포트 $port 에서 DB 관찰·발송을 담당합니다."
-            else "데몬이 내려간 상태입니다. 상태 탭의 서비스를 켜면 함께 기동됩니다.",
+            if (hayul) {
+                if (running) "앱(카톡과 공유 uid)이 포트 $port 에서 DB 관찰·발송을 담당합니다."
+                else "워스셋이 내려간 상태입니다. 상태 탭의 서비스를 켜면 함께 기동됩니다."
+            } else {
+                if (running) "app_process 데몬이 포트 $port 에서 DB 관찰·발송을 담당합니다."
+                else "데몬이 내려간 상태입니다. 상태 탭의 서비스를 켜면 함께 기동됩니다."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = if (running) AppColors.TextSub else AppColors.WarningVivid
         )

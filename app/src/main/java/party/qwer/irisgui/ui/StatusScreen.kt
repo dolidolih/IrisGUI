@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Hive
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -56,7 +57,7 @@ import party.qwer.irisgui.models.ConfigRequest
 import party.qwer.irisgui.service.IrisService
 
 /**
- * StatusScreen — ROOT_ADB / NON_ROOT 공용 상태 화면.
+ * StatusScreen — ROOT_ADB / NON_ROOT / HAYUL 공용 상태 화면.
  *
  *   행1: 서비스 모드 전환
  *   행2: 서비스 ON / OFF
@@ -103,7 +104,7 @@ fun StatusScreen(permission: PermissionStatus) {
     StartedPollLoop(mode, baseMs = 3000L, maxMs = 15_000L,
         isBusy = { starting || pendingOff }) {
             val probed: BackendProbe = when (mode) {
-                AppMode.ROOT_ADB -> {
+                AppMode.ROOT_ADB, AppMode.HAYUL -> {
                     val status = AdbProcessClient.queryStatus()
                     if (status != null) {
                         port = status.bot_http_port ?: port
@@ -188,7 +189,7 @@ fun StatusScreen(permission: PermissionStatus) {
                 null
             }
         })
-        if (mode == AppMode.ROOT_ADB) {
+        if (mode != AppMode.NON_ROOT) {
             add(GridValue("DB 폴링", "${dbPoll}ms", Icons.Default.Timer) {
                 editor = ValueEditor("DB 폴링 (ms)", dbPoll.toString(), numeric = true) { v ->
                     val r = v.toLongOrNull() ?: return@ValueEditor "숫자를 입력하세요"
@@ -246,6 +247,7 @@ fun StatusScreen(permission: PermissionStatus) {
                 AppState.postFeedback(
                     if (on) {
                         if (mode == AppMode.ROOT_ADB) "루팅(ADB) 백그라운드를 시작합니다. 최대 20초 가량 소요됩니다."
+                        else if (mode == AppMode.HAYUL) "Hayul 백그라운드(DB 직독)를 시작합니다."
                         else "백그라운드 서비스를 시작합니다."
                     } else "서비스를 종료합니다.",
                     isError = false
@@ -383,8 +385,11 @@ private fun ServiceCard(
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             if (running) {
-                                if (mode == AppMode.ROOT_ADB) "기기 안 app_process 데몬이 DB 를 관찰하고 답장을 보냅니다."
-                                else "카카오톡 알림을 읽어서 답장을 보냅니다."
+                                when (mode) {
+                                    AppMode.ROOT_ADB -> "기기 안 app_process 데몬이 DB 를 관찰하고 답장을 보냅니다."
+                                    AppMode.HAYUL -> "카톡과 공유 uid 로 DB 를 직접 관찰하고 답장을 보냅니다 (root 불요)."
+                                    AppMode.NON_ROOT -> "카카오톡 알림을 읽어서 답장을 보냅니다."
+                                }
                             } else "스위치를 켜면 백그라운드 동작을 시작합니다.",
                             style = MaterialTheme.typography.bodySmall,
                             color = AppColors.TextSub,
@@ -453,13 +458,16 @@ private fun ServiceCard(
                 tonalElevation = 0.dp,
                 border = BorderStroke(1.dp, AppColors.GlassStroke)
             ) {
-                listOf(AppMode.ROOT_ADB, AppMode.NON_ROOT).forEach { opt ->
+                listOf(AppMode.ROOT_ADB, AppMode.NON_ROOT, AppMode.HAYUL).forEach { opt ->
                     DropdownMenuItem(
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    if (opt == AppMode.ROOT_ADB) Icons.Default.PhoneAndroid
-                                    else Icons.Default.NotificationsActive,
+                                    when (opt) {
+                                        AppMode.ROOT_ADB -> Icons.Default.PhoneAndroid
+                                        AppMode.NON_ROOT -> Icons.Default.NotificationsActive
+                                        AppMode.HAYUL -> Icons.Default.Hive
+                                    },
                                     contentDescription = null,
                                     tint = AppColors.PrimaryAccent,
                                     modifier = Modifier.size(18.dp)

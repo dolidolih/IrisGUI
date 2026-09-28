@@ -717,6 +717,11 @@ object AdbServer {
                             }
                         }
                     }
+
+                    // /editor 웹 편집기 — 이 서버가 앱 프로세스에서 서빙하면(HAYUL 인앱
+                    // AdbServer) 같은 포트 그대로 동작, 데몬(app_process) 서빙이면 컨텍스트
+                    // 집탄 실패로 503 → 그때만 백업인 전용 포트(:editorPort, 항상 인앱)로.
+                    EditorWeb.register(this)
                 }
             }.start(false)
 
@@ -880,6 +885,8 @@ object AdbServer {
         }
         engineRef = null
         _isRunning = false
+        // 웹 에디터 세션(terminal proot 자식)도 서버와 운명을 같이 한다.
+        runCatching { EditorWeb.closeAll() }
         // serverScope 정지 — handleTextReply/handleImageReply 코루틴 정리
         // (ISSUE-01: scope은 startServer에서 매번 새로 만들어지므로 재사용 걱정 없음)
         serverScope.cancel()

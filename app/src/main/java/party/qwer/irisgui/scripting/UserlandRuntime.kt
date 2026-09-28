@@ -302,6 +302,47 @@ object UserlandRuntime {
     }
 
     /**
+     * git + gh 준비 (vcs 도구) — pc 에서 develop 하고 기기에서는 clone/pull 하는
+     * 워크플로를기기 위해 provisioning 에 항상 포함한다. bionic 은 termux main 의
+     * git/gh closure(gh 는 dep 없는 정적 바이너리), proot 는 apt(universe: gh).
+     * 멱등 — 커맨드 유무 확인만 통과하면 즉시 성공이라 재provision 은 공짜.
+     * gh 는 universe 가 닫혀 있으면 open 후 재시도한다 (실패해도 git 만 있으면
+     * 스크립트 clone 은 가능하므로 호출측에서 치명 취扱하지 말 것).
+     */
+    fun ensureGitTools(context: Context): Result {
+        if (backend(context) == Backend.BIONIC) return BionicRuntime.ensureGitTools(context)
+        val probe = exec(context, VCS_PROBE, 20_000)
+        if (probe.output.contains(VCS_OK)) return Result(true, "git/gh 준비됨")
+        val insecure = "-o Acquire::AllowInsecureRepositories=true "
+        var (_, out) = exec(context,
+            APT_PREP + APT + insecure + "update -y -q >/dev/null 2>&1; " + APT +
+                "--allow-unauthenticated install -y -q --no-install-recommends " +
+                "git git-man gh 2>&1 | tail -2; " + VCS_PROBE, 1_200_000)
+        if (out.contains(VCS_OK)) return Result(true, "git/gh 준비됨")
+        // gh 는 universe 소속 — 기본 이미지의 deb822 Components 가 main 만이면
+        // candidate 없이 떨어진다. universe stanza 를 추가(중복설정은 apt 가 수동)
+        // 하고 한 번만 더 시도한다.
+        RuntimeLog.info(TAG, "git/gh 1차 설치 incomplete — universe open 후 재시도: " + out.take(150))
+        val universe = "printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\n" +
+            "Suites: noble noble-updates noble-backports\\nComponents: universe\\n" +
+            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' " +
+            "> /etc/apt/sources.list.d/universe.sources"
+        out = exec(context, APT_PREP + universe + "; " + APT + insecure +
+            "update -y -q >/dev/null 2>&1; " + APT +
+            "--allow-unauthenticated install -y -q --no-install-recommends git gh 2>&1 | tail -2; " +
+            VCS_PROBE, 1_200_000).output
+        val hasGit = exec(context, "command -v git && echo GIT_OK", 15_000).output.contains("GIT_OK")
+        if (out.contains(VCS_OK)) return Result(true, "git/gh 준비됨")
+        if (hasGit)
+            return Result(true, "git 준비됨 (gh 는 universe 실패 — iris-pk/apt gh 재시도 가능)")
+        return Result(false, "git 설치 실패: " + out.take(200))
+    }
+
+    private const val VCS_OK = "VCS_OK"
+    private const val VCS_PROBE =
+        "command -v git >/dev/null 2>&1 && command -v gh >/dev/null 2>&1 && echo VCS_OK"
+
+    /**
      * ubuntu base 이미지에는 CA 번들이 없어 pip 의 TLS 가 죽는다. 파일 존재는 exec
      * 하나, 없으면 apt 로 설치. 멱등.
      */
@@ -365,7 +406,13 @@ object UserlandRuntime {
         if (!py.ok) return prootDeniedFallback(context, py)
         UserlandInstall.begin("CA 인증서 설치")
         val ca = ensureTrustStore(context)
-        return if (!ca.ok) prootDeniedFallback(context, ca) else ca
+        if (!ca.ok) return prootDeniedFallback(context, ca)
+        // vcs 는 전체 설치를 낙치지 않게 — gh 유실은 치명이 아니라 terminal/iris-pk 로
+        // 뒤늦게 메울 수 있다.
+        UserlandInstall.begin("git + gh 설치")
+        runCatching { ensureGitTools(context) }
+            .onFailure { RuntimeLog.warn(TAG, "git/gh 설치 예외 (무시): ${it.message}") }
+        return ca
     }
 
     /** 판정보다 실집행이 우선: detection 을 빗나가 proot 를 골라도, exec 가

@@ -44,7 +44,7 @@ data class PermissionStatus(
     /** 그 모드에서 사용자가 직접 처리해야 하는 항목만 남은 지 */
     fun needsAttention(mode: AppMode): Boolean = when (mode) {
         AppMode.NON_ROOT -> !nlsOk || !batteryOk
-        AppMode.ROOT_ADB -> !batteryOk
+        AppMode.ROOT_ADB, AppMode.HAYUL -> !batteryOk
     }
 }
 
@@ -148,7 +148,7 @@ private fun PermissionActionButton(label: String, kind: AppMode) {
         onClick = {
             when (kind) {
                 AppMode.NON_ROOT -> requestNlsPermission(context)
-                AppMode.ROOT_ADB -> requestBatteryPermission(context)
+                AppMode.ROOT_ADB, AppMode.HAYUL -> requestBatteryPermission(context)
             }
         },
         shape = RoundedCornerShape(12.dp),

@@ -113,6 +113,8 @@ object IrisServer {
                 }
 
                 routing {
+                    // 웹 에디터 리모트 평면 — 논루팅 인프로세스 서버도 동일 경로 (EditorWeb.kt)
+                    EditorWeb.register(this)
                     // ── WebSocket ──────────────────────────────
                     webSocket("/ws") {
                         // ISSUE-15: 연결별 수신 채널 — 다른 연결/publisher 무영향.
@@ -224,6 +226,7 @@ object IrisServer {
     fun stop(): Unit = synchronized(this) {
         // P10: ReplyManager 정지 — 코루틴 누수 방지
         ReplyManager.stopQueue()
+        runCatching { EditorWeb.closeAll() }
         activeEngine?.stop(1000, 2000)
         activeEngine = null
         lastError = null

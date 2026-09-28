@@ -55,6 +55,51 @@ object BionicRuntime {
     /** 서버발(pip/iris-pk) 설치와 provision 의 직렬화 — 같은 prefix 를 쓴다. */
     private val installLock = java.util.concurrent.Semaphore(1)
 
+    /** git + gh termux closure roots (gh 는 dep 없는 정적 Go 바이너리). */
+    private val VCS_PKGS = listOf("git", "gh")
+
+    /**
+     * git/gh 준비 — main 저장소 closure 설치. 설치 유무 판별은 파일 실측(/usr/bin의
+     * git/gh) — 커맨드 exec 과 달리 daemon(no-context) 경로에서도 부를 수 있고,
+     * gh 가 후속 교체/증발하는 경우에도 실제 상태를 본다. gh 없이 git 만은
+     * 성공으로 본다 (clone 은 git 만으로 가능하므로).
+     */
+    internal fun ensureGitTools(context: Context?): UserlandRuntime.Result {
+        val p = if (context != null) prefix(context) else prefixNoContext()
+        if (File(p, "usr/bin/git").isFile && File(p, "usr/bin/gh").isFile)
+            return UserlandRuntime.Result(true, "git/gh 준비됨")
+        val r = installVcsClosure(context)
+        if (!r.ok) return r
+        val git = File(p, "usr/bin/git").isFile
+        val gh = File(p, "usr/bin/gh").isFile
+        RuntimeLog.info(TAG, "git/gh 준비 결과 git=$git gh=$gh")
+        return when {
+            git && gh -> UserlandRuntime.Result(true, "git/gh 준비됨")
+            git -> UserlandRuntime.Result(true, "git 준비됨 (gh 는 저장소 실패 — iris-pk install gh)")
+            else -> UserlandRuntime.Result(false, "git 설치 실패")
+        }
+    }
+
+    private fun installVcsClosure(context: Context?): UserlandRuntime.Result {
+        val arch = termuxArch() ?: return UserlandRuntime.Result(false, "미지원 ABI")
+        val pkgs = try {
+            resolveClosure(arch, VCS_PKGS)
+        } catch (e: Exception) {
+            return UserlandRuntime.Result(false, "패키지 목록 읽기 실패: ${e.message}")
+        }
+        if (pkgs.none { it.first == "git" })
+            return UserlandRuntime.Result(false, "저장소에 git 없음")
+        val ok = installLock.tryAcquire(600, java.util.concurrent.TimeUnit.SECONDS)
+        if (!ok) return UserlandRuntime.Result(false, "다른 설치 중 — 잠시 후 재시도")
+        val r = try {
+            installSet(context, pkgs)
+        } finally {
+            installLock.release()
+        }
+        if (r.ok) RuntimeLog.info(TAG, "git/gh closure 설치 (${pkgs.size} packages)")
+        return r
+    }
+
     /** android abi → termux 패키지 arch. */
     private val ARCHES = mapOf(
         "arm64-v8a" to "aarch64", "x86_64" to "x86_64", "arm64-v8a!" to "aarch64",
@@ -185,6 +230,9 @@ object BionicRuntime {
         if (installed(context)) {
             // 설치된 지 오래된 환경에는 iris-pk 가 아직 없다 — 커맨드만 멥등 보충.
             ensurePkCommand(context, p)
+            // git/gh 도 같은 보충 대상 — 커맨드 실측이라 이미 있으면 공짜(no-op).
+            runCatching { ensureGitTools(context) }
+                .onFailure { RuntimeLog.warn(TAG, "git/gh 보충 실패 (무시): ${it.message}") }
             return UserlandRuntime.Result(true, "준비됨")
         }
 
@@ -219,6 +267,12 @@ object BionicRuntime {
             return UserlandRuntime.Result(false, "bionic python 검증 실패: ${probe.output.take(200)}")
         File(p, "home/projects").mkdirs()
         File(p, MARKER).writeText("ok")
+        // fresh provision 경로에도 vcs — installed() 가 true 가 된 직후라 보충 분기가
+        // 아니므로 여기서 넣는다. (마커 뒤에 두는 이유: 마커가 곧 bash 유무 판별이라
+        // 설치 중 crash 시 마커 없이 재진입해야 한다.)
+        UserlandInstall.begin("git + gh 설치")
+        runCatching { ensureGitTools(context) }
+            .onFailure { RuntimeLog.warn(TAG, "git/gh 설치 실패 (무시): ${it.message}") }
         RuntimeLog.info(TAG, "bionic userland 준비 완료")
         return UserlandRuntime.Result(true, "파이썬 환경 준비됨")
     }

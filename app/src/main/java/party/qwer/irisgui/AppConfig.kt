@@ -50,6 +50,12 @@ object AppConfig {
         get() = store().serverPort
         set(value) { store().serverPort = value }
 
+    /** /editor 웹 편집기 전용 바인드 포트(앱 프로세스). 기본 3100 — serverPort 와
+     * 별개라 ROOT_ADB(데몬) 모드에서도 인앱 편집기가 데몬 포트와 무관하게 뜬다. */
+    var editorPort: Int
+        get() = store().editorPort
+        set(value) { store().editorPort = value }
+
     // ── 루팅 모드 전용 설정 ────────────────────────────────
 
     var botName: String
@@ -88,7 +94,7 @@ object AppConfig {
 
     /**
      * 현재 실행 모드 (null = 자동 감지).
-     * 저장값: "ROOT_ADB", "NON_ROOT" (ROOT_MAGISK는 제거됨 — legacy 저장값은 NON_ROOT로 감지됨)
+     * 저장값: "ROOT_ADB", "NON_ROOT", "HAYUL" (ROOT_MAGISK는 제거됨 — legacy 저장값은 NON_ROOT로 감지됨)
      */
     var appMode: AppMode?
         get() = store().appMode

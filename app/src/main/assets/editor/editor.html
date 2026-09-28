@@ -91,6 +91,10 @@
   #termbio .hint { color: var(--sub); font-size: 10.5px; margin-right: auto;
     max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .keycap { font-family: monospace; font-size: 11.5px; padding: 7px 7px; flex: 0 0 auto; }
+  #selbar { display: none; position: fixed; z-index: 95; gap: 3px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+    padding: 4px; box-shadow: 0 8px 24px #000a; }
+  #selbar .btn { padding: 8px 10px; font-size: 12px; }
   .keycap.on { background: var(--accent); color: #10121A; border-color: var(--accent);
     font-weight: 700; }
 
@@ -166,12 +170,22 @@
   <div class="acts"><div class="btn" id="dlgCancel">취소</div><div class="btn primary" id="dlgOk">확인</div></div>
 </div></div>
 
+<div id="selbar">
+  <div class="btn" data-act="line">줄</div>
+  <div class="btn" data-act="all">전체</div>
+  <div class="btn" data-act="copy">복사</div>
+  <div class="btn" data-act="cut">잘라넣</div>
+  <div class="btn" data-act="paste">붙여넣</div>
+  <div class="btn" data-act="del">삭제</div>
+</div>
+
 <script src="terminal/xterm.js"></script>
+<script src="webbridge.js"></script>
 <script src="vs/loader.js"></script>
 <script>
 (function () {
 'use strict';
-console.log('ig-editor rev=fix-0925i');
+console.log('ig-editor rev=fix-0925j');
 const B = window.AndroidBridge;
 const $ = id => document.getElementById(id);
 
@@ -977,6 +991,177 @@ function actDel() {
 }
 let treeT = null;
 function loadTreeSoon() { clearTimeout(treeT); treeT = setTimeout(loadTree, 300); }
+
+/* ── 롱프레스 선택 (터치 복붙) ─────────────────────────── */
+(function () {
+  const LP_MS = 450, TOL = 10, PID = 91;
+  const bar = $('selbar');
+  let timer = null, mode = false, anchor = null, sx = 0, sy = 0;
+
+  const host = () => $('editor');
+  const inEd = n => n && host().contains(n.nodeType === 3 ? n.parentElement : n);
+  const inBar = n => n && bar.contains(n.nodeType === 3 ? n.parentElement : n);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const isBefore = (a, b) => a.line < b.line || (a.line === b.line && a.col < b.col);
+
+  /* (x,y) → (line,col). 주 경로: 합성 pointer 이벤트로 그 자리에 커서를
+     찍어 monaco 히트테스트에 맡기고, 안 되면 기하 폴백(모노스페이스 ·
+     non-wrap 가정: 줄=(y+scrollTop-패딩)/줄행잉, 칸=x/문자폭). */
+  function posAt(x, y, click) {
+    if (!editor) return null;
+    if (click) {
+      const before = editor.getPosition();
+      const el = document.elementFromPoint(x, y);
+      if (el) {
+        const base = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+        const pe = t => {
+          const ev = new PointerEvent(t, Object.assign(
+            { pointerId: PID, pointerType: 'mouse', isPrimary: true,
+              buttons: t === 'pointerdown' ? 1 : 0 }, base));
+          ev.__ig = 1; return ev;
+        };
+        try {
+          el.dispatchEvent(pe('pointerdown'));
+          el.dispatchEvent(pe('pointerup'));
+        } catch (e) {}
+        const p = editor.getPosition();
+        if (p) {
+          const moved = !before || p.lineNumber !== before.lineNumber || p.column !== before.column;
+          if (moved) return { line: p.lineNumber, col: p.column };
+        }
+      }
+    }
+    const m = editor.getModel(); if (!m) return null;
+    const r = host().getBoundingClientRect(), s = editor.getScrollInfo();
+    const lh = Math.round(fontPx * 1.5);
+    const line = clamp(Math.floor((y - r.top + s.scrollTop - 10) / lh) + 1, 1, m.getLineCount());
+    const c1 = editor.getScrolledVisiblePosition({ lineNumber: line, column: 1 });
+    const c2 = editor.getScrolledVisiblePosition({ lineNumber: line, column: 2 });
+    const cw = c1 && c2 && c2.left > c1.left ? c2.left - c1.left : fontPx * 0.6;
+    const col = clamp(Math.floor((x - r.left + s.scrollLeft) / cw) + 1, 1, m.getLineMaxColumn(line));
+    return { line, col };
+  }
+
+  function between(a, b) {   // 앵커 ↔ 현재 → 시작<끝 정준 range
+    return isBefore(b, a)
+      ? { startLineNumber: b.line, startColumn: b.col, endLineNumber: a.line, endColumn: a.col }
+      : { startLineNumber: a.line, startColumn: a.col, endLineNumber: b.line, endColumn: b.col };
+  }
+  function contains(p) {     // p 가 현재 선택 안에 있는지
+    const s = editor.getSelection();
+    if (!s || s.isEmpty()) return false;
+    const a = { line: s.startLineNumber, col: s.startColumn };
+    const b = { line: s.endLineNumber, col: s.endColumn };
+    return !isBefore(p, a) && !isBefore(b, p);
+  }
+
+  function showBar(x, y) {
+    bar.style.display = 'flex';
+    const w = bar.offsetWidth, h = bar.offsetHeight;
+    const top = y - h - 14 > 4 ? y - h - 14 : y + 30;
+    bar.style.left = clamp(x - w / 2, 6, Math.max(6, innerWidth - w - 6)) + 'px';
+    bar.style.top = clamp(top, 4, Math.max(4, innerHeight - h - 6)) + 'px';
+  }
+  function hide() { bar.style.display = 'none'; }
+
+  function fire(x, y) {
+    const p = posAt(x, y, true);
+    if (!p) return;
+    mode = true; anchor = p;
+    if (!contains(p)) {
+      const w = editor.getModel().getWordUntilPosition({ lineNumber: p.line, column: p.col });
+      if (w.startColumn < w.endColumn)
+        editor.setSelection({ startLineNumber: p.line, startColumn: w.startColumn,
+                              endLineNumber: p.line, endColumn: w.endColumn });
+      else editor.setPosition({ lineNumber: p.line, column: p.col });
+    }
+    showBar(x, y);
+  }
+
+  document.addEventListener('touchstart', e => {
+    if (inBar(e.target)) return;            // 바 아래 탭은 클릭이 직접 처리
+    if (bar.style.display === 'flex') hide();
+    if (e.touches.length !== 1 || mode || !inEd(e.target)) return;
+    const t0 = e.touches[0]; sx = t0.clientX; sy = t0.clientY;
+    timer = setTimeout(() => { timer = null; fire(sx, sy); }, LP_MS);
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (mode) {                             // 롱프레스 후: 드래그로 선택 확장
+      e.preventDefault();                   // monaco 스크롤·syn mouse 동시 차단
+      if (!e.touches.length) return;
+      const t0 = e.touches[0], p = posAt(t0.clientX, t0.clientY, false);
+      if (p && anchor) editor.setSelection(between(anchor, p));
+      return;
+    }
+    if (timer && e.touches.length) {        // 스크롤 의도면 취소
+      const t0 = e.touches[0];
+      if (Math.abs(t0.clientX - sx) > TOL || Math.abs(t0.clientY - sy) > TOL) {
+        clearTimeout(timer); timer = null;
+      }
+    }
+  }, { capture: true, passive: false });
+
+  document.addEventListener('touchend', e => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (mode) { e.preventDefault(); mode = false; }  // 해제 시 syn 클릭 → 선택 붕괴 방지
+  }, { capture: true, passive: false });
+  document.addEventListener('touchcancel', () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    mode = false;
+  }, { capture: true });
+
+  /* 롱프레스 드래그 중 monaco 의 touch 포인터 스트림만 차단 (합성 __ig 는 통과). */
+  const block = e => { if (mode && !e.__ig && e.pointerType === 'touch') e.stopImmediatePropagation(); };
+  document.addEventListener('pointerdown', block, true);
+  document.addEventListener('pointermove', block, true);
+  document.addEventListener('pointerup', block, true);
+  document.addEventListener('contextmenu', e => {
+    if (inEd(e.target) || inBar(e.target)) e.preventDefault();
+  });
+
+  bar.addEventListener('click', e => {
+    const b = e.target.closest ? e.target.closest('[data-act]') : null;
+    if (!b) return;
+    e.preventDefault();
+    const act = b.getAttribute('data-act');
+    if (!editor || !editor.getModel()) return;
+    const m = editor.getModel(), sel = editor.getSelection();
+    try {
+      if (act === 'all') {
+        const L = m.getLineCount();
+        editor.setSelection({ startLineNumber: 1, startColumn: 1,
+                              endLineNumber: L, endColumn: m.getLineMaxColumn(L) });
+        editor.focus();
+      } else if (act === 'line') {
+        if (sel) editor.setSelection({ startLineNumber: sel.startLineNumber, startColumn: 1,
+          endLineNumber: sel.endLineNumber, endColumn: m.getLineMaxColumn(sel.endLineNumber) });
+        editor.focus();
+      } else if (act === 'word') {
+        const a = editor.getAction('editor.action.smartSelect.expand');
+        if (a) a.run().then(() => editor.focus(), () => {});
+      } else if (act === 'copy' || act === 'cut') {
+        const txt = sel ? m.getValueInRange(sel) : '';
+        if (!txt) { toast('선택 없음'); return; }
+        if (B.clipboardSet) B.clipboardSet(txt);
+        try { if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {}); } catch (err) {}
+        if (act === 'cut') editor.executeEdits('cut', [{ range: sel, text: '' }]);
+        toast(act === 'cut' ? '클립보드로 잘라냄' : '클립보드에 복사');
+        editor.focus();
+      } else if (act === 'paste') {
+        const txt = B.clipboardGet ? String(B.clipboardGet()) : '';
+        if (!txt) { toast('클립보드 비어 있음'); return; }
+        if (!sel) return;
+        editor.executeEdits('paste', [{ range: sel, text: txt }]);
+        editor.focus();
+      } else if (act === 'del') {
+        if (!sel || sel.isEmpty()) { toast('선택 없음'); return; }
+        editor.executeEdits('del', [{ range: sel, text: '' }]);
+        editor.focus();
+      }
+    } catch (err) { toast('오류: ' + (err && err.message || err)); }
+  });
+})();
 
 /* ── close / keys ──────────────────────────────────────── */
 $('btnClose').onclick = () => { try { save(true); } catch (e) {} if (B.closeEditor) B.closeEditor(); };

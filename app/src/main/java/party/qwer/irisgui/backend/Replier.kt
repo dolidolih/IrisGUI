@@ -173,7 +173,7 @@ class Replier {
                 RemoteInput.addResultsToIntent(arrayOf(remoteInput), this, results)
             }
 
-            AndroidHiddenApi.startService(intent)
+            dispatchStartService(intent)
         }
 
         fun sendMessage(referer: String, chatId: Long, msg: String, threadId: Long?) {
@@ -224,6 +224,41 @@ class Replier {
             }
         }
 
+        /**
+         * HAYUL(공유-uid) 모드 전용 분기 — 백엔드가 앱 프로세스 안에서 도는 경우
+         * 이 context 에 지정된다. 지정 시 전송 dispatch 는 IActivityManager 리플랙션
+         * (root 데몬용, callingPackage 사칭) 대신 framework 의 일반 API 를 쓴다:
+         * 카톡과 같은 uid 라 non-exported NotificationActionService 도 startService
+         * 허용되고, 우리 ForegroundService 생존 중이라 background 발화 제한도 면제된다.
+         * 데emon(app_process) 경로에서는 계속 null — 리플랙션 분기가 그대로 동작한다.
+         */
+        @Volatile
+        internal var dispatchContext: android.content.Context? = null
+
+        private fun dispatchStartService(intent: Intent) {
+            val ctx = dispatchContext
+            if (ctx != null) ctx.startService(intent) else AndroidHiddenApi.startService(intent)
+        }
+
+        private fun dispatchStartActivity(intent: Intent) {
+            val ctx = dispatchContext
+            if (ctx != null) {
+                // context.startActivity 는 Activity 가 아닌 host — NEW_TASK 를 요구한다.
+                val flagsOk = intent.clone() as Intent
+                if ((flagsOk.flags and Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
+                    flagsOk.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(flagsOk)
+            } else {
+                AndroidHiddenApi.startActivity(intent)
+            }
+        }
+
+        private fun dispatchBroadcast(intent: Intent) {
+            val ctx = dispatchContext
+            if (ctx != null) ctx.sendBroadcast(intent) else AndroidHiddenApi.broadcastIntent(intent)
+        }
+
         private fun decodeLegacyImage(base64: String): MediaItem =
             MediaItem("image.png", "image/png", MediaKind.IMAGE,
                 Base64.decode(base64, Base64.DEFAULT))
@@ -256,7 +291,7 @@ class Replier {
             val intent = MediaPayload.buildSendIntent(items, ArrayList(uris), room, grantRead = false)
 
             try {
-                AndroidHiddenApi.startActivity(intent)
+                dispatchStartActivity(intent)
             } catch (e: Exception) {
                 System.err.println("Error starting activity for sending media: $e")
                 throw e
@@ -272,7 +307,7 @@ class Replier {
             val mediaScanIntent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply {
                 data = uri
             }
-            AndroidHiddenApi.broadcastIntent(mediaScanIntent)
+            dispatchBroadcast(mediaScanIntent)
         }
     }
 }

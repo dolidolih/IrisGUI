@@ -289,6 +289,25 @@ internal class CodeEditorBridge(
         if (!f.isFile || f.length() > 4_000_000) null else f.readText(Charsets.UTF_8)
     }.getOrNull()
 
+    /** 터치 복붙 브리지 — WebView 의 navigator.clipboard 은 권한/포커스 유령이
+     * 있어 Android 클립보드와 직접 다닌다. 반환: Get 은 텍스트, Set 은 상태 문자열. */
+    @JavascriptInterface
+    fun clipboardGet(): String = runCatching {
+        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+        cm.primaryClip?.let {
+            if (it.itemCount > 0) it.getItemAt(0).coerceToText(context).toString() ?: "" else ""
+        } ?: ""
+    }.getOrDefault("")
+
+    @JavascriptInterface
+    fun clipboardSet(text: String?): String = runCatching {
+        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("iris-editor", text ?: ""))
+        "ok"
+    }.getOrElse { "err:" + (it.message ?: it.toString()) }
+
     /** ISSUE-24: tmp + atomic move — 크래시/정전時に main.py 가 잘린 채로 남지 않는다.
      * 실행 직전 runner 가 읽는 중이어도 partial 은 절대 노출되지 않는다. */
     @JavascriptInterface
@@ -463,7 +482,9 @@ internal class CodeEditorBridge(
         val inner =
             "cd " + UserlandRuntime.q(guest) + " || cd ~\n" +
                 "{ [ -f .venv/bin/activate ] && . .venv/bin/activate; }\n" +
-                "export PS1=" + UserlandRuntime.q("$ ") + "\n" +
+                // venv 활성 표시: 셸만 보고도 프로젝트 venv 안에 있는지 알 수 있게.
+                "if [ -n \"\$VIRTUAL_ENV\" ]; then export PS1=" + UserlandRuntime.q("(venv) $ ") +
+                "; else export PS1=" + UserlandRuntime.q("$ ") + "; fi\n" +
                 // script 아래 파이프 실행이면 TERM 이 비어 clear 가 죽는다. coreutils 의
                 // 'groups: cannot find name' 도 호스트 gid 가 /etc/group 에 없어 나는 소음.
                 "export TERM=xterm-256color\n" +
@@ -484,7 +505,11 @@ internal class CodeEditorBridge(
                 "[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc\n" +
                     "[ -f ~/.bashrc ] && . ~/.bashrc\n" +
                     "PROMPT_COMMAND='read -r _c _r <" + sizeGuest + " 2>/dev/null; " +
-                    "[ -n \"\$_c\" ] && stty cols \$_c rows \$_r 0</dev/tty 2>/dev/null'\n"
+                    "[ -n \"\$_c\" ] && stty cols \$_c rows \$_r 0</dev/tty 2>/dev/null; " +
+                    // venv 는 터미널 시작 후에도 조용히 생성된다 (create→venv async) —
+                    // 매 prompt 마다 아직 미활성이면 그때 activate 한다.
+                    "{ [ -z \"\$VIRTUAL_ENV\" ] && [ -f .venv/bin/activate ] && . .venv/bin/activate 2>/dev/null && " +
+                    "export PS1=\"(venv) $ \"; }; true'\n"
             )
         }
         val p = UserlandRuntime.spawnBackground(context, inner, guest, null)
