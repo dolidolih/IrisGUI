@@ -185,7 +185,7 @@
 <script>
 (function () {
 'use strict';
-console.log('ig-editor rev=fix-0925j');
+  console.log('ig-editor rev=ac-env-01');
 const B = window.AndroidBridge;
 const $ = id => document.getElementById(id);
 
@@ -249,7 +249,31 @@ const IRIS_API = [
   ['ctx.command', 'property', '"!" 로 시작하면 커맨드 이름'],
 ];
 
-/* ── monaco boot ───────────────────────────────────────── */
+/* 사전 가열: 문서의 import 대상 모듈 멤버를 미리 백그라운드 스캔시킨다 —
+   사용자가 '.' 을 치는 순간 이미 목록이 캐시에 있어 첫 키스트릭에서도 빈 매치가
+   아니다. proot 를 동시 다발로 띄우지 않도록 직렬(800ms)로 흘린다. */
+function warmMembers(doc) {
+  if (!doc || (MODEL_PATH && ext(MODEL_PATH) !== 'py')) return;
+  const names = [], seen = new Set();
+  let m;
+  const re = /(?:^|\n)\s*(?:import\s+([\w.]+)|from\s+([\w.]+)\s+import)/g;
+  while ((m = re.exec(doc.getValue()))) {
+    const full = m[1] || m[2];
+    if (!full) continue;
+    const segs = full.split('.');
+    for (let i = 1; i <= segs.length; i++) {
+      const mod = segs.slice(0, i).join('.');
+      if (!seen.has(mod)) { seen.add(mod); names.push(mod); }
+    }
+  }
+  if (!names.length) return;
+  clearTimeout(warmMembers.t);
+  let i = 0;
+  const step = () => { if (i < names.length) { membersOf(names[i++]); warmMembers.t = setTimeout(step, 800); } };
+  step();
+}
+
+/* ── monaco boot ───────────────────────────────────── */
 require.config({ paths: { vs: '/assets/editor/vs' } });
 require(['vs/editor/editor.main'], function () {
   editor = monaco.editor.create($('editor'), {
@@ -276,18 +300,22 @@ require(['vs/editor/editor.main'], function () {
   } catch (e) { B.log('kbd: ' + e); }
 
   initTerminal();
-  Promise.all([refreshRun(), loadPip()])
+  Promise.all([refreshRun(), loadPip(), Promise.resolve().then(loadCatalog)])
     .then(loadTree)
     .then(() => openInitialFile())
     .catch(e => toast('초기화 오류: ' + (e && e.message || e)))
     .finally(() => busy(false));
 }, function (err) { toast('모니터 로드 실패: ' + err); });
 
-/* ── python completions (pip-aware) ────────────────────── */
+/* ── python completions — 환경 전역(programmatic) ─────────────
+   미리심은 목록이 아니라 환경 자체가 답을 준다: import 가능 전부
+   (표준 라이브러리/builtin/venv/프로젝트) 는 sys 기반 카탈로그로, 멤버는
+   import 없는 ast 스캔(B.members, 전체 dotted 경로) 으로 해소된다. */
 function mk(label, kind, detail, docs) {
   const K = monaco.languages.CompletionItemKind;
   const map = { module: K.Module, package: K.Package, method: K.Method, function: K.Function,
-    keyword: K.Keyword, property: K.Property, snippet: K.Snippet, class: K.Class };
+    keyword: K.Keyword, property: K.Property, snippet: K.Snippet, class: K.Class,
+    variable: K.Variable, text: K.Text };
   return { label, kind: map[kind] || K.Text, insertText: label, detail: detail || '',
     documentation: docs ? { value: docs } : undefined };
 }
@@ -297,15 +325,20 @@ function rngOf(word, fromCol) {
     endColumn: word.endColumn };
 }
 const memberCache = {};
+function normMembers(j) {
+  return ((j && j.members) || []).map(m => Array.isArray(m) ? { name: m[0], kind: m[1] || '' }
+    : { name: m, kind: '' });
+}
 function membersOf(mod) {
+  if (!mod) return [];
   const hit = memberCache[mod];
   if (hit && Date.now() - hit.at < 30000) return hit.list;
   try {
     const r = JSON.parse(B.members(mod));
-    // 정적 파싱(프로젝트 파일)은 즉시, 설치 모듈은 pending + onMembers 콜백.
+    // 정적 파싱(프로젝트 파일)은 즉시, 그 외는 pending + onMembers 콜백.
     if (r && r.members && !r.pending) {
-      memberCache[mod] = { at: Date.now(), list: r.members };
-      return r.members;
+      memberCache[mod] = { at: Date.now(), list: normMembers(r) };
+      return memberCache[mod].list;
     }
     if (r && r.pending && hit) return hit.list;   // 콜백 대기 중엔 직전 목록 유지
   } catch (e) {}
@@ -313,103 +346,264 @@ function membersOf(mod) {
 }
 window.IrisEditor = window.IrisEditor || {};
 window.IrisEditor.onMembers = (mod, j) => {
-  memberCache[mod] = { at: Date.now(), list: (j && j.members) || [] };
+  memberCache[mod] = { at: Date.now(), list: normMembers(j) };
 };
+
+/* ── 모듈 카탈로그: 표준/builtin 이름은 python 자기 서술(sys) 에서 ── */
+let stdlibModules = [], builtinModules = [], projectModules = [];
+function applyCatalog(j) {
+  if (!j) return;
+  stdlibModules = (j.stdlib || []).filter(n => /^[A-Za-z]\w*$/.test(n));
+  builtinModules = (j.builtin || []).filter(n => /^[A-Za-z]\w*$/.test(n));
+}
+function loadCatalog() {
+  try { const j = JSON.parse(B.importCatalog()); if (j && !j.pending) applyCatalog(j); } catch (e) {}
+}
+window.IrisEditor.onCatalog = applyCatalog;
+
+function modDetail(n) {
+  if (pipPackages.includes(n)) return 'pip 설치됨';
+  if (pipModules.includes(n)) return 'venv 모듈';
+  if (projectModules.includes(n)) return '프로젝트';
+  if (stdlibModules.includes(n)) return '표준 라이브러리';
+  if (builtinModules.includes(n)) return '빌트인';
+  return '';
+}
+function allModuleNames() {
+  const out = [], seen = new Set();
+  for (const list of [pipModules, projectModules, stdlibModules, builtinModules, pipPackages])
+    for (const n of list) if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  return out;
+}
+function moduleItems(names, frag) {
+  const f = (frag || '').toLowerCase();
+  return names.filter(n => !f || n.toLowerCase().startsWith(f)).slice(0, 400)
+    .map(n => mk(n, pipPackages.includes(n) ? 'package' : 'module', modDetail(n)));
+}
+const KIND_OF = { class: 'class', def: 'function', meth: 'method', prop: 'property',
+  var: 'variable', imp: 'module', mod: 'module', pkg: 'package' };
+function memberItem(m, src) {
+  const kind = KIND_OF[m.kind] || (/^[A-Z]/.test(m.name) ? 'class'
+    : m.name.indexOf('_') >= 0 ? 'method' : 'property');
+  return mk(m.name, kind, src ? src + ' · ' + m.name : (m.kind || ''), undefined);
+}
+
+/* 바인딩: import/from 으로 만든 이름, 및 x = Class(...) (그 클래스의 import 가
+   알면 해당 dotted 주소). 이후 세그먼트도 따라갈 수 있게 완전 경로를 남긴다. */
 function moduleBindings(doc) {
   const out = {};
   const txt = doc.getValue();
   let m;
-  const reImport = /^\s*(?:import\s+([\w.]+)(?:\s+as\s+(\w+))?|from\s+([\w.]+)\s+import\s+([\w,\s]+))/gm;
+  const reImport = /^\s*(?:import\s+([\w.]+)(?:\s+as\s+(\w+))?|from\s+([\w.]+)\s+import\s+([\w,\s.]+))/gm;
   while ((m = reImport.exec(txt))) {
-    if (m[1]) out[m[2] || m[1].split('.').pop()] = m[1];
-    else {
+    if (m[1]) {
+      const as = m[2] || m[1].split('.').pop();
+      out[as] = m[1];
+      if (as !== m[1]) out[m[1].split('.').pop()] = m[1];   // import x.y as z: y.z 도
+    } else {
       const pkg = m[3];
       m[4].split(',').forEach(part => {
         part = part.trim();
         if (!part) return;
-        const [name, alias] = part.split(/\s+as\s+/);
-        out[alias || name] = pkg + '.' + name;
+        const seg = part.split(/\s+as\s+/);
+        const name = seg[0].trim(), alias = seg[1] ? seg[1].trim() : name.split('.').pop();
+        out[alias] = pkg + '.' + name;
       });
     }
   }
   const reAssign = /^\s*(\w+)\s*=\s*([\w.]+)\s*\(/gm;
   while ((m = reAssign.exec(txt))) {
-    const rhs = m[2].split('.').pop().toLowerCase();
-    if (/bot|iris/.test(rhs)) out[m[1]] = 'IRIS_BOT';
+    const cls = m[2].split('.').pop();
+    if (out[cls]) out[m[1]] = out[cls];          // bot = Bot(url) → iris.bot.Bot
+    else if (/bot|iris/.test(m[2].toLowerCase())) out[m[1]] = 'IRIS_BOT';
   }
   return out;
 }
+function bindingOf(doc, who) {
+  const b = moduleBindings(doc);
+  if (b[who]) return b[who];
+  if (!who.includes('.')) return /^(bot|iris)$/i.test(who) ? 'IRIS_BOT' : null;
+  const seg = who.split('.');
+  let cur = b[seg[0]] || (/^(bot|iris)$/i.test(seg[0]) ? 'IRIS_BOT' : null);
+  if (!cur) return null;
+  for (let i = 1; i < seg.length; i++) {
+    if (cur === 'IRIS_BOT') return 'IRIS_BOT';
+    cur += '.' + seg[i];
+  }
+  return cur;
+}
+function botHints(push) {
+  push(mk('on_event', 'snippet', 'decorator', '@bot.on_event("message") def h(ctx): …'));
+  push(mk('run', 'function', 'method', '이벤트 루프 시작'));
+  push(mk('api_url', 'property', 'bot 속성', '서비스 URL'));
+}
+
+/* ── jedi 문맥 완료 클라이언트 ────────────────────────
+   스캔 기반 목록은 즉시 주고, jedi 백그라운드 회신은 재트릭거로 얹는다.
+   키: 경로+줄+열+소스해시 — 스크롤/수정이 어긋나면 캐시도 자동 무효. */
+let jediState = null;            // null=미탐, true=가능, false=없음
+let jediToken = 0;
+const jediCache = {}, jediInflight = new Map();
+function hashOf(s) { let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h.toString(36); }
+function jediKey(model, pos) {
+  return (MODEL_PATH || '?') + ':' + pos.lineNumber + ':' + pos.column + ':' + hashOf(model.getValue());
+}
+const JEDI_KIND = { class: 'class', module: 'module', namespace: 'module', function: 'function',
+  keyword: 'keyword', property: 'property', instance: 'variable', variable: 'variable',
+  param: 'variable', statement: 'variable', constant: 'variable', path: 'text', unknown: 'text' };
+function jediAsk(model, pos, key) {
+  if (!MODEL_PATH || jediState === false || !editor) return;
+  const tok = ++jediToken;
+  jediInflight.set(tok, { key, src: model.getValue(), line: pos.lineNumber, col: pos.column });
+  try { B.completeAtAsync(MODEL_PATH, b64e(model.getValue()), pos.lineNumber, pos.column, tok); }
+  catch (e) { jediInflight.delete(tok); }
+}
+window.IrisEditor.onJedi = (j) => {
+  if (j.jediInstall !== undefined) {          // 브릿지의 자동 설치 결과
+    if (j.jediInstall) {
+      for (const k of Object.keys(jediCache)) delete jediCache[k];
+      jediState = null;
+      toast('jedi 설치 — 이제 문맥 인식 completion 으로 동작');
+    } else toast('jedi 자동 설치 실패 — 터미널에서 `pip install jedi`');
+    return;
+  }
+  const pend = jediInflight.get(j.token); if (pend) jediInflight.delete(j.token);
+  if (j.jedi === false) { jediState = false; return; }
+  jediState = true;
+  const key = (pend && pend.key) || null;
+  if (j.items && key) jediCache[key] = { at: Date.now(), items: j.items };
+  // 캐시 기록으로 재트릭거: 캐시는 성공 회신에만 있으므로 다음 provide 는 히트한다.
+  if (pend) setTimeout(() => {
+    const p = editor && editor.getPosition();
+    if (!p || !MODEL_PATH) return;
+    const k = (MODEL_PATH) + ':' + p.lineNumber + ':' + p.column + ':' + hashOf(editor.getModel().getValue());
+    if (k === pend.key && jediCache[k] && Date.now() - jediCache[k].at < 30000) {
+      try { editor.trigger('jedi', 'editor.action.retriggerSuggest', {}); } catch (e) {}
+    }
+  }, 0);
+};
+function jediWrap(res, model, pos) {
+  try {
+    const key = jediKey(model, pos);
+    const hit = jediCache[key];
+    if (hit && Date.now() - hit.at < 30000) {
+      const arr = res.suggestions = (res.suggestions || []);
+      const seen = new Set(arr.map(i => i.label));
+      for (const it of hit.items) {
+        const [name, t, d] = it;
+        if (name && !seen.has(name)) { seen.add(name); arr.push(mk(name, JEDI_KIND[t] || 'text', 'jedi · ' + (d || ''))); }
+      }
+    } else if (jediInflight.size === 0) {
+      jediAsk(model, pos, key);
+    }
+  } catch (e) {}
+  return res;
+}
+
 function registerPythonCompletions() {
   monaco.languages.registerCompletionItemProvider('python', {
     triggerCharacters: ['.'],
-    triggerCharacters: ['.', '"', "'"],
     provideCompletionItems(model, pos) {
       if (MODEL_PATH && ext(MODEL_PATH) !== 'py') return { suggestions: [] };
       const line = model.getValueInRange({ startLineNumber: pos.lineNumber, startColumn: 1,
         endLineNumber: pos.lineNumber, endColumn: pos.column });
       const word = model.getWordUntilPosition(pos);
       const items = [];
+      const seen = new Set();
+      const push = it => { if (it && !seen.has(it.label)) { seen.add(it.label); items.push(it); } };
+      const colRng = startCol => ({ startLineNumber: pos.lineNumber,
+        endLineNumber: pos.lineNumber, startColumn: Math.max(1, startCol), endColumn: pos.column });
 
-      const im = /^\s*import\s+([\w.]*)$/.exec(line);
-      if (im) { pipModules.forEach(m => items.push(mk(m, 'module', 'venv 설치 모듈')));
-        pipPackages.forEach(p => { if (!pipModules.includes(p)) items.push(mk(p, 'package', 'pip 설치됨')); });
-        return { suggestions: items }; }
-
-      const fm = /^\s*from\s+([\w.]*)\s*(import\s+([\w, \s]*))?$/.exec(line);
-      if (fm) {
-        if (fm[3] != null) {
-          const part = (fm[3].split(',').pop() || '').trim();
-          ['os', 'sys', 'json', 'time', 're', 'threading', 'traceback'].forEach(m =>
-            items.push(mk(m, 'module', 'standard library')));
-          for (const m of pipModules) items.push(mk(m, 'module', 'venv 모듈'));
-          return { suggestions: items };
-        }
-        pipModules.forEach(m => items.push(mk(m, 'module', 'venv 모듈')));
-        pipPackages.forEach(p => items.push(mk(p, 'package', 'pip 설치됨')));
-        return { suggestions: items };
-      }
-
-      const dot = /(\w+)\.$/.exec(line);
-      if (dot) {
-        const who = dot[1];
-        if (who === 'ctx') {
-          for (const i of IRIS_API.filter(i => i[0].startsWith('ctx')))
-            items.push(mk(i[0].slice(4), i[1] === 'property' ? 'property' : 'function', i[1], i[2]));
+      // ── import pkg(.sub).frag / from pkg(.sub).frag ───────────────
+      let m = /^\s*(?:import|from)\s+([\w.]*)$/.exec(line);
+      if (m) {
+        const path = m[1];
+        const dot = path.lastIndexOf('.');
+        const frag = dot < 0 ? path : path.slice(dot + 1);
+        if (dot < 0) {
+          push(...moduleItems(allModuleNames(), frag));
         } else {
-          const bind = moduleBindings(model)[who]
-            || (who === 'bot' || who === 'iris' ? 'IRIS_BOT' : null);
-          if (bind === 'IRIS_BOT') {
-            items.push(mk('on_event', 'snippet', 'decorator',
-              '@bot.on_event("message") def h(ctx): …'));
-            items.push(mk('run', 'function', 'method', '이벤트 루프 시작'));
-            items.push(mk('api_url', 'property', 'bot 속성', '서비스 URL'));
-          } else if (bind) {
-            const root = bind.split('.')[0];
-            (membersOf(root) || []).forEach(name => items.push(mk(name,
-              /^[A-Z]/.test(name) ? 'class' : name.includes('_') ? 'method' : 'property', bind)));
-            if (!items.length) items.push(mk('<' + root + '>', 'text', ' introspect 불가'));
-          } else {
-            pipModules.slice(0, 30).forEach(m2 => items.push(mk(m2, 'module', 'venv 모듈')));
+          const prefix = path.slice(0, dot);
+          if (!prefix) push(...moduleItems(projectModules, frag));   // from .
+          else {
+            membersOf(prefix)
+              .filter(x => x.kind === 'pkg' || x.kind === 'mod' || x.kind === 'class' || x.kind === 'imp')
+              .filter(x => !frag || x.name.toLowerCase().startsWith(frag.toLowerCase()))
+              .forEach(x => push(memberItem(x, prefix)));
           }
         }
+        if (!items.length) { /* jedi 에게 물어본다 — 빈 화면은 회신 후 재트릭거로 채워진다 */ }
+        items.forEach(i => (i.range = colRng(pos.column - frag.length)));
+        return jediWrap({ suggestions: items }, model, pos);
       }
 
+      // ── from pkg import <이름…> — pkg 의 멤버(submodule 포함) ────
+      m = /^\s*from\s+([\w.]*)(?:\s+import\s+([\s\S]*))?$/.exec(line);
+      if (m && m[2] != null) {
+        const pkg = m[1].trim();
+        const part = m[2].split(',').pop();
+        const pdot = part.lastIndexOf('.');
+        const frag = (pdot < 0 ? part : part.slice(pdot + 1)).trim();
+        const base = pkg + (pdot < 0 ? '' : '.' + part.slice(0, pdot).trim());
+        if (base) membersOf(base)
+          .filter(x => !frag || x.name.toLowerCase().startsWith(frag.toLowerCase()))
+          .forEach(x => push(memberItem(x, base)));
+        if (!items.length && !pkg) push(...moduleItems(allModuleNames(), frag));
+        items.forEach(i => (i.range = colRng(pos.column - frag.length)));
+        return jediWrap({ suggestions: items }, model, pos);
+      }
+
+      // ── 식별자. 접근 — 전체 체인을 바인딩→모듈→클래스로 해석 ──────
+      const dot = /([\w.]+)\.$/.exec(line);
       if (dot) {
-        // 도트 접근: 필터 없이 전 멤버. 삽입 범위는 점 바로 뒤 ~ 라인 끝.
+        const who = dot[1];
+        if (/(^|\.)ctx$/.test(who)) {
+          for (const i of IRIS_API.filter(i => i[0].startsWith('ctx')))
+            push(mk(i[0].slice(4), i[1] === 'property' ? 'property' : 'function', i[1], i[2]));
+          membersOf('iris.context.Context').forEach(mm => push(memberItem(mm, 'Context')));
+        } else {
+          const chain = who.includes('.') ? [who, who.split('.').pop()] : [who];
+          let done = false;
+          for (const cand of chain) {
+            const bind = bindingOf(model, cand);
+            if (bind === 'IRIS_BOT' || (bind && /\.Bot$/.test(bind))) {
+              botHints(push);   // Iris 안내는 유지
+              membersOf(bind === 'IRIS_BOT' ? 'iris.bot.Bot' : bind)
+                .forEach(mm => push(memberItem(mm, 'Bot')));
+              done = true; break;
+            }
+            if (bind) {
+              const ms = membersOf(bind);
+              if (ms.length) { ms.forEach(mm => push(memberItem(mm, bind))); done = true; break; }
+              push(mk('<' + bind + '>', 'text', bind + ' 는 import 없이 분석 불가')); done = true; break;
+            }
+            const ms = membersOf(cand);
+            if (ms.length) { ms.forEach(mm => push(memberItem(mm, cand))); done = true; break; }
+          }
+          if (!done) { if (/(^|\.)bot$|iris$/i.test(who)) botHints(push);
+            else push(...moduleItems(allModuleNames(), who.split('.').pop())); }
+        }
         const rng = { startLineNumber: pos.lineNumber, endLineNumber: pos.lineNumber,
           startColumn: dot.index + dot[1].length + 2, endColumn: pos.column };
-        return { suggestions: items.map(i => { i.range = rng; return i; }) };
+        items.forEach(i => (i.range = rng));
+        return jediWrap({ suggestions: items }, model, pos);
       }
 
-      for (const k of PY_KEYWORDS) items.push(mk(k, 'keyword', ''));
+      // ── 일반 단어 위치: 키워드 + import 한 이름 + import 가능 모듈 ──
+      for (const k of PY_KEYWORDS) push(mk(k, 'keyword', ''));
+      const w = (word.word || '').toLowerCase();
+      if (w) {
+        Object.keys(moduleBindings(model)).forEach(n => { if (n.toLowerCase().startsWith(w)) push(mk(n, 'variable', '')); });
+        moduleItems(allModuleNames(), w).forEach(i => push(i));
+      }
       const out = items.filter(i => {
-        const w = word.word;
-        return !w || i.label.toLowerCase().startsWith(w.toLowerCase());
+        const ww = word.word;
+        return !ww || i.label.toLowerCase().startsWith(ww.toLowerCase());
       });
-      if (!out.length) return null;
-      const r = rngOf(word);
-      out.forEach(i => (i.range = r));
-      return { suggestions: out };
+      if (out.length) { const r = rngOf(word); out.forEach(i => (i.range = r)); }
+      return jediWrap({ suggestions: out }, model, pos);
     },
   });
 }
@@ -433,6 +627,14 @@ const ICON_SVG = {
 function loadTree() {
   return new Promise(res => {
     const data = JSON.parse(B.listDir());
+    // 프로젝트 루트의 import 가능 이름 — completions 의 allModuleNames 에 섞인다.
+    projectModules = [];
+    for (const n of data) {
+      if (!n.dir && n.name.endsWith('.py') && n.name !== '__init__.py')
+        projectModules.push(n.name.slice(0, -3));
+      else if (n.dir && (n.children || []).some(c => c.name === '__init__.py'))
+        projectModules.push(n.name);
+    }
     renderTree($('treeBody'), data);
     restoreSel();
     res();

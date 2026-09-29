@@ -351,6 +351,11 @@ object EditorWeb {
                 "rename" -> s.bridge.rename(q["from"] ?: "", q["to"] ?: "")
                 "projectInfo" -> s.bridge.projectInfo()
                 "pipPackages" -> s.bridge.pipPackages()
+                "importCatalog" -> s.bridge.importCatalog()
+                "completeAtAsync" -> s.bridge.completeAtAsync(
+                    q["rel"] ?: "", body ?: "",
+                    q["line"]?.toIntOrNull() ?: 1, q["col"]?.toIntOrNull() ?: 1,
+                    q["token"]?.toIntOrNull() ?: 0)
                 "members" -> s.bridge.members(q["module"] ?: "")
                 "runScript" -> s.bridge.runScript()
                 "runScriptAsync" -> s.bridge.runScriptAsync()

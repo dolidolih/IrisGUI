@@ -104,14 +104,14 @@ internal class CodeEditorBridge(
     // ── JS 로 공개되는 API ───────────────────────────────────────────────────
 
     /**
-     * ISSUE-24: 자동완성용 멤버 목록은 더 이상 모듈을 *import 하지 않는다* —
-     * import 는 사용자 코드의 모듈 최상단(서버 접속·스레드 기동)까지 실행하면서
-     * bridge 를 최대 5 초 막는다. 대신
-     *   · 프로젝트 안 모듈은 host 에서 소스를 그대로 정적 주사(최상위 def/class/
-     *     import/대입 이름만),
-     *   · venv/사이트패키지 모듈은 find_spec(실행 없음)+ast 파싱을 백그라운드에서
-     *     돌고 window.IrisEditor.onMembers 로 회신한다.
-     * 응답 형식은 {"members":[...]} 유지(호환) + pending 안내만 추가.
+     * 자동완성 멤버 목록 — ISSUE-24 규칙은 그대로: 모듈을 *import 하지 않는다*
+     * (import 는 사용자 코드 최상단을 실행한다). 대신 이름 딕셔너리가 아니라
+     * 환경 자체를 programmatically 해석한다:
+     *   · dotted 전체 경로(a.b.c / a.b.Class)를 마지막부터 속성 체인으로 소거하며
+     *     모듈 → 클래스 멤버까지 내려간다,
+     *   · 프로젝트 파일은 host 에서 정적 주사, 그 밖의 전부(표준lib/builtin/venv)
+     *     는 guest python 의 import 없는 sys.path 주사+ast 스캔(백그라운드, 콜백 회신).
+     * 응답: {"members":[[name,kind],...]} + pending 안내.
      */
     @JavascriptInterface
     fun members(module: String): String = runCatching {
@@ -119,25 +119,26 @@ internal class CodeEditorBridge(
         if (!Regex("^[A-Za-z0-9_.]+$").matches(mod)) return err("bad module")
         val key = project + ":" + mod
         memberCache[key]?.let { (at, list) ->
-            if (System.currentTimeMillis() - at < 30000) return membersJson(list)
+            if (System.currentTimeMillis() - at < 30000) return memJson(list)
         }
-        val rel = mod.replace('.', '/')
-        val local = listOf(File(root(), "$rel.py"), File(root(), "$rel/__init__.py"))
-            .firstOrNull { it.isFile }
-        if (local != null) {
-            val list = parseTopLevelNames(local)
+        // 프로젝트 안은 host 정적 주사(실행 없음, 즉각).
+        resolveLocal(mod)?.let { list ->
             memberCache[key] = System.currentTimeMillis() to list
-            return membersJson(list)
+            return memJson(list)
         }
-        // 프로젝트 밖 모듈: exec 하지 말고 백그라운드 ast 스캔 → 콜백.
+        // 프로젝트 밖 전부(표준 라이브러리/builtin/venv/그 외 환경) —
+        // 백그라운드에서 import 없는 sys.path 주사 + ast 스캔 → 콜백.
         if (probing.add(key)) {
             Thread {
                 try {
-                    val list = scanInstalledModule(mod)
+                    val list = scanImportable(mod)
                     memberCache[key] = System.currentTimeMillis() to list
                     emit("window.IrisEditor && window.IrisEditor.onMembers && " +
                         "window.IrisEditor.onMembers(" + JSONObject.quote(module) + ", " +
-                        membersJson(list) + ")")
+                        memJson(list) + ")")
+                } catch (e: Exception) {
+                    RuntimeLog.info("Editor", "$project: members($mod) scan failed: " +
+                        e.javaClass.simpleName + ": " + (e.message ?: "").take(160))
                 } finally {
                     probing.remove(key)
                 }
@@ -150,81 +151,419 @@ internal class CodeEditorBridge(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     )
 
-    /** 최상위 bar 정의의 이름만 걷어낸다 (def/class/대입/import). 실행 없음. */
-    private fun parseTopLevelNames(f: File): List<String> {
-        val names = LinkedHashSet<String>()
-        val reDef = Regex("^(?:async\\s+)?(?:def|class)\\s+([A-Za-z_]\\w*)")
+    private data class Member(val name: String, val kind: String)
+
+    private val memberCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<Member>>>()
+
+    /** stdlib/builtin 이름 사전(프로세스-영속: venv 와 무관한 python 의 자기 서술). */
+    private val catalog = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    private val CATALOG_KEY = project + ":__catalog__"
+
+    private fun memJson(list: List<Member>): String {
+        val arr = JSONArray()
+        list.forEach { arr.put(JSONArray().put(it.name).put(it.kind)) }
+        return JSONObject().put("members", arr).toString()
+    }
+
+    /**
+     * 프로젝트 트리 안에서 dotted 이름을 정적 해석한다. 최장 경로부터 접고 내려가며
+     * 모듈 파일/패키지 디렉터리를 찾고, 남는 마지막 조각은 속성(Class)으로 파고든다.
+     * 하나도 못 찾으면 null — guest 스캔에게 바통을 넘긴다.
+     */
+    private fun resolveLocal(mod: String): List<Member>? {
+        val parts = mod.split('.')
+        var j = parts.size
+        while (j >= 1) {
+            val hit = localModuleFile(parts.take(j))
+            if (hit != null) {
+                val (f, dir) = hit
+                val rest = parts.drop(j)
+                if (rest.isEmpty()) return moduleMembers(f, dir)
+                if (f != null) parseClassNamesLocal(f, rest[0])?.let { return it }
+                return moduleMembers(f, dir)   // 속성 미식별 — 모듈 멤버로 강등(음표 현상은 없다)
+            }
+            j--
+        }
+        return null
+    }
+
+    private fun localModuleFile(parts: List<String>): Pair<File?, File?>? {
+        val rel = parts.joinToString("/")
+        val py = File(root(), "$rel.py")
+        if (py.isFile) return py to null
+        val dir = File(root(), rel)
+        if (dir.isDirectory) {
+            val init = File(dir, "__init__.py")
+            return (if (init.isFile) init else null) to dir
+        }
+        return null
+    }
+
+    /** 모듈 멤버 = 파일 최상위 이름 + (패키지면) 서브모듈/서브패키지 디렉터리. */
+    private fun moduleMembers(f: File?, dir: File?): List<Member> {
+        val map = LinkedHashMap<String, Member>()
+        f?.let { src ->
+            runCatching {
+                src.bufferedReader().use { br ->
+                    parseNames(br.lineSequence().take(20_000))
+                        .forEach { map.putIfAbsent(it.name, it) }
+                }
+            }
+        }
+        dir?.listFiles()?.forEach { sub ->
+            if (sub.name == "__pycache__" || sub.name.startsWith(".")) return@forEach
+            if (sub.isDirectory) map.putIfAbsent(sub.name, Member(sub.name, "pkg"))
+            else if (sub.isFile && sub.name.endsWith(".py") && sub.name != "__init__.py") {
+                val n = sub.name.removeSuffix(".py")
+                map.putIfAbsent(n, Member(n, "mod"))
+            }
+        }
+        return map.values.take(500).toList()
+    }
+
+    /** 최상위 정의의 이름+종류(def/class/var/imp)만. 실행 없음. */
+    private fun parseNames(lines: Sequence<String>): List<Member> {
+        val map = LinkedHashMap<String, Member>()
+        val reDef = Regex("^(?:async\\s+)?(def|class)\\s+([A-Za-z_]\\w*)")
         val reSet = Regex("^([A-Za-z_]\\w*)\\s*(?::[^=]+)?=")
         val reFrom = Regex("^from\\s+[\\w.]+\\s+import\\s+(.+)\\s*$")
         val reImp = Regex("^import\\s+(.+)\\s*$")
         val word = Regex("^\\w+$")
+        val alias = { a: String ->
+            if (a.contains(" as ")) a.substringAfterLast(" as ").trim() else a.trim().substringBefore('.')
+        }
+        lines.forEach { raw ->
+            val line = raw.take(200)
+            if (line.isBlank() || line.startsWith("#") || line.startsWith("\t")) return@forEach
+            reDef.find(line)?.let {
+                map.putIfAbsent(it.groupValues[2], Member(it.groupValues[2], it.groupValues[1]))
+                return@forEach
+            }
+            reSet.find(line)?.let {
+                map.putIfAbsent(it.groupValues[1], Member(it.groupValues[1], "var"))
+                return@forEach
+            }
+            reFrom.find(line)?.let {
+                it.groupValues[1].split(",").forEach { a ->
+                    val n = alias(a)
+                    if (word.matches(n)) map.putIfAbsent(n, Member(n, "imp"))
+                }
+                return@forEach
+            }
+            reImp.find(line)?.let {
+                it.groupValues[1].split(",").forEach { a ->
+                    val n = alias(a)
+                    if (word.matches(n)) map.putIfAbsent(n, Member(n, "imp"))
+                }
+            }
+        }
+        return map.values.take(500).toList()
+    }
+
+    /** 파일에 class Name 이 있으면 멤버(메서드/self 속성/클래스 속성)를 돌려준다. */
+    private fun parseClassNamesLocal(f: File, name: String): List<Member>? {
+        val map = LinkedHashMap<String, Member>()
+        var inside = false
+        var found = false
+        var baseIndent = -1
+        val reHead = Regex("^class\\s+" + Regex.escape(name) + "\\b")
+        val reDef = Regex("^(?:async\\s+)?def\\s+([A-Za-z_]\\w*)")
+        val reSelf = Regex("self\\s*\\.\\s*([A-Za-z_]\\w*)\\s*[:=]")
         runCatching {
             f.bufferedReader().use { br ->
-                var n = 0
                 br.lineSequence().take(20_000).forEach { raw ->
-                    n++
-                    val line = raw.take(200)
-                    if (line.isBlank() || line.startsWith("#") || line.startsWith("\t")) return@forEach
-                    reDef.find(line)?.let { names += it.groupValues[1]; return@forEach }
-                    reSet.find(line)?.let { names += it.groupValues[1]; return@forEach }
-                    reFrom.find(line)?.let {
-                        names += it.groupValues[1].split(",").map { a ->
-                            a.substringBefore(" as ").trim()
-                        }.filter { a -> word.matches(a) }
-                        return@forEach
-                    }
-                    reImp.find(line)?.let {
-                        names += it.groupValues[1].split(",")
-                            .map { a -> a.substringBefore(" as ").trim().substringBefore('.') }
-                            .filter { a -> word.matches(a) }
+                    val t = raw.trim()
+                    if (t.isEmpty()) return@forEach
+                    val indent = raw.takeWhile { it == ' ' }.length
+                    if (!inside) {
+                        if (reHead.matches(t)) { inside = true; found = true; baseIndent = indent }
+                    } else {
+                        if (indent <= baseIndent) { inside = false; return@forEach }
+                        reDef.find(t)?.let {
+                            map.putIfAbsent(it.groupValues[1], Member(it.groupValues[1], "meth"))
+                        }
+                        reSelf.find(t)?.let {
+                            map.putIfAbsent(it.groupValues[1], Member(it.groupValues[1], "prop"))
+                        }
                     }
                 }
             }
         }
-        return names.filter { it.isNotBlank() }.take(500).toList()
+        return if (found) map.values.take(500).toList() else null
     }
 
-    /** find_spec(모듈 실행 없음)+ast 로 venv 설치 모듈 이름을 딴다. exec 과 다르다. */
-    private fun scanInstalledModule(mod: String): List<String> {
-        val py = "import sys,ast,importlib.util,os\n" +
-            "name=sys.argv[1]\npath=None\n" +
-            "try:\n" +
-            "    sp=importlib.util.find_spec(name)\n" +
-            "    o=getattr(sp,'origin',None) or ''\n" +
-            "    if o.endswith('.py'):path=o\n" +
-            "    elif o.endswith('__init__.py'):path=o\n" +
-            "except BaseException:\n" +
-            "    pass\n" +
-            "if path:\n" +
-            "    try:\n" +
-            "        t=ast.parse(open(path,encoding='utf-8',errors='replace').read())\n" +
-            "        out=[]\n" +
+    /**
+     * guest python 으로 환경 전체(표준 라이브러리/builtin/venv/프로젝트 포함 sys.path)를
+     * import 없이 해석한다: 디렉터리 왕복으로 모듈을 찾고, ast 로 멤버를 딴다. 클래스
+     * 재수출(from x import Class, 상대 import)도 따라간다. stdout 은 "kind\\tname" 줄.
+     */
+    private fun scanImportable(mod: String): List<Member> {
+        val py = """
+import sys, os, ast
+name = sys.argv[1]
+parts = name.split('.')
+if not all(parts):
+    sys.exit(0)
 
-            "        for n in t.body:\n" +
-            "            if hasattr(n,'name') and isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):\n" +
-            "                out.append(n.name)\n" +
-            "        print(chr(10).join(out[:500]))\n" +
-            "    except BaseException:\n" +
-            "        pass\n"
-        val guest = UserlandRuntime.guestProject(context, project)
-        val r = UserlandRuntime.exec(
-            context,
-            "printf %s " + UserlandRuntime.q(py) + " | " + guestVenvPython() + " -c " +
-                UserlandRuntime.q("import sys;exec(sys.stdin.read())") + " " +
-                UserlandRuntime.q(mod),
-            6000, guest
-        )
+def safe_tree(p):
+    try:
+        if os.path.getsize(p) > 6000000:
+            return None
+        return ast.parse(open(p, encoding='utf-8', errors='replace').read())
+    except BaseException:
+        return None
+
+def cands(p):
+    res = []
+    for root in [''] + [x for x in sys.path if x]:
+        root = root or '.'
+        try:
+            base = os.path.join(root, *p)
+            if os.path.isfile(base + '.py'):
+                res.append((base + '.py', None))
+            if os.path.isdir(base):
+                init = os.path.join(base, '__init__.py')
+                res.append((init if os.path.isfile(init) else None, base))
+        except OSError:
+            pass
+    return res
+
+def find_module(p):
+    c = cands(p) if p else []
+    return c if c else None
+
+def sub_cands(d, head):
+    # d 패키지 디렉터리의 하위 모듈/서브패키지
+    res = []
+    if not d:
+        return res
+    try:
+        base = os.path.join(d, head)
+        if os.path.isfile(base + '.py'):
+            res.append((base + '.py', None))
+        if os.path.isdir(base):
+            init = os.path.join(base, '__init__.py')
+            res.append((init if os.path.isfile(init) else None, base))
+    except OSError:
+        pass
+    return res
+
+def members(py, d):
+    res = []
+
+    def collect(nodes):
+        for n in nodes:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                res.append(('def', n.name))
+            elif isinstance(n, ast.ClassDef):
+                res.append(('class', n.name))
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    res.append(('imp', (a.asname or a.name.split('.')[0])))
+            elif isinstance(n, (ast.Assign, ast.AnnAssign)):
+                tg = n.targets if isinstance(n, ast.Assign) else [getattr(n, 'target', None)]
+                for t in tg:
+                    if isinstance(t, ast.Name):
+                        res.append(('var', t.id))
+            elif isinstance(n, (ast.Try, ast.If, ast.With, ast.AsyncWith)) or \
+                    (hasattr(ast, 'TryStar') and isinstance(n, ast.TryStar)):
+                # 모듈 레벨 가드(try/except ImportError, if sys.platform, with) 안의
+                # def/class/import 도 공개 이름이다 — 통과시켜 수집한다.
+                for part in (getattr(n, 'body', []), getattr(n, 'orelse', []),
+                             getattr(n, 'finalbody', [])):
+                    collect(part)
+                for h in getattr(n, 'handlers', []):
+                    collect(h.body)
+    if py:
+        tree = safe_tree(py)
+        if tree is not None:
+            collect(getattr(tree, 'body', []))
+    if d:
+        try:
+            for f in os.listdir(d):
+                if f.startswith('.'):
+                    continue
+                p = os.path.join(d, f)
+                if f.endswith('.py') and f != '__init__.py':
+                    res.append(('mod', f[:-3]))
+                elif os.path.isdir(p) and f != '__pycache__':
+                    res.append(('pkg', f))
+        except OSError:
+            pass
+    return [(k, n) for k, n in res if n and n.isidentifier() and not n.startswith('__')]
+
+def class_members(cd):
+    res = []
+    for b in cd.body:
+        if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            res.append(('meth', b.name))
+            for bb in ast.walk(b):
+                if isinstance(bb, ast.Assign):
+                    for t in bb.targets:
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id in ('self', 'cls'):
+                            res.append(('prop', t.attr))
+        elif isinstance(b, ast.Assign):
+            for t in b.targets:
+                if isinstance(t, ast.Name):
+                    res.append(('var', t.id))
+    return res
+
+def dot_parts(node):
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        b = dot_parts(node.value)
+        return b + [node.attr] if b else None
+    return None
+
+def aliases(tree, pkg, head):
+    # head 가 이 파일에서 어디서 오는 이름인지: (모듈 경로, 속성 또는 None)
+    res = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                alias = a.asname or a.name.split('.')[0]
+                if alias == head:
+                    res.append((a.name.split('.'), None))
+        elif isinstance(n, ast.ImportFrom):
+            go = pkg[:max(0, len(pkg) - (n.level - 1))] if n.level > 1 else list(pkg)
+            if n.module:
+                mod2 = (go + n.module.split('.')) if n.level else n.module.split('.')
+            elif n.level:
+                mod2 = list(go)
+            else:
+                continue
+            for a in n.names:
+                alias = a.asname or a.name.split('.')[-1]
+                if alias == head:
+                    res.append((mod2, a.name))
+    for n in getattr(tree, 'body', []):
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) \
+                and n.targets[0].id == head:
+            v = n.value
+            if isinstance(v, ast.Name):
+                res.append((v.id.split('.'), None))
+            elif isinstance(v, ast.Attribute):
+                p = dot_parts(v)
+                if p and len(p) > 1:
+                    res.append((p[:-1], p[-1]))
+    return res
+
+def resolve(c, parts_v, attrs, depth):
+    if depth > 5:
+        return None
+    if not attrs:
+        merged = []
+        for py, d in c:
+            merged += members(py, d)
+        return merged
+    head, rest = attrs[0], attrs[1:]
+    for py, d in c:
+        sub = sub_cands(d, head)
+        if sub:
+            r = resolve(sub, parts_v + [head], rest, depth + 1)
+            if r is not None:
+                return r
+    for py, d in c:
+        if not py:
+            continue
+        tree = safe_tree(py)
+        if tree is None:
+            continue
+        if not rest:
+            for n in ast.walk(tree):
+                if isinstance(n, ast.ClassDef) and n.name == head:
+                    return class_members(n)
+        is_init = os.path.basename(py) == '__init__.py'
+        pkg = list(parts_v) if is_init else parts_v[:-1]
+        for mod2, nm in aliases(tree, pkg, head):
+            c2 = find_module(mod2)
+            if c2 is None:
+                continue
+            r = resolve(c2, mod2, ([nm] + list(rest)) if nm else list(rest), depth + 1)
+            if r is not None:
+                return r
+    return None
+
+def emit(res):
+    seen = set()
+    for k, n in res:
+        if (k, n) in seen:
+            continue
+        seen.add((k, n))
+        print(n + '\t' + k)
+        if len(seen) >= 500:
+            break
+    sys.exit(0)
+
+for j in range(len(parts), 0, -1):
+    c = find_module(parts[:j])
+    if c is None:
+        continue
+    r = resolve(c, parts[:j], parts[j:], 0)
+    if r is not None:
+        emit(r)
+    merged = []
+    for py, d in c:
+        merged += members(py, d)
+    emit(merged)
+sys.exit(0)
+"""
+        val r = execPython(py, " " + UserlandRuntime.q(mod), 9000)
+        if (r.exitCode != 0) RuntimeLog.info("Editor", "$project: scan($mod) rc=" +
+            r.exitCode + " " + r.output.take(150).replace('\n', ' '))
         if (r.exitCode != 0) return emptyList()
-        return r.output.trim().split("\n")
-            .filter { it.isNotBlank() && Regex("^[A-Za-z_]\\w*$").matches(it.trim()) }
-            .map { it.trim() }
+        val map = LinkedHashMap<String, Member>()
+        r.output.lineSequence().forEach { ln ->
+            val t = ln.indexOf('\t')
+            if (t > 0) {
+                val n = ln.substring(0, t).trim()
+                val k = ln.substring(t + 1).trim()
+                if (Regex("^[A-Za-z_]\\w*$").matches(n)) map.putIfAbsent(n, Member(n, k))
+            }
+        }
+        return map.values.take(500).toList()
     }
-    private val memberCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<String>>>()
 
-    private fun membersJson(list: List<String>): String {
-        val arr = JSONArray()
-        list.forEach { arr.put(it) }
-        return JSONObject().put("members", arr).toString()
+    /**
+     * 환경의 import 가능 이름 — 표준 라이브러리/builtin 을 python 자기 서술(sys) 로
+     * programmatically 수집한다. 사전은 더 이상 편집기 안의 하드코딩이 아니다.
+     * 첫 호출은 백그라운드 스캔 후 pending, 완료는 window.IrisEditor.onCatalog. 
+     */
+    @JavascriptInterface
+    fun importCatalog(): String {
+        catalog.get()?.let { return it }
+        if (probing.add(CATALOG_KEY)) {
+            Thread {
+                val json = runCatching {
+                    val py = """
+import sys, os, json
+st = sorted(getattr(sys, 'stdlib_module_names', []) or [])
+if not st:
+    base = getattr(sys, 'stdlib_dir', None) or os.path.dirname(os.__file__)
+    try:
+        for f in sorted(os.listdir(base)):
+            p = os.path.join(base, f)
+            if f.endswith('.py'):
+                st.append(f[:-3])
+            elif os.path.isdir(os.path.join(p, '__init__.py')):
+                st.append(f)
+    except OSError:
+        pass
+print(json.dumps({'stdlib': st, 'builtin': sorted(getattr(sys, 'builtin_module_names', []) or [])}))
+"""
+                    val r = execPython(py, "", 9000)
+                    r.output.trim().lines().first { it.trim().startsWith("{") }.trim()
+                }.getOrElse { """{"stdlib":[],"builtin":[]}""" }
+                catalog.set(json)
+                probing.remove(CATALOG_KEY)
+                runCatching {
+                    emit("window.IrisEditor && window.IrisEditor.onCatalog && " +
+                        "window.IrisEditor.onCatalog(" + json + ")")
+                }
+            }.apply { isDaemon = true }.start()
+        }
+        return JSONObject().put("pending", true).toString()
     }
 
     @JavascriptInterface
@@ -237,6 +576,143 @@ internal class CodeEditorBridge(
 
     private fun guestVenvPython(): String =
         UserlandRuntime.guestProject(context, project) + "/.venv/bin/python"
+
+    /** introspection 기본 python — venv. \.venv/bin/python 는 host 에서 broken symlink 로
+     * 보이는 경우가 있어 isFile 검사로 판단하면 안 된다 (guest 에서는 실행 가능).
+     * 없는 프로젝션은 guestPythonOr fallback. */
+    private fun guestPython(): String = guestVenvPython()
+
+    /** execPython: venv python 실행, rc!=0 이면 시스템 python3 로 재시도.
+     * import 없이 sys.path 로만 도는 introspection 스크립트용. */
+    private fun execPython(py: String, args: String, timeoutMs: Long): UserlandRuntime.Exec {
+        val guest = UserlandRuntime.guestProject(context, project)
+        val code = UserlandRuntime.q("import sys;exec(sys.stdin.read())")
+        val first = UserlandRuntime.exec(
+            context,
+            "printf %s " + UserlandRuntime.q(py) + " | " + guestVenvPython() +
+                " -c " + code + args,
+            timeoutMs, guest
+        )
+        if (first.exitCode == 0) return first
+        return UserlandRuntime.exec(
+            context,
+            "printf %s " + UserlandRuntime.q(py) + " | python3 -c " + code + args,
+            timeoutMs, guest
+        )
+    }
+
+    // ── jedi 문맥 완료 (completeAtAsync) ────────────────────────────
+
+    private val jediExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r).apply { isDaemon = true; name = "jedi-$project" }
+    }
+    @Volatile private var jediInstallTried = false
+
+    /** payload 버전: /tmp/ig_rpc.json 에 json 을 먼저 흘리고, 스크립트는 sys.argv 로 받는다. */
+    private fun execPythonPayload(py: String, payload: String, timeoutMs: Long): UserlandRuntime.Exec {
+        val guest = UserlandRuntime.guestProject(context, project)
+        val code = UserlandRuntime.q("import sys;exec(sys.stdin.read())") + " /tmp/ig_rpc.json"
+        val head = "printf %s " + UserlandRuntime.q(payload) + " > /tmp/ig_rpc.json && "
+        val first = UserlandRuntime.exec(
+            context, head + "printf %s " + UserlandRuntime.q(py) + " | " +
+                guestVenvPython() + " -c " + code, timeoutMs, guest
+        )
+        if (first.exitCode == 0 && !first.output.contains("No such file")) return first
+        return UserlandRuntime.exec(
+            context, head + "printf %s " + UserlandRuntime.q(py) + " | python3 -c " + code,
+            timeoutMs, guest
+        )
+    }
+
+    /**
+     * jedi.Script.complete(line, col) — 통폐섭 python 프로세스에서 (import 는 거기서
+     * 끝나고 사이드이펙트는 그 안에서 죽는다) 실행하고, window.IrisEditor.onJedi 로
+     * token 을 넣고 회신한다. jedi 가 없으면 token=0, jediInstall 결과 통보와 함께
+     * 1 회 백그라운드 pip 설치를 시도한다.
+     */
+    @JavascriptInterface
+    fun completeAtAsync(rel: String, srcB64: String, line: Int, col: Int, token: Int): String {
+        if (closed) return err("에디터가 닫혔습니다")
+        val source = runCatching { String(java.util.Base64.getDecoder().decode(srcB64), Charsets.UTF_8) }
+            .getOrElse { return err("소스 디코딩 실패") }
+        val guestFile = UserlandRuntime.guestProject(context, project) + "/" + rel.trim().trimStart('/')
+        val payload = JSONObject().put("source", source).put("path", guestFile)
+            .put("line", line).put("col", col).toString()
+        val py = """
+import sys, json
+try:
+    import jedi
+except ImportError:
+    print('###JEDI' + json.dumps({'jedi': False, 'err': 'jedi no installed'}))
+    sys.exit(0)
+try:
+    p = json.load(open(sys.argv[1], encoding='utf-8'))
+    try:
+        sc = jedi.Script(code=p['source'], path=p['path'])
+    except TypeError:
+        sc = jedi.Script(source=p['source'], path=p['path'])
+    out = []
+    lno = int(p['line'])
+    col = int(p['col'])
+    try:
+        comps = sc.complete(lno, col)
+    except Exception as e:
+        # jedi >= 0.20 는 column 을 line 길이(0..len) 로 재단한다 — Monaco 의
+        # 커서열(1+k) 은 len+1 에서 거부되므로 원조(off-by-one)로 재시도.
+        if 'not in a valid range' not in str(e):
+            raise
+        line_txt = (p['source'].split('\n') + [''] * lno)[lno - 1]
+        comps = sc.complete(lno, max(0, min(col - 1, len(line_txt))))
+    for c in comps[:150]:
+        try:
+            d = (c.description or '')[:150]
+        except BaseException:
+            d = ''
+        out.append([c.name, c.type, d])
+    print('###JEDI' + json.dumps({'jedi': True, 'items': out}))
+except BaseException as e:
+    print('###JEDI' + json.dumps({'jedi': True, 'items': [], 'err': str(e)[:160]}))
+"""
+        jediExecutor.execute {
+            val out = try {
+                val r = execPythonPayload(py, payload, 25_000)
+                val marker = r.output.lines().firstOrNull { it.startsWith("###JEDI") }
+                if (marker != null) runCatching { JSONObject(marker.substring(7)) }
+                    .getOrDefault(JSONObject().put("jedi", false).put("err", "marker parse"))
+                else JSONObject().put("jedi", false)
+                    .put("err", "exec rc=" + r.exitCode + " " + r.output.take(120))
+            } catch (e: Exception) {
+                JSONObject().put("jedi", false).put("err", (e.message ?: "").take(120))
+            }
+            out.put("token", token)
+            runCatching {
+                emit("window.IrisEditor && window.IrisEditor.onJedi && " +
+                    "window.IrisEditor.onJedi(" + out + ")")
+            }
+            if (!out.optBoolean("jedi") && out.optString("err").contains("jedi") &&
+                !jediInstallTried
+            ) {
+                jediInstallTried = true
+                RuntimeLog.info("Editor", "$project: jedi 없음 — pip 설치 시도")
+                Thread {
+                    val ok = runCatching {
+                        UserlandRuntime.exec(
+                            context,
+                            UserlandRuntime.guestProject(context, project) +
+                                "/.venv/bin/pip install -q --only-binary :all: jedi 2>&1",
+                            180_000, UserlandRuntime.guestProject(context, project)
+                        ).exitCode == 0
+                    }.getOrDefault(false)
+                    RuntimeLog.info("Editor", "$project: jedi pip 설치 " + (if (ok) "성공" else "실패"))
+                    runCatching {
+                        emit("window.IrisEditor && window.IrisEditor.onJedi && " +
+                            "window.IrisEditor.onJedi({token:0,jediInstall:" + ok + "})")
+                    }
+                }.apply { isDaemon = true }.start()
+            }
+        }
+        return JSONObject().put("queued", true).toString()
+    }
 
     /** 프로젝트 트리. venv/pycache/node_modules 등 노이즈는 정리해서 보인다. */
     @JavascriptInterface

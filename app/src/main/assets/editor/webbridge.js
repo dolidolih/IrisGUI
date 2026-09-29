@@ -82,7 +82,12 @@ if (!window.AndroidBridge) {
         return rpc('rename', 'from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
       },
       pipPackages: function () { return rpc('pipPackages'); },
+      importCatalog: function () { return rpc('importCatalog'); },
       members: function (m) { return rpc('members', 'module=' + encodeURIComponent(m)); },
+      completeAtAsync: function (rel, srcB64, line, col, token) {
+        return rpc('completeAtAsync', 'rel=' + encodeURIComponent(rel) + '&line=' + line +
+          '&col=' + col + '&token=' + token, srcB64);
+      },
       runScript: function () { return rpc('runScript'); },
       runScriptAsync: function () { return rpc('runScriptAsync'); },
       stopScript: function () { return rpc('stopScript'); },
