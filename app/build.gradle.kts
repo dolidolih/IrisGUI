@@ -31,8 +31,8 @@ android {
         applicationId = "party.qwer.irisgui"
         minSdk = 30
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.0.8"
+        versionCode = 23
+        versionName = "0.0.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
