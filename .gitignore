@@ -18,7 +18,7 @@ local.properties
 .venv/
 
 # Not source distribution
-docs/
+internal-docs/
 Reference_project/
 qa/
 AGENTS.md
