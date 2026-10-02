@@ -12,6 +12,9 @@
  *
  * 서버측 대응: backend/EditorWeb.kt */
 if (!window.AndroidBridge) {
+  // 편집 화면이 "web plane(RPC/XHR)" 에 있는지 알아야 한다 — 프로젝트 팔레트처럼
+  // 서버 통로가 필요한 것들은 이 표식이 없을 때(=앱 WebView) 조용히 사라진다.
+  window.IRISGUI_REMOTE = true;
   window.AndroidBridge = (function () {
     'use strict';
 

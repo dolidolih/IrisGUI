@@ -117,12 +117,53 @@
     border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; font-size: 13px;
     -webkit-user-select: text; user-select: text; }
   #dlg .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+  /* ── 프로젝트 팔레트 (편집 화면 안에서 갈아탄다) ── */
+  #bar .title.can { cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 6px 3px 4px; border-radius: 7px; transition: .14s; }
+  #bar .title.can:hover { background: #2F3648; }
+  #bar .title .caret { width: 13px; height: 13px; fill: none; stroke: var(--sub);
+    stroke-width: 2.2; flex: 0 0 13px; }
+  #projMenu { position: absolute; z-index: 90; top: 46px; left: 8px; width: min(330px, calc(100vw - 16px));
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 12px;
+    box-shadow: 0 14px 40px rgba(0,0,0,.5); padding: 7px; }
+  #projMenu[hidden] { display: none; }
+  .pm-head { display: flex; align-items: center; font-size: 10.5px; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--sub); padding: 5px 7px 8px; }
+  .pm-all { margin-left: auto; color: var(--accent); font-size: 11px; text-transform: none;
+    letter-spacing: 0; text-decoration: none; }
+  .pm-all:hover { text-decoration: underline; }
+  .pm-list { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+  .pm-item { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 8px 9px; color: var(--ink); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .pm-item:hover { background: #2A2D3A; }
+  .pm-item.cur { background: #2F3648; border-color: var(--line2); }
+  .pm-item .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pm-item .st { margin-left: auto; font: 9.5px/1 ui-monospace, monospace; color: var(--sub);
+    padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); white-space: nowrap; }
+  .pm-item .st.on { color: var(--green); border-color: rgba(46,139,99,.5); }
+  .pm-item .st.wait { color: var(--orange); }
+  .pm-item .st.err { color: var(--red); }
+  .pm-new { display: flex; gap: 6px; padding: 7px 5px 4px; border-top: 1px solid var(--line);
+    margin-top: 6px; }
+  .pm-new input { flex: 1 1 auto; min-width: 0; background: var(--panel2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 8px; font-size: 12px;
+    font-family: ui-monospace, monospace; outline: none; -webkit-user-select: text; user-select: text; }
+  .pm-new input:focus { border-color: var(--accent); }
+  .pm-new button { flex: 0 0 auto; background: var(--accent); border: 0; color: #10121A;
+    font: 600 12px/1 inherit; font-family: inherit; padding: 8px 11px; border-radius: 7px; cursor: pointer; }
+  .pm-new button:disabled { opacity: .5; }
+  .pm-hint { font-size: 10px; color: var(--sub); padding: 5px 7px 4px; }
+  .pm-hint code { font-family: ui-monospace, monospace; }
+  .pm-empty { font-size: 11.5px; color: var(--sub); padding: 10px 7px; text-align: center; }
+  .pm-spin { font-size: 11px; color: var(--sub); padding: 10px 7px; text-align: center; }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="bar">
-    <span class="title"><span class="dot" id="runDot"></span><span id="pname">…</span></span>
+    <span class="title can" id="projPick" title="프로젝트 선택"><span class="dot" id="runDot"></span><span id="pname">…</span><svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
     <div class="seg">
       <div class="btn icon on" id="tabCode" title="코드"><svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg></div>
       <div class="btn icon" id="tabTerm" title="터미널"><svg viewBox="0 0 24 24"><path d="M5.5 8l3.5 3.5L5.5 15M12 15.5h6.5"/></svg></div>
@@ -134,6 +175,21 @@
     <div class="btn ghost icon" id="btnZoomIn" title="글자 크게"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M8 10.5h5M10.5 8v5"/></svg></div>
     <div class="btn ghost" id="btnMore">⋮</div>
     <div class="btn icon" id="btnClose" title="닫기"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></div>
+  </div>
+
+  <!-- 프로젝트 팔레트: 편집기는 한 프로젝트에 고정이라, 여러 개 등록해 둔 사람은
+       여기에서 갈아타야 한다. (/editor 목록으로도 갈 수 있다.) -->
+  <div id="projMenu" hidden>
+    <div class="pm-head">
+      <span>프로젝트</span>
+      <a class="pm-all" href="/editor">전체 목록</a>
+    </div>
+    <div class="pm-list" id="pmList"></div>
+    <div class="pm-new">
+      <input id="pmNew" placeholder="새 프로젝트 이름" autocomplete="off" spellcheck="false" maxlength="64">
+      <button id="pmCreate" type="button">만들기</button>
+    </div>
+    <div class="pm-hint">여러 프로젝트를 동시에 실행할 수 있습니다 — 같은 <code>/ws</code> 이벤트를 함께 받습니다.</div>
   </div>
 
   <div id="main">
@@ -1375,6 +1431,104 @@ document.addEventListener('keydown', e => {
 });
 window.addEventListener('resize', () => editor && editor.layout());
 window.onerror = (m) => { try { B.log('js: ' + m); } catch (e) {} };
+
+/* ── 프로젝트 팔레트 ─────────────────────────────────────────────────────────
+ * 편집기는 한 프로젝트에 붙은 세션 하나다. 여러 개 등록해 둔 사용자는 "무엇을
+ * 볼 거냐" 를 화면에서 골라야 하는데, 그 통로가 없어서 항상 첫 프로젝트만
+ * 보이는 상태로 묶여 있었다. 이름 클릭 → 목록, 선택→세션 갈아타기(페이지 이동).
+ *
+ * 목록 통로는 /editor/projects 인데, 그건 web plane 의 통로뿐이다 (앱 WebView 는
+ * asset 오리진에서 뜨므로 fetch 가 없다). 그래서 IRISGUI_REMOTE 일 때만 켜고,
+ * 그 외에는 트리거 자체를 감춘다 — 안에서는 이미 카드 목록이 그 일을 한다. */
+(function projectPalette() {
+  const pick = $('projPick'), menu = $('projMenu'), list = $('pmList');
+  if (!window.IRISGUI_REMOTE) {
+    // 앱 WebView 는 카드 목록이 그 일을 한다 — 통로가 없으니 눌리는 자리만 남기고 표시를 지운다
+    // ( 눌러도 아무 일 없는 것처럼 보이는 것보다낫다).
+    if (pick) {
+      pick.classList.remove('can');
+      pick.style.cursor = 'default';
+      const c = pick.querySelector('.caret');
+      if (c) c.style.display = 'none';
+    }
+    if (menu) menu.remove();
+    return;
+  }
+  const here = (new URLSearchParams(location.search)).get('project') || 'main';
+  let data = null, loading = false;
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+  function load() {
+    if (loading) return;
+    loading = true;
+    fetch('/editor/projects', { headers: { accept: 'application/json' } })
+      .then((r) => r.json())
+      .then((d) => { data = d; draw(); })
+      .catch((e) => { list.innerHTML = '<div class="pm-empty">목록 실패: ' + esc(e) + '</div>'; })
+      .then(() => { loading = false; });
+  }
+
+  function draw() {
+    if (!data || !data.ok) {
+      list.innerHTML = '<div class="pm-empty">프로젝트를 읽지 못했습니다</div>';
+      return;
+    }
+    const ps = data.projects || [];
+    if (!ps.length) {
+      list.innerHTML = '<div class="pm-empty">아직 없음 — 아래에서 만드세요</div>';
+      return;
+    }
+    list.innerHTML = ps.map((p) => {
+      const st = p.error ? ['err', '오류'] : p.running ? ['on', '실행'] :
+        p.pending ? ['wait', '준비중'] : ['', '정지'];
+      return '<button class="pm-item' + (p.name === here ? ' cur' : '') + '" data-go="' +
+        esc(p.name) + '"><span class="dot ' + (p.running ? 'run' : '') + '"></span>' +
+        '<span class="nm">' + esc(p.name) + '</span><span class="st ' + st[0] + '">' +
+        st[1] + '</span></button>';
+    }).join('');
+  }
+
+  function go(name) {
+    if (name === here) { close(); return; }
+    try { save(true); } catch (e) {}          // 다른 프로젝트로 건너뛰기 전에 저장
+    location.href = '/editor?project=' + encodeURIComponent(name);
+  }
+
+  function close() { menu.hidden = true; }
+
+  pick.onclick = () => {
+    if (menu.hidden) { menu.hidden = false; load(); $('pmNew').focus(); }
+    else close();
+  };
+  list.onclick = (ev) => {
+    const b = ev.target.closest('button[data-go]');
+    if (b) go(b.getAttribute('data-go'));
+  };
+
+  const ni = $('pmNew'), nb = $('pmCreate');
+  function create() {
+    const name = (ni.value || '').trim();
+    if (!name) return;
+    nb.disabled = true; nb.textContent = '…';
+    fetch('/editor/projects', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name })
+    }).then((r) => r.json()).then((d) => {
+      if (d && d.ok) { location.href = '/editor?project=' + encodeURIComponent(name); }
+      else { nb.disabled = false; nb.textContent = '만들기'; alert((d && d.message) || '실패'); load(); }
+    }).catch((e) => { nb.disabled = false; nb.textContent = '만들기'; alert(e); });
+  }
+  nb.onclick = create;
+  ni.onkeydown = (e) => { if (e.key === 'Enter') create(); };
+
+  document.addEventListener('click', (ev) => {
+    if (menu.hidden) return;
+    if (!menu.contains(ev.target) && !pick.contains(ev.target)) close();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+})();
 })();
 </script>
 </body>

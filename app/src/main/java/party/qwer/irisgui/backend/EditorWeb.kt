@@ -201,14 +201,29 @@ object EditorWeb {
             get { relayHttp(call, null) }
             post { relayHttp(call, call.receiveText()) }
         }
+        // 프로젝트 목록/신규/제어도 데몬 포트에서 그대로 내부로 넘긴다.
+        route("/editor/projects") {
+            get { relayHttp(call, null) }
+            post { relayHttp(call, call.receiveText()) }
+        }
+        route("/editor/projects/{name}/{op}") {
+            post { relayHttp(call, null) }
+        }
         webSocket("/editor/ws") { relayWs(call) }
     }
 
     private suspend fun relayHttp(call: ApplicationCall, body: String?) {
         val target = relayBase() + call.request.local.uri
+        // 메서드는 받은 그대로를 데려간다. body 인자만 보고 판단하면 body 없는 POST
+        // (/editor/projects/{name}/run 같은 운영 동작) 이 조용히 GET 으로 바뀌어
+        // 내부 쪽에서 404 으로 돌아온다 (그래서 목록조회/생성은 되고 run 은 404 였다).
+        val incoming = call.request.local.method.value
         val req = okhttp3.Request.Builder().url(target).let { b ->
-            if (body != null) b.post(body.toRequestBody("application/json".toMediaType()))
-            else b.get()
+            when {
+                body != null -> b.post(body.toRequestBody("application/json".toMediaType()))
+                incoming == "GET" || incoming == "HEAD" -> b.get()
+                else -> b.method(incoming, ByteArray(0).toRequestBody(null))
+            }
         }.build()
         val resp = runCatching {
             withContext(Dispatchers.IO) { relayClient.newCall(req).execute() }
@@ -281,10 +296,87 @@ object EditorWeb {
         }
     }
 
+    // ── 프로젝트 목록/신규/제어 (편집 화면 밖의 통로) ────────────────────────────
+    // 편집기는 한 프로젝트에 붙은 세션 하나라서, 여러 개를 등록해 둔 사용자는
+    // "어느 것을 볼 거냐" 는 선택지가 먼저 필요하다. (/editor → 목록, 목록에서 선택·신규)
+
+    private suspend fun ApplicationCall.replyJson(json: String, status: HttpStatusCode = HttpStatusCode.OK) {
+        respondBytes(json.toByteArray(Charsets.UTF_8), ContentType.Application.Json, status = status)
+    }
+
+    /** LinuxScripts.statusAll 의 화면 관측 가능한 것만 골라낸 JSON. */
+    private suspend fun projectList(): String {
+        val ctx = appContext() ?: return """{"ok":false,"message":"app process 없음"}"""
+        val arr = org.json.JSONArray()
+        val list = runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                party.qwer.irisgui.scripting.LinuxScripts.statusAll(ctx)
+            }
+        }.getOrElse { return """{"ok":false,"message":"목록 조회 실패: ${'$'}{it.message}"}""" }
+        list.forEach { s ->
+            arr.put(org.json.JSONObject().apply {
+                put("name", s.name)
+                put("running", s.running)
+                put("pid", s.pid ?: org.json.JSONObject.NULL)
+                put("venv", s.hasVenv)
+                put("pending", s.venvPending)
+                put("guest", party.qwer.irisgui.scripting.UserlandRuntime
+                    .guestProject(ctx, s.name))
+                if (s.error != null) put("error", s.error)
+            })
+        }
+        return org.json.JSONObject().put("ok", true)
+            .put("projects", arr)
+            .put("projectsRoot", "/home/projects")
+            .toString()
+    }
+
+    /** {"name": "x"} → LinuxScripts.create. 이름 규칙/중복은 LinuxScripts 가 판정한다. */
+    private suspend fun projectCreate(body: String?): String {
+        val ctx = appContext() ?: return """{"ok":false,"message":"app process 없음"}"""
+        val name = runCatching { org.json.JSONObject(body ?: "").optString("name").trim() }
+            .getOrDefault("")
+        if (!party.qwer.irisgui.scripting.LinuxScripts.isValidName(name))
+            return """{"ok":false,"message":"문자/숫자/-/_ 만 허용 (1~64자)"}"""
+        val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            party.qwer.irisgui.scripting.LinuxScripts.create(ctx, name)
+        }
+        return org.json.JSONObject().put("ok", r.ok).put("message", r.message).toString()
+    }
+
+    /** run/stop/delete — 삭제까지 브라우저에서 허용하는 건 조금 민감하므로 run/stop만. */
+    private suspend fun projectControl(name: String?, op: String?): String {
+        val ctx = appContext() ?: return """{"ok":false,"message":"app process 없음"}"""
+        if (!party.qwer.irisgui.scripting.LinuxScripts.isValidName(name ?: ""))
+            return """{"ok":false,"message":"bad project name"}"""
+        val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            when (op) {
+                "run" -> party.qwer.irisgui.scripting.LinuxScripts.start(ctx, name!!)
+                "stop" -> party.qwer.irisgui.scripting.LinuxScripts.stop(ctx, name!!)
+                else -> party.qwer.irisgui.scripting.UserlandRuntime.Result(false, "op 는 run|stop 만 안다")
+            }
+        }
+        return org.json.JSONObject().put("ok", r.ok).put("message", r.message).toString()
+    }
+
     /** 편집기를 직접 서빙하는(앱 프로세스 전용) 라우팅 — 세션/브릿지가 여기에 산다. */
     private fun registerLocal(r: Route) = with(r) {
         get("/editor") { call.page() }
         get("/editor/") { call.page() }
+
+        // 프로젝트 목록/관리 — 편집 화면은 하나의 프로젝트에 고정되어 있어서, 여러 개를
+        // 만들어 둔 사용자가 고를 통로가 먼저다. (/editor 첫 화면이 여기로 붙는다.)
+        get("/editor/projects") { call.replyJson(projectList()) }
+        post("/editor/projects") { call.replyJson(projectCreate(call.receiveText())) }
+        post("/editor/projects/{name}/run") {
+            call.replyJson(projectControl(call.parameters["name"], "run"))
+        }
+        post("/editor/projects/{name}/stop") {
+            call.replyJson(projectControl(call.parameters["name"], "stop"))
+        }
+        post("/editor/projects/{name}/delete") {
+            call.replyJson(projectControl(call.parameters["name"], "delete"))
+        }
 
         // html 의 base/href 가 절대경로(/assets/editor/...)라서 그대로 재사용 가능.
         route("/assets/editor/{path...}") {
@@ -392,8 +484,12 @@ object EditorWeb {
         val ctx = appContext()
             ?: return respondText("editor needs the app process",
                 status = HttpStatusCode.ServiceUnavailable)
+        // ?project= 가 없으면 "무엇을 편집할까요" 목록이다. 하나의 프로젝트에 고정된
+        // 편집기를 여러 개 등록해 둔 사용자가 처음으로 만나는 벽이 여기였다.
+        val wanted = request.queryParameters["project"]
+        val asset = if (wanted.isNullOrBlank()) "editor/projects.html" else "editor/editor.html"
         val bytes = runCatching {
-            ctx.assets.open("editor/editor.html").use { it.readBytes() }
+            ctx.assets.open(asset).use { it.readBytes() }
         }.getOrElse { return respondText("editor assets missing", status = HttpStatusCode.NotFound) }
         response.headers.append(HttpHeaders.CacheControl, "no-cache")
         respondBytes(bytes, ContentType.Text.Html)
