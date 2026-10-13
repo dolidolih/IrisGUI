@@ -2,7 +2,7 @@
 
 This document is not human-facing prose. It is a complete machine-oriented reference
 that lets an LLM generate working KakaoTalk bot code without reading any other doc.
-Version pinning: IrisGUI 0.0.9, irispy-client 0.2.6 (PyPI), import name `iris`.
+Version pinning: IrisGUI 0.0.10, irispy-client 0.2.6 (PyPI), import name `iris`.
 
 ## 0. How to use this file
 
