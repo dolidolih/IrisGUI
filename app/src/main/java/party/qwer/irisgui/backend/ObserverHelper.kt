@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.io.IOException
 import java.util.LinkedList
 import java.util.concurrent.Executors
@@ -64,8 +65,12 @@ class ObserverHelper(
                             continue
                         }
 
-                        val frame = buildFrame(cursor, columnNames)
+                        // ISSUE-41: 커서는 buildFrame 보다 먼저 넘긴다. 조립이 한 행에서
+                        // 죽으면 커서가 그 자리에 못 박혀, 그 뒤의 수천 행이 영원히 못
+                        // 나가는 영구 정지(poison pill)가 된다 — 실제로 _id 376142 한
+                        // 행이 2429 행 backlog 를 통째로 막고 WS 를 말렸다.
                         lastLogId = currentLogId
+                        val frame = buildFrame(cursor, columnNames)
 
                         if (frame != null) {
                             val data = JSONObject(frame).toString()
@@ -152,39 +157,48 @@ class ObserverHelper(
         val raw = mutableMapOf<String, String?>()
         val advancedPlainSerialized = mutableMapOf<String, MutableMap<String, Any?>?>()
 
-        for ((idx, columnName) in columnNames.withIndex()) {
-            // SELECT_MSG_COLS 의 `__origin` alias 는 classification 필터용일 뿐 raw `json` 에
-            // 넣지 않는다 — `json` 키 집합은 /ws 규격(chat_logs 컬럼)과 동일해야 한다.
-            if (columnName == "__origin") continue
-            if (columnName == "message") {
-                raw[columnName] = message
-            } else if (columnName == "attachment") {
-                raw[columnName] = attachment
-                advancedPlainSerialized[columnName] = getStringJsonToMap(attachment)
-                advancedPlainSerialized[columnName]!!["src_isThread"] = false
-            } else if (columnName == "supplement") {
-                raw["supplement"] = supplement
-                advancedPlainSerialized[columnName] = getStringJsonToMap(supplement)
-            } else {
-                raw[columnName] = cursor.getString(idx)
+        // ISSUE-41: 이 직렬화 블록은 전에는 예외를 잡지 않아서, parse 하나가 poller
+        // 전체를 영구 정지시켰다(getStringJsonToMap 의 JSONObject("null") 가 실제 사례).
+        // 실패하면 이 행만 버리고(null 반환) 폴링은 살아남는다 — decrypt 실패와 동일한
+        // 계약("행이 잘못됨 → null")이다.
+        try {
+            for ((idx, columnName) in columnNames.withIndex()) {
+                // SELECT_MSG_COLS 의 `__origin` alias 는 classification 필터용일 뿐 raw `json` 에
+                // 넣지 않는다 — `json` 키 집합은 /ws 규격(chat_logs 컬럼)과 동일해야 한다.
+                if (columnName == "__origin") continue
+                if (columnName == "message") {
+                    raw[columnName] = message
+                } else if (columnName == "attachment") {
+                    raw[columnName] = attachment
+                    advancedPlainSerialized[columnName] = getStringJsonToMap(attachment)
+                    advancedPlainSerialized[columnName]!!["src_isThread"] = false
+                } else if (columnName == "supplement") {
+                    raw["supplement"] = supplement
+                    advancedPlainSerialized[columnName] = getStringJsonToMap(supplement)
+                } else {
+                    raw[columnName] = cursor.getString(idx)
+                }
             }
-        }
 
-        if (
-            (threadId == null || threadId.isEmpty()) &&
-            advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "") != "" &&
-            advancedPlainSerialized["attachment"]!!.getOrDefault("src_logId", "") == "" &&
-            messageType == "1"
-        ) {
-            advancedPlainSerialized["attachment"]!!["src_logId"] =
-                advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "")
-            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
-        } else if (threadId != null && messageType == "1") {
-            advancedPlainSerialized["attachment"]!!["src_logId"] = threadId.toLong()
-            advancedPlainSerialized["attachment"]!!["src_isThread"] = true
-        }
+            if (
+                (threadId == null || threadId.isEmpty()) &&
+                advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "") != "" &&
+                advancedPlainSerialized["attachment"]!!.getOrDefault("src_logId", "") == "" &&
+                messageType == "1"
+            ) {
+                advancedPlainSerialized["attachment"]!!["src_logId"] =
+                    advancedPlainSerialized["supplement"]!!.getOrDefault("threadId", "")
+                advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+            } else if (threadId != null && messageType == "1") {
+                advancedPlainSerialized["attachment"]!!["src_logId"] = threadId.toLong()
+                advancedPlainSerialized["attachment"]!!["src_isThread"] = true
+            }
 
-        raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
+            raw["attachment"] = JSONObject(advancedPlainSerialized["attachment"]!!).toString()
+        } catch (e: Exception) {
+            println("failed to serialize frame (log dropped): $e")
+            return null
+        }
 
         val chatInfo = db.getChatInfo(chatId, userId)
         val deletedAt = columnNames.indexOf("deleted_at")
@@ -573,7 +587,14 @@ class ObserverHelper(
         // attachment/supplement 컬럼은 값이 없는 메시지가 많기 때문에 ""가 전달될 수 있고,
         // 그때 JSONObject("")가 "End of input at character 0"를 던져 DB 폴링 전체가 중단된다.
         if(data == null || data.isEmpty()) return HashMap()
-        val object_ = JSONObject(data)
+        // "null" 도 위와 똑같은 지뢰다. 카톡은 attachment 가 비어있는 메시지를
+        // 직렬화하면서 컬럼에 암호화된 `null`(4 글자)을 남긴다 — JSONObject("null") 은
+        // typeMismatch 를 던지고, 그 한 행이 poller 전체를 영구 정지시킨다(ISSUE-41,
+        // chat_logs._id 376142 에서 관측). 객체가 아닌 것은 전부 "Object 없음"으로 본다.
+        val object_ = when (val parsed = runCatching { JSONTokener(data).nextValue() }.getOrNull()) {
+            is JSONObject -> parsed
+            else -> return HashMap()
+        }
         val map: MutableMap<String, Any?> = HashMap()
 
         val keys: MutableIterator<String> = object_.keys()
