@@ -62,6 +62,7 @@ internal class CryptoDbSnapshot(
             if (stale()) refresh(keyProvider)
             if (db == null) return null
             rw.readLock().lock()
+            var failed = false
             try {
                 val current = db ?: return null
                 return block(current)
@@ -70,10 +71,15 @@ internal class CryptoDbSnapshot(
                 // just read. Discard the snapshot once and retry; a second failure propagates.
                 if (attempt > 1) throw e
                 System.err.println("$label: query failed (${e.javaClass.simpleName}: ${e.message}) — refreshing snapshot")
-                close()
+                failed = true
             } finally {
                 rw.readLock().unlock()
             }
+            // close() 는 writeLock 을 탄다. ReentrantReadWriteLock 은 read → write 승격이
+            // 없으므로 read lock 을 놓기 전에 close() 를 부르면 자기 자신과 교착된다
+            // (상위 리포트 iris 이슈 #132 — use() 안 close() 호출이 그 자리였다,
+            //  상위 iris PR #133 에서 수정됨).
+            if (failed) close()
         }
         return null
     }
