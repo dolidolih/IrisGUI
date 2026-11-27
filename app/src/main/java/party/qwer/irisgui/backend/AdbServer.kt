@@ -31,7 +31,6 @@ import kotlinx.serialization.json.*
 import party.qwer.irisgui.*
 import party.qwer.irisgui.scripting.BionicRuntime
 import party.qwer.irisgui.models.*
-import java.io.File
 
 /**
  * ADB 루팅 모드 전용 HTTP 서버.
@@ -70,7 +69,7 @@ object AdbServer {
      */
     private val wsFanout = WsFanout("AdbServer")
 
-    /** KakaoTalk의 NotificationReferer — shared_prefs XML에서 추출 */
+    /** KakaoTalk의 NotificationReferer — DataStore(26.10+) 또는 shared_prefs XML에서 추출 */
     private var notificationReferer: String? = null
 
     /** KakaoDB 싱글톤 — 매 쿼리마다 생성하지 않음 */
@@ -114,23 +113,23 @@ object AdbServer {
     }
 
     /**
-     * KakaoTalk shared_prefs XML에서 NotificationReferer 추출
-     * 원본 Iris의 readNotificationReferer()와 동일한 로직.
+     * KakaoTalk 설정에서 NotificationReferer 추출
+     * 26.10+ 는 DataStore(files/datastore/Hardware.preferences_pb), 그 이전은
+     * shared_prefs XML — KakaoHardwarePrefs 가 순서대로 시도한다.
+     * 실패해도 답장 자체는 동작하므로 기본값으로 넘어간다.
      */
     private fun extractNotificationReferer(): String {
         try {
             val appPath = PathUtils.getAppPath()
-            val prefsFile = File("${appPath}shared_prefs/KakaoTalk.hw.perferences.xml")
-            if (prefsFile.exists() && prefsFile.canRead()) {
-                val data = prefsFile.readText()
-                val regex = Regex("""<string name="NotificationReferer">(.*?)</string>""")
-                val match = regex.find(data)
-                if (match != null && match.groups[1] != null) {
-                    val referer = match.groups[1]!!.value
-                    println("AdbServer: NotificationReferer extracted: $referer")
-                    return referer
-                }
+            val referer = KakaoHardwarePrefs.readString(appPath, "NotificationReferer")
+            if (referer != null) {
+                println("AdbServer: NotificationReferer extracted: $referer")
+                return referer
             }
+            println(
+                "AdbServer: NotificationReferer not found — " +
+                    KakaoHardwarePrefs.describeSources(appPath)
+            )
         } catch (e: Exception) {
             println("AdbServer: Failed to extract NotificationReferer: ${e.message}")
         }
